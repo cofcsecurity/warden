@@ -46,17 +46,6 @@
 
 set -euo pipefail
 
-# Reattach stdin to the real terminal. When this script (or bootstrap.sh,
-# which execs into it) is run as `curl ... | sudo bash`, stdin is the pipe
-# carrying the script's own source, not the terminal — every `read` below
-# would otherwise hit EOF immediately, which combined with `set -e` kills
-# the script silently on the very first prompt, before anything visibly
-# wrong is printed. `|| true`: if there's genuinely no controlling
-# terminal (e.g. `ssh box 'cmd'` without -t, which forwards a live stdin
-# stream instead and already works fine as-is), leave stdin alone rather
-# than hard-failing a path that wasn't broken.
-exec < /dev/tty 2>/dev/null || true
-
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -266,4 +255,27 @@ main() {
 	step_cleanup_repo
 }
 
-main "$@"
+# When this script (or bootstrap.sh, which execs into it) is run as
+# `curl ... | sudo bash`, stdin is the pipe carrying the script's own
+# source, not the terminal — every `read` above would otherwise hit EOF
+# immediately, which combined with `set -e` kills the whole thing
+# silently on the very first prompt. Redirecting fd 0 any earlier than
+# this is actively wrong, not just unnecessary: bash is still reading
+# its own not-yet-executed script text from that same fd 0 at that
+# point (there's no separate script file when piped), so redirecting it
+# mid-script makes bash try to read the *rest of the script* from the
+# terminal too — which looks exactly like a hang, and turns the next
+# keystroke into a shell command instead of an answer to a prompt. By
+# the time this line runs, the entire script above (every function body)
+# has already been fully parsed into memory, so it's safe here. The fd-3
+# probe never touches fd 0, so it's safe at any point — used only to
+# decide whether to redirect at all: `ssh box 'cmd'` without -t (the
+# primary path's own documented invocation) forwards a live stdin stream
+# over the SSH channel and already works fine without this, but likely
+# has no controlling terminal for /dev/tty to attach to.
+if exec 3</dev/tty 2>/dev/null; then
+	exec 3<&-
+	main "$@" < /dev/tty
+else
+	main "$@"
+fi

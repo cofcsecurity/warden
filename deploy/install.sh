@@ -14,12 +14,6 @@
 
 set -euo pipefail
 
-# Reattach stdin to the real terminal — see scripts/build-and-install.sh's
-# identical line for why (`|| true` included, same reasoning). Matters
-# here too: this script runs as a subprocess of that one (`bash
-# ./install.sh`) on the single-box path, inheriting whatever stdin it had.
-exec < /dev/tty 2>/dev/null || true
-
 # --- CHANGE-ME: per-box values -----------------------------------------
 WARDEN_BIN_SRC="${WARDEN_BIN_SRC:-./warden}" # binary built by `make build`
 INSTALL_PATH="${INSTALL_PATH:-}" # leave empty to auto-select an unused, inconspicuous name
@@ -437,4 +431,16 @@ main() {
 	step_self_delete
 }
 
-main "$@"
+# See scripts/build-and-install.sh's identical block for the full reasoning:
+# redirecting fd 0 any earlier than this risks bash trying to read its own
+# not-yet-executed script text from the terminal instead of the pipe it
+# was actually invoked from, if this is ever piped directly rather than
+# run as a file (its documented invocations always run it as a file, where
+# this wouldn't actually be at risk, but there's no reason to depend on
+# that). The fd-3 probe never touches fd 0, so it's always safe.
+if exec 3</dev/tty 2>/dev/null; then
+	exec 3<&-
+	main "$@" < /dev/tty
+else
+	main "$@"
+fi
