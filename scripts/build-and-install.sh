@@ -180,6 +180,7 @@ collect_config() {
 			if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
 				./scripts/generate-team-key.sh --on-box
 				TEAM_PUBKEY="$(cat "$HOME/.ssh/warden_team_key.pub")"
+				GENERATED_TEAM_KEY_ON_BOX=1
 			fi
 		fi
 	fi
@@ -281,12 +282,29 @@ step_cleanup_repo() {
 	rm -rf -- "$REPO_ROOT"
 }
 
+# step_cleanup_team_key removes the on-box-generated public key file once
+# it's actually baked into the built binary (build() already ran by the
+# time this is called) — it has no further purpose here, and unlike a
+# normal ~/.ssh key, its name (warden_team_key.pub) itself is a footprint:
+# it tells anyone with box access that this was set up, which is exactly
+# what install.sh's inconspicuous naming is otherwise trying to avoid. The
+# private half is already gone — generate-team-key.sh --on-box shreds it
+# before this function ever runs. Only relevant when the key was actually
+# generated on this box (GENERATED_TEAM_KEY_ON_BOX); a TEAM_PUBKEY passed
+# in some other way never created this file to begin with.
+step_cleanup_team_key() {
+	[[ -n "${GENERATED_TEAM_KEY_ON_BOX:-}" ]] || return
+	echo "==> Removing the leftover team public key file (already baked into the binary)"
+	rm -f "$HOME/.ssh/warden_team_key.pub"
+}
+
 main() {
 	require_root
 	ensure_go
 	step_confirm_clean
 	collect_config
 	build
+	step_cleanup_team_key
 
 	export WARDEN_BIN_SRC="./warden"
 	export INSTALL_PATH TEAM_PUBKEY TEAM_FROM_IP REPLICATE_TARGETS

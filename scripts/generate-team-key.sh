@@ -53,15 +53,30 @@ defending, not one red team has never had a chance to reach.
 
 To keep the window as small as possible, this:
   1. Generates the keypair here.
-  2. Prints the private key to THIS screen so you can copy it out right
-     now, by whatever out-of-band means you actually have (read it aloud
-     over a voice channel, write it down by hand, paste it into a
-     competition-provided channel red team can't see — this script has
-     no way to know what's available to you, only that it needs to leave
-     this box before this step is done).
+  2. Prints the private key to THIS screen. The simplest safe way to get
+     it off this box: you're already operating it through your OWN
+     terminal, over your OWN SSH session — just select and copy the
+     private key text straight out of your terminal's scrollback, the
+     same as copying any other remote output, and paste it into a new
+     file on your own machine (e.g. ~/.ssh/warden_team_key), then
+     `chmod 600` it there. That never touches the network beyond the
+     session you're already in. Getting it to any OTHER teammate from
+     there is the same out-of-band sharing this script always
+     recommended (read aloud, handwritten, a channel red team can't
+     see) — just person-to-person instead of box-to-person.
+
+     Before running this: if this session is being recorded anywhere —
+     tmux/screen logging, a bastion's session capture, a cloud
+     console's session replay — the private key printed here ends up
+     wherever that recording lives too. Check for that first, and clear
+     or rotate the recording afterward if you can't avoid it.
   3. Shreds the private key file from this box once you confirm every
      teammate who needs it has their own copy. Only the public key
-     (never sensitive) is left behind.
+     (never sensitive) is left behind. Note `shred` overwrites-then-
+     deletes, which is not a hard guarantee on SSDs, journaling/
+     copy-on-write filesystems, or most cloud block storage — treat
+     step 2 (getting it off this box) as the real control, this as
+     defense in depth on top of it, not instead of it.
 
 Since no box is any safer than another here, there's nothing to gain by
 picking a special one just for this — do it as part of installing to
@@ -130,3 +145,15 @@ else
 	rm -f "$KEY_PATH"
 fi
 echo "    Done. Only the public key (${KEY_PATH}.pub, not sensitive) is left here."
+echo ""
+echo "    One more thing this script can't do for you: it ran as its own"
+echo "    process, so it can't clear YOUR shell's own history. If your shell"
+echo "    keeps a history file, run 'history -c' (bash/zsh) now in the shell"
+echo "    you're typing in, so the private key text printed above doesn't"
+echo "    end up sitting in it or in HISTFILE on disk."
+echo ""
+echo "    Once TEAM_PUBKEY above is actually baked into a build (scripts/"
+echo "    build-and-install.sh's own wizard does this for you automatically"
+echo "    if you got here through it), also remove ${KEY_PATH}.pub — it has"
+echo "    no further purpose on this box, and its name alone tells anyone"
+echo "    with access here that this was set up."
