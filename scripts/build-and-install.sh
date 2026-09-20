@@ -161,6 +161,34 @@ prompt_if_unset() {
 	fi
 }
 
+# detect_client_ip finds the IP of whoever is running this script over
+# SSH, from the OS's own login record (`who`) rather than SSH_CONNECTION/
+# SSH_CLIENT — those are ordinary environment variables, and sudo resets
+# the environment by default on virtually every distro, so they're
+# usually gone by the time a `sudo bash -c "..."` invocation gets here.
+# `who` reads utmp directly, independent of that. Empty output (not a
+# real interactive SSH session, or the box doesn't record it) just means
+# no guess is offered — falls back to asking outright.
+detect_client_ip() {
+	who -m 2>/dev/null | grep -oE '\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' | tr -d '()' | head -n1
+}
+
+# guess_subnet turns a detected IP into a /24 guess — the common case for
+# a competition's team VLAN, not a certainty. It's a starting point to
+# confirm or correct, not applied unconfirmed: this value becomes the
+# network-level ACL on the entire access layer (TEAM_FROM_IP, baked into
+# both the binary and the authorized_keys `from=` restriction), so
+# guessing wrong in the wrong direction — too broad — is a real
+# regression, not just an inconvenience. It's also wrong outright if
+# there's a jump host between the operator and this box: `who` sees
+# whatever directly dialed in, which is the jump host's IP, not the
+# laptop behind it, in that case.
+guess_subnet() {
+	local ip="$1"
+	[[ "$ip" =~ ^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\.[0-9]{1,3}$ ]] || return 1
+	echo "${BASH_REMATCH[1]}.0/24"
+}
+
 collect_config() {
 	echo "==> Per-box configuration (set as env vars beforehand to skip these prompts)"
 	if [[ -z "${TEAM_PUBKEY:-}" ]]; then
@@ -185,6 +213,19 @@ collect_config() {
 		fi
 	fi
 	prompt_if_unset TEAM_PUBKEY "Team's login public key (e.g. 'ssh-ed25519 AAAA... team@ccdc')"
+
+	if [[ -z "${TEAM_FROM_IP:-}" ]]; then
+		local detected_ip guessed_cidr
+		detected_ip="$(detect_client_ip)"
+		if [[ -n "$detected_ip" ]] && guessed_cidr="$(guess_subnet "$detected_ip")"; then
+			echo "    Detected this session connecting from ${detected_ip} — since your team's"
+			echo "    laptops share one subnet this competition, guessing ${guessed_cidr} (a /24)."
+			echo "    Wrong if there's a jump host between you and this box (this would be its"
+			echo "    IP, not your laptop's) or your team's subnet isn't a /24 — check it."
+			ask "    TEAM_FROM_IP [${guessed_cidr}]: " TEAM_FROM_IP
+			TEAM_FROM_IP="${TEAM_FROM_IP:-$guessed_cidr}"
+		fi
+	fi
 	prompt_if_unset TEAM_FROM_IP "Team's source IP or CIDR opmenu will accept connections from"
 	# Left empty on purpose: install.sh auto-selects an unused,
 	# inconspicuous name itself (see its resolve_install_path) unless

@@ -201,7 +201,7 @@ cd ~/build   # wherever it landed
 sudo ./scripts/build-and-install.sh
 ```
 
-Asks for the same things `install.sh` normally needs (team pubkey, team IP, install path), plus offers to generate a TOTP seed and, if wanted, a replication keypair. Set any of `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED` as environment variables beforehand to skip that prompt.
+Asks for the same things `install.sh` normally needs (team pubkey, team IP, install path), plus offers to generate a TOTP seed and, if wanted, a replication keypair. For team IP, it first guesses from who's actually connected to run this (`who`, not an environment variable — those get stripped by `sudo`'s default env reset) and offers a `/24` around that as a starting point, since a team's laptops typically share one subnet — confirm or correct it rather than typing one from scratch, unless there's a jump host between you and this box, in which case the guess is the jump host's IP, not correct at all, and needs to be typed by hand. Set any of `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED` as environment variables beforehand to skip that prompt.
 
 Builds, self-verifies with `debug-config`, hands off to the normal `install.sh`, and — once that succeeds — deletes the entire source tree it ran from. Set `KEEP_SOURCE=1` beforehand to keep the checkout instead.
 
