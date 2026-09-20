@@ -21,17 +21,22 @@ func watchCmd() *cobra.Command {
 }
 
 func runWatch() error {
-	st, err := store.New(storeRoot)
+	p, err := loadPaths()
 	if err != nil {
 		return err
 	}
-	log, err := audit.New(auditLogPath)
+
+	st, err := store.New(p.storeRoot)
+	if err != nil {
+		return err
+	}
+	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
 
-	w := watch.New(configManifestPath, watchedPaths, classifyPath, st, log)
+	w := watch.New(p.configManifestPath, watchedPaths, classifyPath, st, log)
 	res, err := w.Check()
 	if err != nil {
 		return err

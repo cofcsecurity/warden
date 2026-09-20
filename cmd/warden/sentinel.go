@@ -20,7 +20,12 @@ func sentinelCheckCmd() *cobra.Command {
 }
 
 func runSentinelCheck() error {
-	log, err := audit.New(auditLogPath)
+	p, err := loadPaths()
+	if err != nil {
+		return err
+	}
+
+	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
 	}

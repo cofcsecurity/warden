@@ -1,0 +1,11 @@
+[Unit]
+Description=%REPLICATE_NAME_ON_BOX% timer
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=%REPLICATE_INTERVAL%
+RandomizedDelaySec=%REPLICATE_JITTER%
+Unit=%REPLICATE_NAME_ON_BOX%.service
+
+[Install]
+WantedBy=timers.target

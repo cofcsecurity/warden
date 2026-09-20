@@ -25,9 +25,18 @@ func replicateCmd() *cobra.Command {
 	}
 }
 
+// runReplicate pushes both tiers, not just config: "always have a path to
+// recovering a box" means the off-host copy has to include the same
+// backups a local rm -rf would otherwise take out entirely, not just the
+// smaller config tier.
 func runReplicate() error {
 	if buildReplicateURL == "" {
 		return fmt.Errorf("replicate: no target configured (build with -ldflags -X main.buildReplicateURL=...)")
+	}
+
+	p, err := loadPaths()
+	if err != nil {
+		return err
 	}
 
 	target, closeTarget, err := dialReplicateTarget(buildReplicateURL)
@@ -36,26 +45,36 @@ func runReplicate() error {
 	}
 	defer closeTarget()
 
-	m, err := manifest.New(configManifestPath)
+	st, err := store.New(p.storeRoot)
 	if err != nil {
 		return err
 	}
-	if m.Generation == 0 && len(m.Records) == 0 {
-		return fmt.Errorf("replicate: no local manifest yet; run 'warden snapshot' first")
-	}
-
-	manifestData, err := readArchivedManifest(m.Generation)
-	if err != nil {
-		return err
-	}
-
-	st, err := store.New(storeRoot)
-	if err != nil {
-		return err
-	}
-
 	r := replicate.New(target)
-	return r.Push(m, manifestData, st)
+
+	pushed := 0
+	for _, tier := range []snapshotTier{tierConfig, tierData} {
+		m, err := manifest.New(p.manifestPathForTier(tier))
+		if err != nil {
+			return err
+		}
+		if m.Generation == 0 && len(m.Records) == 0 {
+			continue // this tier has never been snapshotted yet; nothing to push
+		}
+
+		manifestData, err := readArchivedManifest(p.manifestsDirForTier(tier), m.Generation)
+		if err != nil {
+			return err
+		}
+		if err := r.Push(m, manifestData, st); err != nil {
+			return fmt.Errorf("replicate: push %s tier: %w", tier, err)
+		}
+		pushed++
+	}
+
+	if pushed == 0 {
+		return fmt.Errorf("replicate: no local manifest yet for either tier; run 'warden snapshot' first")
+	}
+	return nil
 }
 
 // replicateTarget is the subset of replicate.Target dial results this
@@ -119,8 +138,8 @@ func dialSSHReplicateTarget(u *url.URL) (replicate.Target, func() error, error) 
 	return target, target.Close, nil
 }
 
-func readArchivedManifest(generation int) ([]byte, error) {
-	path := manifest.ArchivePath(configManifestsDir, generation)
+func readArchivedManifest(manifestsDir string, generation int) ([]byte, error) {
+	path := manifest.ArchivePath(manifestsDir, generation)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("replicate: read archived manifest %s: %w", path, err)

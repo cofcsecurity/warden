@@ -17,6 +17,12 @@ AUTHORIZED_KEYS="/root/.ssh/authorized_keys"
 TEAM_PUBKEY="CHANGE-ME ssh-ed25519 AAAA... team@ccdc"
 TEAM_FROM_IP="CHANGE-ME 203.0.113.10"
 
+# Leave empty to skip scheduling replication (e.g. still deciding on a
+# second box — see docs/PLAN.md Phase 2/5). Must match whatever
+# REPLICATE_URL was baked into the binary at build time, or `warden
+# replicate` will just fail every time this timer fires.
+REPLICATE_URL=""
+
 # Unit names are derived from INSTALL_PATH's basename, not chosen
 # separately: sentinel-check re-derives these same names at runtime from
 # its own binary path (see cmd/warden/units.go), so there's exactly one
@@ -26,6 +32,7 @@ WATCH_UNIT_NAME="${BINARY_NAME}-watch"
 SENTINEL_UNIT_NAME="${BINARY_NAME}-sentinel"
 SNAPSHOT_CONFIG_UNIT_NAME="${BINARY_NAME}-snap-cfg"
 SNAPSHOT_DATA_UNIT_NAME="${BINARY_NAME}-snap-data"
+REPLICATE_UNIT_NAME="${BINARY_NAME}-replicate"
 
 WATCH_INTERVAL="5min"
 WATCH_JITTER="90"
@@ -35,6 +42,8 @@ SNAPSHOT_CONFIG_INTERVAL="5min"
 SNAPSHOT_CONFIG_JITTER="60"
 SNAPSHOT_DATA_INTERVAL="1h"
 SNAPSHOT_DATA_JITTER="300"
+REPLICATE_INTERVAL="15min"
+REPLICATE_JITTER="180"
 # -------------------------------------------------------------------------
 
 require_root() {
@@ -116,6 +125,23 @@ step_install_systemd_units() {
 		"${SENTINEL_UNIT_NAME}.timer" \
 		"${SNAPSHOT_CONFIG_UNIT_NAME}.timer" \
 		"${SNAPSHOT_DATA_UNIT_NAME}.timer"
+
+	if [[ -n "$REPLICATE_URL" ]]; then
+		echo "==> Installing the replication timer (REPLICATE_URL is set)"
+		sed -e "s#%REPLICATE_NAME_ON_BOX%#${REPLICATE_UNIT_NAME}#g" \
+		    -e "s#%INSTALL_PATH%#${INSTALL_PATH}#g" \
+		    systemd/warden-replicate.service.template > "${unit_dir}/${REPLICATE_UNIT_NAME}.service"
+		sed -e "s#%REPLICATE_NAME_ON_BOX%#${REPLICATE_UNIT_NAME}#g" \
+		    -e "s#%REPLICATE_INTERVAL%#${REPLICATE_INTERVAL}#g" \
+		    -e "s#%REPLICATE_JITTER%#${REPLICATE_JITTER}#g" \
+		    systemd/warden-replicate.timer.template > "${unit_dir}/${REPLICATE_UNIT_NAME}.timer"
+
+		systemctl daemon-reload
+		systemctl enable --now "${REPLICATE_UNIT_NAME}.timer"
+	else
+		echo "==> Skipping the replication timer (REPLICATE_URL is empty)"
+		echo "    Backups only exist on this box until that's configured — see docs/PLAN.md Phase 2."
+	fi
 }
 
 step_install_cron_entry() {

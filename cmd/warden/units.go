@@ -38,29 +38,59 @@ func sentinelUnitName() (string, error) {
 	return name + "-sentinel", nil
 }
 
-func sentinelServiceContent(unitName, path string) string {
+// replicateUnitName is the systemd name for the replication timer, when
+// one is configured — see registrations.go's replicate-timer registration.
+func replicateUnitName() (string, error) {
+	name, err := binaryName()
+	if err != nil {
+		return "", err
+	}
+	return name + "-replicate", nil
+}
+
+// oneshotServiceContent and oneshotTimerContent generate the same shape of
+// unit deploy/install.sh's templates do, for the two units sentinel-check
+// knows how to recreate from scratch (sentinel's own timer, and
+// replicate's, when configured).
+func oneshotServiceContent(unitName, path, subcommand string) string {
 	return fmt.Sprintf(`[Unit]
 Description=%s
 
 [Service]
 Type=oneshot
-ExecStart=%s sentinel-check
-`, unitName, path)
+ExecStart=%s %s
+`, unitName, path, subcommand)
 }
 
-func sentinelTimerContent(unitName string) string {
+func oneshotTimerContent(unitName, bootDelay, interval, jitter string) string {
 	return fmt.Sprintf(`[Unit]
 Description=%s timer
 
 [Timer]
-OnBootSec=2min
+OnBootSec=%s
 OnUnitActiveSec=%s
 RandomizedDelaySec=%s
 Unit=%s.service
 
 [Install]
 WantedBy=timers.target
-`, unitName, sentinelInterval, sentinelJitter, unitName)
+`, unitName, bootDelay, interval, jitter, unitName)
+}
+
+func sentinelServiceContent(unitName, path string) string {
+	return oneshotServiceContent(unitName, path, "sentinel-check")
+}
+
+func sentinelTimerContent(unitName string) string {
+	return oneshotTimerContent(unitName, "2min", sentinelInterval, sentinelJitter)
+}
+
+func replicateServiceContent(unitName, path string) string {
+	return oneshotServiceContent(unitName, path, "replicate")
+}
+
+func replicateTimerContent(unitName string) string {
+	return oneshotTimerContent(unitName, "7min", replicateInterval, replicateJitter)
 }
 
 // cronMarker tags this registration's line in the crontab so it can be

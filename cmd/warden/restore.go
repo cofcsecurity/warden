@@ -30,7 +30,12 @@ func restoreCmd() *cobra.Command {
 }
 
 func runRestore(target, snapshotID string, apply bool) error {
-	m, err := loadSnapshot(snapshotID)
+	p, err := loadPaths()
+	if err != nil {
+		return err
+	}
+
+	m, err := loadSnapshot(p, snapshotID)
 	if err != nil {
 		return err
 	}
@@ -49,13 +54,13 @@ func runRestore(target, snapshotID string, apply bool) error {
 		return nil
 	}
 
-	log, err := audit.New(auditLogPath)
+	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
 
-	lines, err := applyPlan(entries, log)
+	lines, err := applyPlan(p, entries, log)
 	for _, l := range lines {
 		fmt.Println(l)
 	}
@@ -64,15 +69,15 @@ func runRestore(target, snapshotID string, apply bool) error {
 
 // loadSnapshot loads the requested generation, or the latest live manifest
 // when snapshotID is empty.
-func loadSnapshot(snapshotID string) (*manifest.Manifest, error) {
+func loadSnapshot(p paths, snapshotID string) (*manifest.Manifest, error) {
 	if snapshotID == "" {
-		return manifest.New(configManifestPath)
+		return manifest.New(p.configManifestPath)
 	}
 	gen, err := strconv.Atoi(snapshotID)
 	if err != nil {
 		return nil, fmt.Errorf("restore: --snapshot must be a generation number: %w", err)
 	}
-	return manifest.LoadGeneration(configManifestsDir, gen)
+	return manifest.LoadGeneration(p.configManifestsDir, gen)
 }
 
 // planLines renders a restore plan the same way for both `warden restore`
@@ -91,8 +96,8 @@ func planLines(entries []restore.PlanEntry) []string {
 
 // applyPlan applies entries and logs each step, shared by `restore --apply`
 // and opmenu's restore command so both go through the identical sequence.
-func applyPlan(entries []restore.PlanEntry, log *audit.Logger) ([]string, error) {
-	st, err := store.New(storeRoot)
+func applyPlan(p paths, entries []restore.PlanEntry, log *audit.Logger) ([]string, error) {
+	st, err := store.New(p.storeRoot)
 	if err != nil {
 		return nil, err
 	}

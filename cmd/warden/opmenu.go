@@ -30,7 +30,12 @@ func opmenuCmd() *cobra.Command {
 // comes only through $SSH_ORIGINAL_COMMAND, since that's the one thing a
 // forced-command entry can't let the client override.
 func runOpmenu() error {
-	log, err := audit.New(auditLogPath)
+	p, err := loadPaths()
+	if err != nil {
+		return err
+	}
+
+	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
 	}
@@ -44,8 +49,8 @@ func runOpmenu() error {
 
 	h := opmenu.New(
 		buildTOTPSecret,
-		runStatus,
-		runOpmenuRestore,
+		func() (string, error) { return runStatus(p) },
+		func(target string, args []string) (string, error) { return runOpmenuRestore(p, target, args) },
 		"/bin/bash",
 		log,
 	)
@@ -92,13 +97,13 @@ func parseOpmenuRequest(raw, sshClient string) (opmenu.Request, error) {
 // time, and the last recorded pass of watch and sentinel-check. It's the
 // one opmenu command that never requires a TOTP code, so it stays cheap
 // and side-effect-free.
-func runStatus() (string, error) {
-	m, err := manifest.New(configManifestPath)
+func runStatus(p paths) (string, error) {
+	m, err := manifest.New(p.configManifestPath)
 	if err != nil {
 		return "", err
 	}
 
-	entries, err := audit.Read(auditLogPath)
+	entries, err := audit.Read(p.auditLogPath)
 	if err != nil {
 		return "", err
 	}
@@ -128,10 +133,10 @@ func summarizeEntry(e audit.Entry) string {
 // it only applies when the caller explicitly appends "apply" as the last
 // argument, since this path is reached over SSH with a live TOTP code
 // already spent, not a two-step CLI flag a human can reconsider.
-func runOpmenuRestore(target string, args []string) (string, error) {
+func runOpmenuRestore(p paths, target string, args []string) (string, error) {
 	apply := len(args) > 0 && args[0] == "apply"
 
-	m, err := manifest.New(configManifestPath)
+	m, err := manifest.New(p.configManifestPath)
 	if err != nil {
 		return "", err
 	}
@@ -148,13 +153,13 @@ func runOpmenuRestore(target string, args []string) (string, error) {
 		return strings.Join(lines, "\n"), nil
 	}
 
-	log, err := audit.New(auditLogPath)
+	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return "", err
 	}
 	defer log.Close()
 
-	applyLines, err := applyPlan(entries, log)
+	applyLines, err := applyPlan(p, entries, log)
 	lines = append(lines, applyLines...)
 	return strings.Join(lines, "\n"), err
 }

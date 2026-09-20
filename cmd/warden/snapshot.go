@@ -30,18 +30,23 @@ func snapshotCmd() *cobra.Command {
 }
 
 func runSnapshot(tier snapshotTier) error {
-	st, err := store.New(storeRoot)
+	p, err := loadPaths()
 	if err != nil {
 		return err
 	}
-	log, err := audit.New(auditLogPath)
+
+	st, err := store.New(p.storeRoot)
+	if err != nil {
+		return err
+	}
+	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
 
-	manifestPath := manifestPathForTier(tier)
-	manifestsDir := manifestsDirForTier(tier)
+	manifestPath := p.manifestPathForTier(tier)
+	manifestsDir := p.manifestsDirForTier(tier)
 
 	last, err := manifest.New(manifestPath)
 	if err != nil {
@@ -70,7 +75,7 @@ func runSnapshot(tier snapshotTier) error {
 		return err
 	}
 
-	if err := pruneOldObjects(st); err != nil {
+	if err := pruneOldObjects(p, st); err != nil {
 		return fmt.Errorf("snapshot: prune: %w", err)
 	}
 
@@ -85,10 +90,10 @@ func runSnapshot(tier snapshotTier) error {
 // retainGenerations archived manifests of *either* tier and drops the
 // rest — both tiers share one object store, so retention has to consider
 // both lineages or it'll prune objects the other tier still needs.
-func pruneOldObjects(st *store.Store) error {
+func pruneOldObjects(p paths, st *store.Store) error {
 	keep := map[string]bool{}
 
-	for _, dir := range []string{configManifestsDir, dataManifestsDir} {
+	for _, dir := range []string{p.configManifestsDir, p.dataManifestsDir} {
 		gens, err := manifest.Generations(dir)
 		if err != nil {
 			return err

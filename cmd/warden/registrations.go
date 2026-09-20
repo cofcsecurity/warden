@@ -11,9 +11,12 @@ import (
 )
 
 // buildRegistrations wires sentinel-check's real checks together: the
-// authorized_keys entry, its own systemd timer, and its own cron entry.
-// Every Check reads the relevant file directly rather than shelling to
-// systemctl/crontab, per docs/DESIGN.md's threat model.
+// authorized_keys entry, its own systemd timer, its own cron entry, and —
+// when a replication target is configured — the replicate timer too.
+// Without that last one, red team could disable backups leaving the box
+// (the actual point of replicate) without touching anything else sentinel
+// watches. Every Check reads the relevant file directly rather than
+// shelling to systemctl/crontab, per docs/DESIGN.md's threat model.
 func buildRegistrations() ([]sentinel.Registration, error) {
 	path, err := installPath()
 	if err != nil {
@@ -32,7 +35,7 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 	timerPath := filepath.Join(systemdUnitDir, unitName+".timer")
 	enabledLinkPath := filepath.Join(systemdTimersWantsDir, unitName+".timer")
 
-	return []sentinel.Registration{
+	regs := []sentinel.Registration{
 		{
 			Name:     "authorized_keys",
 			Check:    func() (bool, error) { return checkAuthorizedKeysFile(authorizedKeysPath, line) },
@@ -58,7 +61,35 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 				return recreateCronEntryFile(cronSpoolPath, cronMarker(unitName), cronLine(unitName, path))
 			},
 		},
-	}, nil
+	}
+
+	if buildReplicateURL != "" {
+		repUnitName, err := replicateUnitName()
+		if err != nil {
+			return nil, err
+		}
+		repServicePath := filepath.Join(systemdUnitDir, repUnitName+".service")
+		repTimerPath := filepath.Join(systemdUnitDir, repUnitName+".timer")
+		repEnabledLinkPath := filepath.Join(systemdTimersWantsDir, repUnitName+".timer")
+
+		regs = append(regs, sentinel.Registration{
+			Name: "replicate-timer",
+			Check: func() (bool, error) {
+				return checkSystemdTimerFiles(repServicePath, repTimerPath, repEnabledLinkPath)
+			},
+			Recreate: func() error {
+				if err := writeSystemdTimerFiles(repServicePath, repTimerPath, replicateServiceContent(repUnitName, path), replicateTimerContent(repUnitName)); err != nil {
+					return err
+				}
+				if err := runSystemctl("daemon-reload"); err != nil {
+					return err
+				}
+				return runSystemctl("enable", "--now", repUnitName+".timer")
+			},
+		})
+	}
+
+	return regs, nil
 }
 
 func checkAuthorizedKeysFile(path, expectedLine string) (bool, error) {
