@@ -2,7 +2,9 @@
 
 Persistence and backup/restore for a host under active attack, built for the CofC Cybersecurity Club's SECCDC/PCDC defense team.
 
-Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, [docs/USAGE.md](docs/USAGE.md) for every command and what it does, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the step-by-step checklist to stand this up ahead of a competition, and [docs/PLAN.md](docs/PLAN.md) for what's built versus what's left, phased.
+New here? Start with [docs/EXPLAINER.md](docs/EXPLAINER.md) for what Warden does and why, in plain language.
+
+Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, [docs/USAGE.md](docs/USAGE.md) for every command and what it does, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the step-by-step checklist to stand this up ahead of a competition, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for diagrams of how the pieces connect, and [docs/PLAN.md](docs/PLAN.md) for what's built versus what's left, phased.
 
 **Before deploying any of this against a real box, confirm it's allowed under that competition's rules of engagement.** See DESIGN.md's "Rules of Engagement Note".
 

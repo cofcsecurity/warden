@@ -87,9 +87,9 @@ Prompted by defending 6–8 boxes at once: link them together so backups aren't 
 - **A real bug the mesh test caught**: `DialSSH`'s `ssh.ClientConfig` didn't restrict `HostKeyAlgorithms`, so algorithm negotiation could settle on a host key type other than the one pinned (e.g. the peer's RSA key) even when the peer also held the exact ed25519 key that was pinned — `ssh.FixedHostKey` would then reject a legitimate peer for presenting "the wrong" key, when the real problem was never asking for the right one. A single-host-key test SSH server never exercised this (nothing to negotiate between); a real sshd offering multiple key types did. Fixed by setting `HostKeyAlgorithms: []string{hostKey.Type()}`.
 - Also added `internal/manifest.Parse` (decode manifest JSON with no backing file, for a generation just pulled from a peer) and a receiving-account setup recipe in `docs/DEPLOYMENT.md` (a dedicated non-root `warden-backup` user per box, `command="/usr/bin/false"`-restricted, since a stolen replication key should never yield an interactive shell on the peer).
 
-## Phase 9 — Active detection and accessible docs (not started)
+## Phase 9 — Active detection and accessible docs (docs done, detection not started)
 
-Two asks not yet acted on:
+Two asks:
 
-- Active "suspicious behavior" detection beyond file-content drift — explicitly scoped as *not* a SIEM replacement: a bounded set of high-signal checks (new SUID/SGID binaries, unexpected listening ports, cron/`authorized_keys` tampering outside what `watch`/`sentinel` already cover) that flag rather than auto-fix, since the correct response to a genuinely novel compromise indicator is a human, not a file revert.
-- A beginner-friendly explainer — what Warden does, how, and what it deliberately doesn't do — distinct from `USAGE.md`'s command reference and `DESIGN.md`'s design rationale.
+- Active "suspicious behavior" detection beyond file-content drift — explicitly scoped as *not* a SIEM replacement: a bounded set of high-signal checks (new SUID/SGID binaries, unexpected listening ports, cron/`authorized_keys` tampering outside what `watch`/`sentinel` already cover) that flag rather than auto-fix, since the correct response to a genuinely novel compromise indicator is a human, not a file revert. **Not started.**
+- A beginner-friendly explainer — what Warden does, how, and what it deliberately doesn't do — distinct from `USAGE.md`'s command reference and `DESIGN.md`'s design rationale. **Done**: `docs/EXPLAINER.md`.
