@@ -13,18 +13,25 @@ GOARCH ?= amd64
 # "Replication topology" for setting up a multi-box mesh). <hostkey> is
 # empty for a file:// target (removable media), which also needs no
 # REPLICATE_KEY. Every ssh:// target shares the one REPLICATE_KEY.
+#
+# AUTOBAN_ENABLED opts into watch's auto-ban reaction (docs/DESIGN.md's
+# "Active Response" section) — leave it empty unless the team has
+# confirmed firewalling an attacker IP is allowed under this
+# competition's rules of engagement. Any non-empty value turns it on.
 TEAM_PUBKEY ?=
 TEAM_FROM_IP ?=
 TOTP_SECRET ?=
 REPLICATE_TARGETS ?=
 REPLICATE_KEY ?=
+AUTOBAN_ENABLED ?=
 
 LDFLAGS := -s -w \
 	-X 'main.buildTeamPubKey=$(TEAM_PUBKEY)' \
 	-X 'main.buildTeamFromIP=$(TEAM_FROM_IP)' \
 	-X 'main.buildTOTPSecret=$(TOTP_SECRET)' \
 	-X 'main.buildReplicateTargets=$(REPLICATE_TARGETS)' \
-	-X 'main.buildReplicateKey=$(REPLICATE_KEY)'
+	-X 'main.buildReplicateKey=$(REPLICATE_KEY)' \
+	-X 'main.buildAutobanEnabled=$(AUTOBAN_ENABLED)'
 
 .PHONY: build test vet fmt vendor clean
 

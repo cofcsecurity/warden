@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"warden/internal/manifest"
 )
@@ -36,7 +38,31 @@ const (
 	// scratch (see registrations.go).
 	replicateInterval = "15min"
 	replicateJitter   = "180"
+
+	// autobanDuration is how long an auto-triggered ban (see watch.go's
+	// reactToConfirmFirstChange) lasts before sentinel-check's Reconcile
+	// call lifts it — long enough to matter, short enough that a
+	// mis-attributed ban on a legitimate but unlisted IP self-heals
+	// rather than needing a human to notice and run `warden unban`.
+	autobanDuration = time.Hour
 )
+
+// authLogPaths are checked in order; the first one that exists is used.
+// Debian/Ubuntu ships /var/log/auth.log via rsyslog by default; RHEL-family
+// distros use /var/log/secure for the same sshd log lines. If neither
+// exists (no rsyslog, journald-only), attribution has no evidence to work
+// from and auto-ban simply doesn't fire — see docs/DESIGN.md's note on
+// why a wrong auto-response is worse than none.
+var authLogPaths = []string{"/var/log/auth.log", "/var/log/secure"}
+
+func findAuthLog() (string, bool) {
+	for _, p := range authLogPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+	return "", false
+}
 
 // paths is every fixed, per-box path for backup state (manifests, objects,
 // the audit log). It's derived from the binary's own install path rather
@@ -67,6 +93,7 @@ type paths struct {
 	// just never overwritten, so the box can be hardened without watch
 	// fighting that work every few minutes.
 	armedMarkerPath string
+	bannedIPsPath   string
 }
 
 // loadPaths resolves paths for the current box. configManifestPath and
@@ -95,6 +122,7 @@ func loadPaths() (paths, error) {
 		storeRoot:          dir,
 		auditLogPath:       dir + "/audit.log",
 		armedMarkerPath:    dir + "/armed",
+		bannedIPsPath:      dir + "/banned_ips.json",
 	}, nil
 }
 

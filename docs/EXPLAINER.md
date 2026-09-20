@@ -89,6 +89,59 @@ run `warden detect` to scan the box for common CCDC services (web, database,
 mail, DNS, file transfer, DHCP) already running or configured, and see which
 of their config files are and aren't already in Warden's watch list.
 
+## Reacting to a guarded file being touched (opt-in)
+
+The most sensitive files Warden watches — `passwd`, `shadow`, `sudoers`,
+`sshd_config` and the like — never get auto-reverted, only flagged (see
+"What actually changed" above). Optionally, Warden can go a step further:
+when one of those files changes, it tries to figure out *whose* SSH session
+was open at that exact moment, and if it's confident that's an outside
+party rather than your own team, it blocks that IP at the firewall for an
+hour — the same thing a tool like fail2ban does.
+
+That confidence check matters more than the blocking itself. Warden reads
+this straight out of `sshd`'s own connection log, and only acts when the
+evidence is genuinely clear:
+
+- If nothing in the log overlaps the moment the file changed (say, it was
+  edited from the physical console instead), nothing gets banned — just
+  flagged, same as always.
+- If the *only* session that overlaps is coming from your team's own known
+  IP, nothing gets banned. This is the important part if you're worried
+  about a teammate accidentally editing a guarded file without disarming
+  first: since your team's real access is already restricted to one known
+  IP by the forced-command SSH setup, a session from that IP is never
+  treated as a suspect, full stop.
+- If more than one outside IP overlaps, it's too ambiguous to single one
+  out, so nothing gets banned either — a coin flip isn't a decision Warden
+  makes unsupervised.
+- Only when there's exactly one session, from exactly one IP that isn't
+  your team's own, does a ban actually happen.
+
+Every one of those outcomes — banned or not — gets written to the audit
+log and to `warden alerts`, described next. This is opt-in at build time
+(`AUTOBAN_ENABLED`) and off by default, the same way replication targets
+are: confirm with your organizers that actively firewalling an IP is
+allowed under this competition's rules before turning it on.
+
+If your team does need to make a deliberate change to one of these
+sensitive files — a real hardening edit, not an attack — `warden accept
+<path> <code>` (with a live TOTP code) marks that one file's current state
+as the new known-good, without needing to touch anything else Warden is
+watching.
+
+### Getting the alert without tipping off red team
+
+The obvious way to tell everyone on the team "hey, something just
+happened" is a system-wide broadcast message. Warden deliberately doesn't
+do that: if red team has a shell on the box through some completely
+different route, a broadcast message would reach them too, and now they
+know they've been noticed. Instead, `warden alerts` is something a
+teammate chooses to run, in their own SSH session, and only that session
+sees what it prints. Open a second connection just for this
+(`ssh <box> "shell <code>"`, then run `warden alerts` inside it) and leave
+it running if you want a live feed while you work.
+
 ## How it survives being killed
 
 This is the part that makes Warden more than "a backup script." There's no
@@ -159,12 +212,14 @@ assume incorrectly:
   a service that's already running (SSH) instead of opening a new listening
   port, and the forced-command restriction means even someone who steals the
   team's key still can't get an open shell without the second-factor code.
-- **It does not fight back.** Warden is entirely defensive: it restores
-  your own state and protects your own access, and never touches red
-  team's infrastructure, blocks their IP, or takes any action against
-  them. "Survives an attack" here means resilience, not retaliation —
-  partly because most competitions' rules of engagement don't allow
-  offensive action against red team even once you can identify them.
+- **It does not fight back.** Warden can, if your team opts into it (see
+  "Reacting to a guarded file being touched" below), block an IP from
+  reaching *your own* box — the same thing fail2ban does. It never touches
+  red team's own infrastructure, and never does anything more aggressive
+  than that. "Survives an attack" here means resilience (and, optionally,
+  a locked door), not retaliation — partly because most competitions'
+  rules of engagement don't allow offensive action against red team even
+  once you can identify them.
 - **It does not scrub evidence or hide what it did.** Every single action —
   a restore, a flagged file, a rejected login attempt — gets written to a
   log file your team can show a judge if asked. Trying to look invisible by

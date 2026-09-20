@@ -221,3 +221,42 @@ func TestCheckFlagsConfirmFirstChanges(t *testing.T) {
 		t.Fatalf("expected the still-unresolved drift to be flagged again, got %+v", res)
 	}
 }
+
+// TestCheckFlagsDeletedConfirmFirstPathRatherThanRestoringIt guards against
+// a real bug: a Removed change has no New record, so a class check that
+// only ever looks at change.New would silently treat a deleted
+// ConfirmFirst path (e.g. someone deleting /etc/shadow) as ordinary
+// SafeAutoRestore drift and restore it, instead of flagging it the same
+// way a modified ConfirmFirst path always is.
+func TestCheckFlagsDeletedConfirmFirstPathRatherThanRestoringIt(t *testing.T) {
+	dir, st, log := setup(t)
+
+	sudoersPath := filepath.Join(dir, "sudoers")
+	if err := os.WriteFile(sudoersPath, []byte("root ALL=(ALL) ALL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	classify := func(path string) manifest.Class { return manifest.ConfirmFirst }
+	manifestPath := filepath.Join(dir, "manifest.json")
+	snapshotBaseline(t, manifestPath, []string{sudoersPath}, classify, st)
+
+	w := New(manifestPath, []string{sudoersPath}, classify, true, st, log)
+
+	if err := os.Remove(sudoersPath); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := w.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Flagged) != 1 || res.Flagged[0] != sudoersPath {
+		t.Fatalf("expected the deleted confirm-first path to be flagged, got %+v", res)
+	}
+	if len(res.AutoRestored) != 0 {
+		t.Fatalf("a deleted confirm-first path must never be silently restored, got %+v", res.AutoRestored)
+	}
+	if _, err := os.Stat(sudoersPath); !os.IsNotExist(err) {
+		t.Fatalf("expected the path to remain deleted, got err=%v", err)
+	}
+}

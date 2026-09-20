@@ -95,6 +95,8 @@ Repeat once per box, substituting that box's own two neighbors, its own `secrets
 
 If there's no realistic second box this season at all, `REPLICATE_TARGETS` can instead be a single `file:///path||` entry (empty host key) pointing at removable media — see `docs/PLAN.md` Phase 2.
 
+Add `AUTOBAN_ENABLED=1` to the same `make build` invocation only after confirming with organizers that auto-banning an attacker's IP is allowed under this competition's rules of engagement — see `docs/DESIGN.md`'s "Active Response" section. It's off (unset) by default; leaving it off still gets you the flagging and `warden alerts` visibility, just not the automatic firewall block.
+
 Produces `bin/warden` — a stripped, static binary with everything above baked in. Verify it actually captured the right values before going further, on a native build since `bin/warden` is cross-compiled for the target's `linux/amd64` and won't run here:
 
 ```
@@ -138,7 +140,9 @@ The box comes up **disarmed**: `watch` runs on schedule and flags sensitive drif
 2. Do the actual hardening: lock down `sshd_config`, tighten service configs, rotate anything default, whatever this box needs.
 3. Once that's done: `warden arm`. This snapshots the box's current (hardened) state and turns on auto-restore — from here on, drift in a watched file gets reverted, not just flagged.
 
-Don't skip straight to step 3 before steps 1–2: arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done.
+Don't skip straight to step 3 before steps 1–2: arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done. If a specific hardening edit needs to land on a `ConfirmFirst` path (which is never auto-reverted anyway, armed or not) without perpetually flagging, `warden accept <path> <totp-code>` marks just that one file's current state as known-good.
+
+If this build has `AUTOBAN_ENABLED` set, open a second SSH session now (`ssh <box> "shell <code>"`) and leave `warden alerts` running in it — that's the only way anyone sees a guarded-path alert as it happens, by design (see `docs/DESIGN.md`'s "Active Response" section on why it's pull-based instead of a broadcast).
 
 ## 7. Recovery: pulling a box's own backups back
 

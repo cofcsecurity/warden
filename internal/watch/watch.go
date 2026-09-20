@@ -60,6 +60,13 @@ type Result struct {
 	AutoRestored []string
 	Suppressed   []string // would have been auto-restored, but disarmed
 	Flagged      []string
+	// FlaggedChanges carries the full manifest.Change for each entry in
+	// Flagged (same order), including the new record's MTime — the caller
+	// needs that to correlate a ConfirmFirst change against who had a
+	// session open at the time (see cmd/warden's reactToGuardedChange).
+	// Flagged itself stays a plain []string for callers that just want
+	// the count/paths.
+	FlaggedChanges []manifest.Change
 }
 
 // Check runs one integrity check pass: generate, diff, act. It does not
@@ -80,9 +87,24 @@ func (w *Watcher) Check() (*Result, error) {
 	res := &Result{}
 
 	for _, change := range manifest.Diff(last, next) {
+		// A Removed change has no New record, so its class comes from
+		// Old — otherwise a deleted ConfirmFirst path (e.g. /etc/shadow)
+		// would fall through to the auto-restore branch below purely
+		// because there's no New.Class to check, silently bypassing the
+		// "never touched, always flagged" guarantee ConfirmFirst is
+		// supposed to be.
+		class := manifest.SafeAutoRestore
 		switch {
-		case change.New != nil && change.New.Class == manifest.ConfirmFirst:
+		case change.New != nil:
+			class = change.New.Class
+		case change.Old != nil:
+			class = change.Old.Class
+		}
+
+		switch {
+		case class == manifest.ConfirmFirst:
 			res.Flagged = append(res.Flagged, change.Path)
+			res.FlaggedChanges = append(res.FlaggedChanges, change)
 			w.logChange("flagged", change)
 
 		case change.Kind == manifest.Modified || change.Kind == manifest.Removed:

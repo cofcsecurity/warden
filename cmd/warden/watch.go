@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -45,6 +47,16 @@ func runWatch() error {
 	res, err := w.Check()
 	if err != nil {
 		return err
+	}
+
+	now := time.Now()
+	for _, change := range res.FlaggedChanges {
+		if err := reactToGuardedChange(p, change, log, now); err != nil {
+			// A failed reaction (e.g. iptables not present) must not stop
+			// the rest of the check — the flag itself already happened
+			// and is the load-bearing part; the ban/alert is on top of it.
+			fmt.Fprintf(os.Stderr, "warning: react to %s: %v\n", change.Path, err)
+		}
 	}
 
 	if err := log.Log("watch", "pass", map[string]any{

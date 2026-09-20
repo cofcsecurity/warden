@@ -112,6 +112,31 @@ warden disarm   # turn auto-restore back off, e.g. ahead of a planned maintenanc
 
 `arm` takes a fresh config-tier snapshot immediately before flipping the switch, so whatever's on disk at that moment — not a stale pre-hardening snapshot — becomes the enforced baseline. Both log to `audit.log`; `status` (below) reports the current armed state.
 
+### `warden accept <path> <totp-code>`
+
+The sanctioned way to land one deliberate change to a single watched path — say, a real hardening edit to `sshd_config` — without it perpetually flagging (`ConfirmFirst`) or getting reverted next tick (`SafeAutoRestore`, once armed), and without a blanket `warden snapshot`, which re-baselines *every* watched path and would silently swallow any other real, unrelated drift along with the one you meant to accept.
+
+```
+warden accept /etc/ssh/sshd_config 123456
+# accepted: its current content is now known-good for /etc/ssh/sshd_config (generation 7)
+```
+
+Requires the current TOTP code, the same second factor `restore`/`shell` require over opmenu — reaching a shell at all already implied that check passed once, but a second one here means a change can't be quietly laundered into "known good" by whatever got the shell in the first place.
+
+### `warden ban <ip>` / `warden unban <ip>` / `warden alerts`
+
+See DESIGN.md's "Active Response" section for the full design and the "double check it isn't blue" attribution logic behind this. In short: when a `ConfirmFirst` path changes, Warden tries to identify which IP had a root SSH session open at that moment (parsing sshd's own auth log — never `last`/`who`), and — **only if `AUTOBAN_ENABLED` was set at build time**, and only if that IP is neither the team's own (`TEAM_FROM_IP`) nor ambiguous — bans it at the firewall for an hour. Every reaction is logged whether or not a ban happened.
+
+```
+warden ban 198.51.100.6 --reason "manual, saw it in the logs"   # --duration to override the default 1h
+warden unban 198.51.100.6                                       # lift a ban immediately, e.g. a false positive
+warden alerts                                                   # tail react's alert/ban entries, this shell only
+```
+
+`ban`/`unban`/`alerts` are plain CLI commands, not opmenu whitelist entries — reach them via `opmenu shell` like any other maintenance command. `alerts` is deliberately pull-based rather than a system-wide broadcast (`wall`): a broadcast would just as readily reach a shell red team has on the box through some other route, telling them they've been noticed. Run it in its own sidecar session over `opmenu shell` if you want a live feed.
+
+`sentinel-check` re-applies every still-active ban's firewall rule on each pass (in case it was flushed) and lifts anything past its expiry — see DESIGN.md.
+
 ### `warden sentinel-check`
 
 Verifies three things sentinel is responsible for keeping alive, and recreates whichever is missing: the `authorized_keys` forced-command entry, its own systemd timer (service file, timer file, and the `timers.target.wants` enabled symlink), and its own cron entry. Every check reads the relevant file directly — never `systemctl status` or `crontab -l` — since either could be lying if red team has altered them.
@@ -162,13 +187,14 @@ ssh -i <team private key> root@<box>
 {"time":"2026-09-20T17:47:41Z","component":"watch","action":"auto-restored","fields":{"kind":"modified","path":"/etc/nginx/nginx.conf"}}
 ```
 
-`component` is which part of Warden logged it (`snapshot`, `watch`, `restore`, `replicate`, `sentinel`, `opmenu`, `arm`); `fields` is action-specific detail. This file, kept current, is the team's evidence of exactly what Warden did if a judge asks — see DESIGN.md's Rules of Engagement note.
+`component` is which part of Warden logged it (`snapshot`, `watch`, `restore`, `replicate`, `sentinel`, `opmenu`, `arm`, `accept`, `react`); `fields` is action-specific detail. This file, kept current, is the team's evidence of exactly what Warden did if a judge asks — see DESIGN.md's Rules of Engagement note.
 
 ## Known limitations
 
 - `restore` only operates on the config tier — there's no CLI path to restore an individual data-tier file today. `retrieve` does cover both tiers.
 - `configTierPaths`/`dataTierPaths`/`classifyPath`/`serviceForPath` in `cmd/warden/config.go` ship with a broad multi-distro default (see `warden detect`), not this season's actual scored image — see `docs/PLAN.md` Phase 1.
 - `detect` only recognizes the services in `internal/detect.KnownServices`; a scored service outside that list won't show up and needs adding to `configTierPaths` by hand.
-- Warden has no active-response capability — it never blocks an IP, kills a process, or takes any action against red team. It's purely defensive; see `docs/EXPLAINER.md`'s "What Warden deliberately does NOT do".
+- Active response (auto-ban) requires a plaintext sshd auth log (`/var/log/auth.log` or `/var/log/secure`). A box running journald with no rsyslog and neither file present has no attribution evidence to work from — auto-ban simply never fires (the change still gets flagged, just never banned); confirm which logging setup the target image actually has before relying on this.
+- Auto-ban never touches red team's own infrastructure and never blocks an IP the team's own key was using — it's purely defensive, the same as fail2ban. See `docs/DESIGN.md`'s "Active Response" section and `docs/EXPLAINER.md`'s "What Warden deliberately does NOT do".
 
 See `docs/PLAN.md` for the full phased build history and what's still open.

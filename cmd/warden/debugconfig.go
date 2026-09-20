@@ -23,6 +23,7 @@ func debugConfigCmd() *cobra.Command {
 			fmt.Printf("team_from_ip:         %s\n", orNotSet(buildTeamFromIP))
 			fmt.Printf("totp_secret_set:      %v\n", buildTOTPSecret != "")
 			fmt.Printf("replicate_key_set:    %v\n", buildReplicateKey != "")
+			fmt.Printf("autoban_enabled:      %v\n", buildAutobanEnabled != "")
 			fmt.Println("replicate_targets:")
 			targets := parseReplicateTargets(buildReplicateTargets)
 			if len(targets) == 0 {
