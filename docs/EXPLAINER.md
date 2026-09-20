@@ -121,8 +121,7 @@ evidence is genuinely clear:
 Every one of those outcomes — banned or not — gets written to the audit
 log and to `warden alerts`, described next. This is opt-in at build time
 (`AUTOBAN_ENABLED`) and off by default, the same way replication targets
-are: confirm with your organizers that actively firewalling an IP is
-allowed under this competition's rules before turning it on.
+are.
 
 If your team does need to make a deliberate change to one of these
 sensitive files — a real hardening edit, not an attack — `warden accept
@@ -217,9 +216,7 @@ assume incorrectly:
   reaching *your own* box — the same thing fail2ban does. It never touches
   red team's own infrastructure, and never does anything more aggressive
   than that. "Survives an attack" here means resilience (and, optionally,
-  a locked door), not retaliation — partly because most competitions'
-  rules of engagement don't allow offensive action against red team even
-  once you can identify them.
+  a locked door), not retaliation.
 - **It does not scrub evidence or hide what it did.** Every single action —
   a restore, a flagged file, a rejected login attempt — gets written to a
   log file your team can show a judge if asked. Trying to look invisible by
@@ -227,10 +224,8 @@ assume incorrectly:
   breaking in, which is its own way to lose points.
 - **It does not set itself up correctly for your specific competition.**
   Someone on the team still has to decide, ahead of time, which files matter
-  enough to watch and back up, generate the one-time secrets, and confirm
-  with organizers that this kind of tool is even allowed under that
-  competition's rules. None of that happens automatically — see
-  [DEPLOYMENT.md](DEPLOYMENT.md).
+  enough to watch and back up, and generate the one-time secrets. None of
+  that happens automatically — see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 One more thing worth knowing up front: getting Warden onto a box normally means building it on a machine your team controls (usually someone's own laptop) and only transferring the finished file — that machine never needs to touch the competition network at all. If your team genuinely doesn't have a machine like that available (some events only issue a locked-down laptop), there's a second path that builds and installs directly on the box itself in one step; see [DEPLOYMENT.md](DEPLOYMENT.md)'s "Alternative: build directly on the target box" if that's your situation.
 

@@ -199,9 +199,7 @@ collect_config() {
 
 	AUTOBAN_ENABLED="${AUTOBAN_ENABLED:-}"
 	if [[ -z "$AUTOBAN_ENABLED" ]]; then
-		echo "    Auto-ban (docs/DESIGN.md's 'Active Response') actively firewalls an attacker IP —"
-		echo "    only enable this after confirming with organizers it's allowed under this"
-		echo "    competition's rules of engagement."
+		echo "    Auto-ban (docs/DESIGN.md's 'Active Response') actively firewalls an attacker IP."
 		read -r -p "    Enable it? [y/N] " ans
 		[[ "$ans" == "y" || "$ans" == "Y" ]] && AUTOBAN_ENABLED=1
 	fi
@@ -255,24 +253,23 @@ main() {
 	step_cleanup_repo
 }
 
-# When this script (or bootstrap.sh, which execs into it) is run as
-# `curl ... | sudo bash`, stdin is the pipe carrying the script's own
-# source, not the terminal — every `read` above would otherwise hit EOF
-# immediately, which combined with `set -e` kills the whole thing
-# silently on the very first prompt. Redirecting fd 0 any earlier than
-# this is actively wrong, not just unnecessary: bash is still reading
-# its own not-yet-executed script text from that same fd 0 at that
-# point (there's no separate script file when piped), so redirecting it
-# mid-script makes bash try to read the *rest of the script* from the
-# terminal too — which looks exactly like a hang, and turns the next
-# keystroke into a shell command instead of an answer to a prompt. By
-# the time this line runs, the entire script above (every function body)
-# has already been fully parsed into memory, so it's safe here. The fd-3
-# probe never touches fd 0, so it's safe at any point — used only to
-# decide whether to redirect at all: `ssh box 'cmd'` without -t (the
-# primary path's own documented invocation) forwards a live stdin stream
-# over the SSH channel and already works fine without this, but likely
-# has no controlling terminal for /dev/tty to attach to.
+# The real fix for stdin under `curl ... | sudo bash` is at the call site
+# (docs/DEPLOYMENT.md and bootstrap.sh both use `bash -c "$(curl ...)"`,
+# not a pipe into bash — that way bash never reads its own script from
+# stdin in the first place, so stdin is never touched and this whole
+# problem doesn't arise). What follows is a secondary safety net, not the
+# primary fix, for any other invocation that still pipes into bash: the
+# fd-3 probe never touches fd 0, so it's safe at any point, and only
+# decides whether to redirect fd 0 to /dev/tty for main's own call —
+# after every function body above has already been fully parsed, which
+# matters if this ever is piped (redirecting fd 0 any earlier, while bash
+# is still reading its own not-yet-executed script from that same fd,
+# makes bash try to read the rest of its own script from the terminal
+# too). `ssh box 'cmd'` without -t (the primary path's own documented
+# invocation) forwards a live stdin stream over the SSH channel and
+# already works fine without this, but likely has no controlling
+# terminal for /dev/tty to attach to — the probe falls through to
+# unredirected main() there instead of failing.
 if exec 3</dev/tty 2>/dev/null; then
 	exec 3<&-
 	main "$@" < /dev/tty

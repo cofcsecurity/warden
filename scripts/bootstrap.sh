@@ -3,7 +3,15 @@
 # repository onto the box it's run on, then hands off to
 # scripts/build-and-install.sh. Meant to be run as:
 #
-#   curl -fsSL <raw-url-to-this-file> | sudo bash
+#   sudo bash -c "$(curl -fsSL <raw-url-to-this-file>)"
+#
+# Use exactly that form, not `curl ... | sudo bash`. Piping into bash
+# makes bash read its own script from stdin — which then also has to
+# serve the interactive prompts this script and build-and-install.sh
+# both need, and the two conflict (bash tries to read the rest of its own
+# script from the terminal too). `bash -c "$(curl ...)"` fetches the
+# script into a string first and passes it as an argument instead, so
+# stdin is never touched.
 #
 # Needs this box to reach wherever the repo is hosted. If the repo is
 # private, that means git credentials (a deploy key or token) already
@@ -19,7 +27,7 @@ REPO_URL="${REPO_URL:-https://github.com/cofcsecurity/warden.git}"
 REPO_TARBALL_URL="${REPO_TARBALL_URL:-https://github.com/cofcsecurity/warden/archive/refs/heads/main.tar.gz}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
-	echo "bootstrap.sh: must run as root (e.g. 'curl ... | sudo bash')" >&2
+	echo "bootstrap.sh: must run as root (e.g. 'sudo bash -c \"\$(curl -fsSL ...)\"')" >&2
 	exit 1
 fi
 

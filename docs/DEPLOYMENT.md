@@ -9,8 +9,7 @@ The step-by-step version of `docs/PLAN.md`'s Phase 5. Two phases: **Part A**, on
 Section numbers below match the headers exactly. Skip to any of them for full detail.
 
 **Part A — once per competition, build machine only:**
-- **Step 0** — [confirm rules of engagement](#0-rules-of-engagement-do-this-first-not-last) with organizers, before anything else.
-- **Step 0.5, 1, 2** — [decide what to watch without fighting the scoring engine](#05-dont-let-warden-fight-the-scoring-engine), [generate secrets](#1-generate-per-competition-secrets) (`generate-keys.sh`), [plan replication topology](#2-replication-topology) if defending multiple boxes.
+- **Step 0, 1, 2** — [decide what to watch without fighting the scoring engine](#0-dont-let-warden-fight-the-scoring-engine), [generate secrets](#1-generate-per-competition-secrets) (`generate-keys.sh`), [plan replication topology](#2-replication-topology) if defending multiple boxes.
 - **Step 3** — [build](#3-build) one binary per box (`make build`), and verify it with `debug-config` before trusting it. *(No build machine? See [the alternative](#alternative-build-directly-on-the-target-box) instead.)*
 
 **Part B — once per box:**
@@ -19,11 +18,7 @@ Section numbers below match the headers exactly. Skip to any of them for full de
 - **Step 6.5** — [harden the box, then arm it](#65-harden-then-arm) (`warden detect` → harden → `warden arm`). **The box is unprotected against config drift until this step — a fresh install is not the same as a defended box.**
 - **Step 7, 8** — keep [recovery](#7-recovery-pulling-a-boxs-own-backups-back) in mind for if a box gets wiped later, and repeat steps 3–6.5 [per box](#8-repeat-per-box).
 
-## 0. Rules of engagement (do this first, not last)
-
-Confirm with organizers/advisors that a forced-command SSH channel with auto-revert is permitted under this competition's rules. See [DESIGN.md](DESIGN.md)'s "Rules of Engagement Note". If it's ambiguous, ask before the competition starts. Don't let "the code is ready" substitute for this.
-
-## 0.5. Don't let Warden fight the scoring engine
+## 0. Don't let Warden fight the scoring engine
 
 Before filling in `cmd/warden/config.go`'s watch list (Phase 1 of `docs/PLAN.md`), identify every account and credential the scoring engine itself uses to check the box — including its own SSH access. Never classify one of those as `SafeAutoRestore`: if the scoring engine rotates its own key or password and `watch` reverts it back to a stale snapshot, that's Warden causing a scoring outage that looks exactly like red team did it. If it needs watching at all, use `ConfirmFirst` (flag, never auto-revert) — see the warning comment above `configTierPaths` in `config.go`. This also means: don't add the scoring engine's own login path to `configTierPaths` at all unless there's a real reason to — watching something you never intend to act on just adds noise.
 
@@ -120,7 +115,7 @@ Repeat once per box, substituting that box's own two neighbors, its own `secrets
 
 If there's no realistic second box this season at all, `REPLICATE_TARGETS` can instead be a single `file:///path||` entry (empty host key) pointing at removable media — see `docs/PLAN.md` Phase 2.
 
-Add `AUTOBAN_ENABLED=1` to the same `make build` invocation only after confirming with organizers that auto-banning an attacker's IP is allowed under this competition's rules of engagement — see `docs/DESIGN.md`'s "Active Response" section. It's off (unset) by default; leaving it off still gets you the flagging and `warden alerts` visibility, just not the automatic firewall block.
+Add `AUTOBAN_ENABLED=1` to the same `make build` invocation to enable auto-banning an attacker's IP — see `docs/DESIGN.md`'s "Active Response" section. It's off (unset) by default; leaving it off still gets you the flagging and `warden alerts` visibility, just not the automatic firewall block.
 
 Produces `bin/warden` — a stripped, static binary with everything above baked in. Verify it actually captured the right values before going further, on a native build since `bin/warden` is cross-compiled for the target's `linux/amd64` and won't run here:
 
@@ -133,7 +128,7 @@ GOOS=$(go env GOHOSTOS) GOARCH=$(go env GOHOSTARCH) make build TEAM_PUBKEY=... T
 
 ## Alternative: build directly on the target box
 
-For events with no separate build machine (e.g. PCDC-style, a locked-down provided laptop with no permission to install a toolchain). `scripts/build-and-install.sh` builds Warden directly on the box being defended and installs it in the same run — **replacing steps 3 through 5 below entirely.** Steps 0, 0.5, 6, 6.5, 7, and 8 still apply as written; come back to step 6 once this is done.
+For events with no separate build machine (e.g. PCDC-style, a locked-down provided laptop with no permission to install a toolchain). `scripts/build-and-install.sh` builds Warden directly on the box being defended and installs it in the same run — **replacing steps 3 through 5 below entirely.** Steps 0, 6, 6.5, 7, and 8 still apply as written; come back to step 6 once this is done.
 
 Read the tradeoff at the top of that script's own comments first: per-competition secrets get passed to `go build` as command-line flags, so they're briefly visible in this box's own process list (`ps`) while the build runs. Do this as early as possible in the box's clean-first window (the script asks you to confirm that, same as `install.sh`).
 
@@ -186,10 +181,10 @@ mkdir ~/build && tar xzf build.tar.gz -C ~/build --strip-components=1
 Combines fetching the repo and running `build-and-install.sh` into one command, if the box can reach GitHub directly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cofcsecurity/warden/main/scripts/bootstrap.sh | sudo bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/cofcsecurity/warden/main/scripts/bootstrap.sh)"
 ```
 
-Same requirements as option B (needs `git`, `curl`, or `wget` on the box, and — if the repo is private — credentials already configured there). Skips straight to step 2 below; there's no separate directory to `cd` into first.
+**Use this exact form, not `curl ... | sudo bash`.** Piping into bash makes bash read its own script *from stdin* — which then also has to serve every interactive prompt further down, and the two conflict. `bash -c "$(curl ...)"` fetches the script into a string first and hands it to bash as an argument instead, so stdin is never touched and stays attached to your actual terminal the whole time. Same requirements as option B (needs `git`, `curl`, or `wget` on the box, and — if the repo is private — credentials already configured there). Skips straight to step 2 below; there's no separate directory to `cd` into first.
 
 ### Step 2: run it
 
@@ -261,4 +256,4 @@ The peer URL must be one of the box's own configured `REPLICATE_TARGETS` entries
 
 ## 8. Repeat per box
 
-Each box gets its own install, its own replication keypair, and (per the ring topology above) its own pair of `REPLICATE_TARGETS` entries; only the team's login key and RoE confirmation are shared across all of them.
+Each box gets its own install, its own replication keypair, and (per the ring topology above) its own pair of `REPLICATE_TARGETS` entries; only the team's login key is shared across all of them.

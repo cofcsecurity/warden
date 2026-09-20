@@ -35,11 +35,10 @@ var (
 	// buildAutobanEnabled gates watch's auto-ban reaction (see react.go)
 	// behind an explicit opt-in, the same way REPLICATE_TARGETS gates
 	// replication — off (empty) unless a build deliberately sets it,
-	// since firewalling an IP is a more assertive defensive posture some
-	// competitions' rules of engagement may want confirmed first (see
-	// docs/DESIGN.md's Rules of Engagement Note). Any non-empty value
-	// turns it on; attribution still always runs and always logs/flags
-	// regardless of this flag — only the actual ban is gated.
+	// since firewalling an IP is a more assertive defensive posture than
+	// the rest of Warden. Any non-empty value turns it on; attribution
+	// still always runs and always logs/flags regardless of this flag —
+	// only the actual ban is gated.
 	buildAutobanEnabled string
 )
 

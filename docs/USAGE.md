@@ -204,7 +204,7 @@ ssh -i <team private key> <opmenu-user>@<box>
 {"time":"2026-09-20T17:47:41Z","component":"watch","action":"auto-restored","fields":{"kind":"modified","path":"/etc/nginx/nginx.conf"}}
 ```
 
-`component` is which part of Warden logged it (`snapshot`, `watch`, `restore`, `replicate`, `sentinel`, `opmenu`, `arm`, `accept`, `react`); `fields` is action-specific detail. This file, kept current, is the team's evidence of exactly what Warden did if a judge asks — see DESIGN.md's Rules of Engagement note.
+`component` is which part of Warden logged it (`snapshot`, `watch`, `restore`, `replicate`, `sentinel`, `opmenu`, `arm`, `accept`, `react`); `fields` is action-specific detail. This file, kept current, is the team's evidence of exactly what Warden did if a judge asks.
 
 ## Known limitations
 

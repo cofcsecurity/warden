@@ -20,16 +20,6 @@ Core constraints:
 4. Team-only: access is restricted to the defense team's key and source IP, not a general-purpose backdoor.
 5. Auditable: every action Warden takes is logged, so the team can show exactly what it did if questioned.
 
-## Rules of Engagement Note
-
-Confirm this is allowed before deploying any of it. SECCDC, PCDC, and CCDC events generally have rules about what defensive tooling is permitted, and a hidden, self-reviving, forced-command SSH channel can look identical to a red-team implant if white team finds it and the team can't immediately explain it.
-
-Before deployment:
-
-1. Check the competition's rules of engagement for language on persistence mechanisms, backdoors, or non-standard access methods.
-2. If anything here is ambiguous, ask an organizer or advisor before the competition starts, not during it.
-3. Keep the audit log described throughout these notes current at all times, since it is the team's evidence if a judge asks what Warden did and why.
-
 ## Architecture Decision: Separate Binary
 
 Warden ships as its own compiled binary, kept separate from any other tooling the team runs on the box (enumeration scripts, monitoring agents, and the like).
@@ -159,7 +149,7 @@ Design steps:
 
 ## Component: Active Response (opt-in)
 
-Purpose: react to a guarded (ConfirmFirst) path changing by identifying and firewalling the responsible IP, instead of only flagging it for a human to notice later. Still purely defensive — it blocks an IP from reaching *this* box, the same as fail2ban; it never touches red team's own infrastructure, which would be a materially different (and, under most competitions' rules, likely disallowed) kind of action. See "Rules of Engagement Note" above — this component specifically should be confirmed as allowed before enabling it, since actively firewalling a source IP is a more assertive posture than the rest of Warden's designed-to-be-inert persistence and backup mechanisms.
+Purpose: react to a guarded (ConfirmFirst) path changing by identifying and firewalling the responsible IP, instead of only flagging it for a human to notice later. Still purely defensive — it blocks an IP from reaching *this* box, the same as fail2ban; it never touches red team's own infrastructure, which would be a materially different kind of action. This component is a more assertive posture than the rest of Warden's designed-to-be-inert persistence and backup mechanisms, which is why it stays opt-in.
 
 The hard problem this component exists to solve carefully: `watch` only knows a file's *content* changed, never *who* changed it. Getting attribution wrong is worse than doing nothing — banning the scoring engine's own checker, or a teammate on an unlisted connection, is a self-inflicted outage that looks exactly like red team caused it (the same failure mode `docs/DEPLOYMENT.md`'s "Don't let Warden fight the scoring engine" note already warns about for auto-restore). So the design leans hard toward "no evidence → no ban":
 
@@ -231,7 +221,7 @@ One script, run once, does the entire setup:
 
 ### Footprint and Evidence Policy
 
-Direct answer to whether this auto-deletes evidence: no, not in the sense of scrubbing shell history or logs. Wholesale history wiping is itself a red flag. An empty or truncated `.bash_history` right after the setup window looks exactly like what red team does after gaining access, and white team can't tell "blue team cleaned up after themselves" from "attacker covered their tracks." That's a real way to get penalized for the same reason this whole system needs the rules-of-engagement check from earlier in these notes.
+Direct answer to whether this auto-deletes evidence: no, not in the sense of scrubbing shell history or logs. Wholesale history wiping is itself a red flag. An empty or truncated `.bash_history` right after the setup window looks exactly like what red team does after gaining access, and white team can't tell "blue team cleaned up after themselves" from "attacker covered their tracks." That's a real way to get penalized.
 
 The actual answer is to minimize footprint at the source rather than erase it afterward: one script, run once, referencing no external URLs, deleting only itself. Whatever command history the install leaves behind (the `scp`, the one script execution) should look like exactly what it is: a sysadmin pushing and running a setup script during a maintenance window, which is normal and doesn't need hiding.
 
