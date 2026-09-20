@@ -47,6 +47,24 @@ require_root() {
 	fi
 }
 
+# ask prints $1 as a prompt and reads a line into the variable named by
+# $2, always from the controlling terminal directly (/dev/tty) rather
+# than whatever fd 0 currently is — see scripts/build-and-install.sh's
+# identical helper for the full reasoning, including why the prompt is
+# printed separately with printf instead of via `read -p`. Falls back to
+# fd 0 if there's genuinely no controlling terminal (e.g. `ssh box 'cmd'`
+# without -t).
+ask() {
+	local prompt="$1" var="$2"
+	printf '%s' "$prompt"
+	if exec 3</dev/tty 2>/dev/null; then
+		read -r "$var" <&3
+		exec 3<&-
+	else
+		read -r "$var"
+	fi
+}
+
 # warn_if_already_installed catches the case where this script (or
 # scripts/build-and-install.sh) already ran on this box once: INSTALL_PATH
 # isn't remembered between runs, so a second run would otherwise just pick
@@ -65,7 +83,7 @@ warn_if_already_installed() {
 		echo "    (found ${dir}audit.log). Continuing installs a SEPARATE, second copy"
 		echo "    under a different name — it does not update or replace this one."
 		echo "    To check on the existing install instead: ssh <team key> ${name}@<box> status"
-		read -r -p "    Install a second copy anyway? [y/N] " ans
+		ask "    Install a second copy anyway? [y/N] " ans
 		[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting"; exit 1; }
 		return
 	done
@@ -172,7 +190,7 @@ resolve_install_path() {
 step_confirm_clean() {
 	echo "==> Confirm this box is clean before continuing."
 	echo "    Enumerate it for beacons, keyloggers, and altered binaries, and eliminate anything found first."
-	read -r -p "    Box confirmed clean? [y/N] " ans
+	ask "    Box confirmed clean? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting"; exit 1; }
 }
 
@@ -423,7 +441,7 @@ main() {
 
 	echo "==> Before deleting this script, verify the access layer works:"
 	echo "    ssh -i <team's own login private key, matching TEAM_PUBKEY above> ${OPMENU_USER}@127.0.0.1 status"
-	read -r -p "    Verified? [y/N] " ans
+	ask "    Verified? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "not deleting install.sh; re-run once verified"; exit 1; }
 
 	step_next_steps
@@ -431,16 +449,4 @@ main() {
 	step_self_delete
 }
 
-# See scripts/build-and-install.sh's identical block for the full reasoning:
-# redirecting fd 0 any earlier than this risks bash trying to read its own
-# not-yet-executed script text from the terminal instead of the pipe it
-# was actually invoked from, if this is ever piped directly rather than
-# run as a file (its documented invocations always run it as a file, where
-# this wouldn't actually be at risk, but there's no reason to depend on
-# that). The fd-3 probe never touches fd 0, so it's always safe.
-if exec 3</dev/tty 2>/dev/null; then
-	exec 3<&-
-	main "$@" < /dev/tty
-else
-	main "$@"
-fi
+main "$@"

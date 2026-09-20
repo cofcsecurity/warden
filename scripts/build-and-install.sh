@@ -56,11 +56,42 @@ require_root() {
 	fi
 }
 
+# ask prints $1 as a prompt and reads a line into the variable named by
+# $2, always from the controlling terminal directly (/dev/tty) rather
+# than whatever fd 0 currently is -- fd 0 can be all sorts of things
+# depending on how this script was invoked (piped into bash, a
+# command-substitution argument to bash -c, the SSH channel from a
+# remote command, ...), and at least one of those forms has repeatedly
+# proven unreliable for interactive input in live testing. /dev/tty
+# sidesteps all of that by talking directly to the terminal device.
+#
+# The prompt is printed with a plain printf, not `read -p`: bash only
+# ever displays a `read -p` prompt when the fd read() is consuming from
+# is itself a terminal, and silently swallows it otherwise. That
+# silent-swallow is exactly what every failed test showed — the prompt
+# text never appeared at all, in any invocation form, right before an
+# instant "aborting" with no visible question. Printing it ourselves to
+# stdout means it always shows, independent of what fd read() ends up
+# using.
+#
+# Falls back to fd 0 if there's genuinely no controlling terminal (e.g.
+# `ssh box 'cmd'` without -t).
+ask() {
+	local prompt="$1" var="$2"
+	printf '%s' "$prompt"
+	if exec 3</dev/tty 2>/dev/null; then
+		read -r "$var" <&3
+		exec 3<&-
+	else
+		read -r "$var"
+	fi
+}
+
 step_confirm_clean() {
 	echo "==> Confirm this box is clean before continuing."
 	echo "    Enumerate it for beacons, keyloggers, and altered binaries, and eliminate anything found first."
 	echo "    (install.sh will ask this again in a moment — that's its own gate, not a bug.)"
-	read -r -p "    Box confirmed clean? [y/N] " ans
+	ask "    Box confirmed clean? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting"; exit 1; }
 }
 
@@ -97,7 +128,7 @@ ensure_go() {
 	fi
 
 	url="https://go.dev/dl/go${version}.linux-${arch}.tar.gz"
-	read -r -p "    Download and install Go ${version} from go.dev now? [y/N] " ans
+	ask "    Download and install Go ${version} from go.dev now? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting — install a Go toolchain yourself, or use the normal build-elsewhere path"; exit 1; }
 
 	tmp="$(mktemp -d)"
@@ -126,7 +157,7 @@ prompt_if_unset() {
 	# required either way.
 	local var="$1" label="$2"
 	if [[ -z "${!var:-}" ]]; then
-		read -r -p "$label: " "$var"
+		ask "$label: " "$var"
 	fi
 }
 
@@ -148,7 +179,7 @@ collect_config() {
 
 	TOTP_SECRET="${TOTP_SECRET:-}"
 	if [[ -z "$TOTP_SECRET" ]]; then
-		read -r -p "Generate a fresh TOTP seed right here now? [Y/n] " ans
+		ask "Generate a fresh TOTP seed right here now? [Y/n] " ans
 		if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
 			if ! command -v python3 >/dev/null; then
 				echo "build-and-install.sh: needs python3 to generate a TOTP seed (or set TOTP_SECRET yourself)" >&2
@@ -173,10 +204,10 @@ collect_config() {
 		echo "         see docs/DEPLOYMENT.md's 'Replication topology'."
 		echo "      3. A mounted USB drive / removable media on this box — no keypair needed"
 		echo "         at all, just a local path."
-		read -r -p "    Choice [1/2/3, default 1]: " choice
+		ask "    Choice [1/2/3, default 1]: " choice
 		case "$choice" in
 		2)
-			read -r -p "    REPLICATE_TARGETS (\"<url>||<hostkey>\" pairs, ';;'-separated): " REPLICATE_TARGETS
+			ask "    REPLICATE_TARGETS (\"<url>||<hostkey>\" pairs, ';;'-separated): " REPLICATE_TARGETS
 			if [[ -n "$REPLICATE_TARGETS" ]]; then
 				if [[ -z "$REPLICATE_KEY" && ! -f secrets/replicate_key ]]; then
 					./scripts/generate-keys.sh >/dev/null
@@ -188,7 +219,7 @@ collect_config() {
 			fi
 			;;
 		3)
-			read -r -p "    Path to the mounted media (e.g. /mnt/usb): " media_path
+			ask "    Path to the mounted media (e.g. /mnt/usb): " media_path
 			[[ -n "$media_path" ]] && REPLICATE_TARGETS="file://${media_path}||"
 			;;
 		*)
@@ -200,7 +231,7 @@ collect_config() {
 	AUTOBAN_ENABLED="${AUTOBAN_ENABLED:-}"
 	if [[ -z "$AUTOBAN_ENABLED" ]]; then
 		echo "    Auto-ban (docs/DESIGN.md's 'Active Response') actively firewalls an attacker IP."
-		read -r -p "    Enable it? [y/N] " ans
+		ask "    Enable it? [y/N] " ans
 		[[ "$ans" == "y" || "$ans" == "Y" ]] && AUTOBAN_ENABLED=1
 	fi
 }
@@ -253,26 +284,4 @@ main() {
 	step_cleanup_repo
 }
 
-# The real fix for stdin under `curl ... | sudo bash` is at the call site
-# (docs/DEPLOYMENT.md and bootstrap.sh both use `bash -c "$(curl ...)"`,
-# not a pipe into bash — that way bash never reads its own script from
-# stdin in the first place, so stdin is never touched and this whole
-# problem doesn't arise). What follows is a secondary safety net, not the
-# primary fix, for any other invocation that still pipes into bash: the
-# fd-3 probe never touches fd 0, so it's safe at any point, and only
-# decides whether to redirect fd 0 to /dev/tty for main's own call —
-# after every function body above has already been fully parsed, which
-# matters if this ever is piped (redirecting fd 0 any earlier, while bash
-# is still reading its own not-yet-executed script from that same fd,
-# makes bash try to read the rest of its own script from the terminal
-# too). `ssh box 'cmd'` without -t (the primary path's own documented
-# invocation) forwards a live stdin stream over the SSH channel and
-# already works fine without this, but likely has no controlling
-# terminal for /dev/tty to attach to — the probe falls through to
-# unredirected main() there instead of failing.
-if exec 3</dev/tty 2>/dev/null; then
-	exec 3<&-
-	main "$@" < /dev/tty
-else
-	main "$@"
-fi
+main "$@"

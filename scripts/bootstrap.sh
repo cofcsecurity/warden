@@ -5,13 +5,16 @@
 #
 #   sudo bash -c "$(curl -fsSL <raw-url-to-this-file>)"
 #
-# Use exactly that form, not `curl ... | sudo bash`. Piping into bash
-# makes bash read its own script from stdin — which then also has to
-# serve the interactive prompts this script and build-and-install.sh
-# both need, and the two conflict (bash tries to read the rest of its own
-# script from the terminal too). `bash -c "$(curl ...)"` fetches the
-# script into a string first and passes it as an argument instead, so
-# stdin is never touched.
+# Prefer that form over `curl ... | sudo bash`: piping into bash makes
+# bash read its own script from stdin, which is a real hazard in general
+# (a script that redirects fd 0 mid-execution can end up racing its own
+# not-yet-executed source). It turned out not to be why the interactive
+# prompts further down this chain were failing, though — that was
+# `read -p` silently swallowing its own prompt text whenever the fd it
+# reads from isn't a terminal (see build-and-install.sh's `ask` helper).
+# Both scripts read every prompt from /dev/tty directly now, so either
+# invocation form works; `bash -c` is still the one documented here since
+# it avoids the stdin-racing hazard too, for free.
 #
 # Needs this box to reach wherever the repo is hosted. If the repo is
 # private, that means git credentials (a deploy key or token) already
