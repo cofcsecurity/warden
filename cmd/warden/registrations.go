@@ -78,9 +78,9 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 		},
 		{
 			Name:  "cron-entry",
-			Check: func() (bool, error) { return checkCronEntryFile(cronSpoolPath, cronMarker(unitName)) },
+			Check: func() (bool, error) { return checkCronEntryFile(cronSpoolPath(), cronMarker(unitName)) },
 			Recreate: func() error {
-				return recreateCronEntryFile(cronSpoolPath, cronMarker(unitName), cronLine(unitName, path))
+				return recreateCronEntryFile(cronSpoolPath(), cronMarker(unitName), cronLine(unitName, path))
 			},
 		},
 		{

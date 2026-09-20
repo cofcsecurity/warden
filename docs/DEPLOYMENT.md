@@ -75,10 +75,12 @@ Generate a **distinct** replication keypair per box, not one shared team-wide ke
 On **every** box, before building anything, create a dedicated low-privilege account that only exists to receive backups — never the team's login account, never root:
 
 ```
-useradd -m -s /usr/sbin/nologin warden-backup
+useradd -m -s "$(command -v nologin || echo /usr/sbin/nologin)" warden-backup
 mkdir -p /home/warden-backup/.ssh
 chmod 700 /home/warden-backup/.ssh
 ```
+
+(`/usr/sbin/nologin` covers most current Debian- and RHEL-family boxes; the `command -v nologin` check is only there for the rare older or minimal image where it lives somewhere else.)
 
 Then append **both neighbors'** `secrets/<box>/replicate_key.pub` to that account's `authorized_keys` (one line each) and lock each down the same way as any other automated key:
 
@@ -129,6 +131,8 @@ For events with no separate build machine (e.g. PCDC-style, a locked-down provid
 
 Read the tradeoff at the top of that script's own comments first: per-competition secrets get passed to `go build` as command-line flags, so they're briefly visible in this box's own process list (`ps`) while the build runs. Do this as early as possible in the box's clean-first window (the script asks you to confirm that, same as `install.sh`).
 
+No Go toolchain on the box either? `build-and-install.sh` offers to download the official release from go.dev and install it to `/usr/local/go` — needs this box to reach go.dev over HTTPS. It never tries a distro package (names for Go vary by distro and are often outdated, e.g. Debian/Ubuntu call it `golang-go`, not `go`).
+
 ### Step 1: get the source code onto the box
 
 This needs the whole repository on the target box, not just the finished binary.
@@ -170,6 +174,16 @@ tar czf build.tar.gz --exclude=.git -C . warden
 # copy build.tar.gz to a USB drive, plug it into the box's console, then on the box:
 mkdir ~/build && tar xzf build.tar.gz -C ~/build --strip-components=1
 ```
+
+**D. One-line setup (`scripts/bootstrap.sh`)**
+
+Combines fetching the repo and running `build-and-install.sh` into one command, if the box can reach GitHub directly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cofcsecurity/warden/main/scripts/bootstrap.sh | sudo bash
+```
+
+Same requirements as option B (needs `git`, `curl`, or `wget` on the box, and — if the repo is private — credentials already configured there). Skips straight to step 2 below; there's no separate directory to `cd` into first.
 
 ### Step 2: run it
 

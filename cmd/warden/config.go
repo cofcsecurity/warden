@@ -13,19 +13,14 @@ import (
 // see docs/DESIGN.md's "Configuration" section for why these stay fixed
 // rather than becoming a discoverable config file.
 const (
-	// systemdUnitDir and cronSpoolPath are what sentinel-check verifies
-	// and repairs. They match deploy/install.sh's defaults, not something
-	// baked in at build time, since they're paths on the box rather than
-	// per-competition secrets. authorizedKeysPath used to live here too,
-	// back when it was the fixed /root/.ssh/authorized_keys — it's now a
-	// function below, since it depends on the disguised binary name (see
-	// units.go's opmenuUser).
+	// systemdUnitDir is what sentinel-check verifies and repairs. Matches
+	// deploy/install.sh's default, not something baked in at build time,
+	// since it's a path on the box rather than a per-competition secret.
+	// authorizedKeysPath and cronSpoolPath used to live here too, back
+	// when they were fixed paths — both are now functions below, since
+	// they depend on the disguised binary name or the distro family.
 	systemdUnitDir        = "/etc/systemd/system"
 	systemdTimersWantsDir = systemdUnitDir + "/timers.target.wants"
-	// cronSpoolPath is Debian/Ubuntu's root crontab location. RHEL-family
-	// distros use /var/spool/cron/root instead — adjust for the target
-	// distro (see docs/PLAN.md Phase 1's config.go note).
-	cronSpoolPath = "/var/spool/cron/crontabs/root"
 
 	// retainGenerations bounds store.Prune's mark-and-sweep: objects
 	// referenced only by generations older than the last N are dropped.
@@ -76,6 +71,19 @@ func authorizedKeysPath() (string, error) {
 		return "", err
 	}
 	return opmenuUserHome(user) + "/.ssh/authorized_keys", nil
+}
+
+// cronSpoolPath auto-detects Debian/Ubuntu's crontab layout
+// (/var/spool/cron/crontabs/, a directory of one file per user) versus
+// RHEL-family's (/var/spool/cron/, root's crontab directly in it) by
+// checking which directory actually exists, rather than assuming one and
+// leaving the other distro family silently broken — sentinel-check would
+// otherwise write a cron entry cron itself never reads.
+func cronSpoolPath() string {
+	if info, err := os.Stat("/var/spool/cron/crontabs"); err == nil && info.IsDir() {
+		return "/var/spool/cron/crontabs/root"
+	}
+	return "/var/spool/cron/root"
 }
 
 // paths is every fixed, per-box path for backup state (manifests, objects,

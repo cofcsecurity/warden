@@ -25,10 +25,12 @@
 #    has never touched. Run this as early as possible in the box's
 #    clean-first window (step_confirm_clean, below, still runs first,
 #    same as install.sh's own) to minimize who's in a position to see it.
-# 2. This needs a Go toolchain already on this box (go.mod's version or
-#    newer). If there isn't one and there's no way to get one (no
-#    internet, no local mirror, no package already staged), this path
-#    isn't available — fall back to docs/DEPLOYMENT.md's normal one.
+# 2. If there's no Go toolchain on this box, this offers to download the
+#    official upstream release from go.dev (not a distro package — those
+#    vary in name and are often outdated or absent) and install it to
+#    /usr/local/go. Needs this box to reach go.dev over HTTPS; if it
+#    can't, and there's no toolchain already staged some other way, this
+#    path isn't available — fall back to docs/DEPLOYMENT.md's normal one.
 # 3. Fully offline needs a pre-vendored module cache: run `make vendor`
 #    on any internet-connected machine first and bring the whole tree
 #    here (including the resulting vendor/ directory), or this script
@@ -62,19 +64,59 @@ step_confirm_clean() {
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting"; exit 1; }
 }
 
-require_go() {
-	if ! command -v go >/dev/null 2>&1; then
-		cat >&2 <<'EOF'
-build-and-install.sh: no `go` toolchain found on this box.
+# ensure_go finds a usable `go`, or offers to download the official
+# upstream tarball (go.dev, not a distro package — distro package names
+# for Go vary and are frequently outdated or absent, e.g. Debian/Ubuntu
+# ship it as `golang-go`, not `go`) and installs it to /usr/local/go. This
+# needs the box to reach go.dev over HTTPS; if it can't, there's no way
+# around needing a toolchain from somewhere — use the normal
+# build-elsewhere path instead (docs/DEPLOYMENT.md steps 1-5).
+ensure_go() {
+	if command -v go >/dev/null 2>&1; then
+		return
+	fi
 
-This path needs one here. If there's genuinely no way to get one (no
-internet, no local mirror, no package already staged), use the normal
-path instead: build on any other machine the team controls and transfer
-just the finished binary — see docs/DEPLOYMENT.md steps 1-5, and
-docs/DESIGN.md's "Build Location Contingency" for the full reasoning.
-EOF
+	echo "==> No Go toolchain found on this box."
+	local version arch url tmp
+	version="$(grep -E '^go [0-9]' go.mod | awk '{print $2}')"
+	if [[ -z "$version" ]]; then
+		echo "build-and-install.sh: couldn't read the required Go version from go.mod" >&2
 		exit 1
 	fi
+	case "$(uname -m)" in
+		x86_64) arch=amd64 ;;
+		aarch64) arch=arm64 ;;
+		*)
+			echo "build-and-install.sh: no auto-download for $(uname -m) — install Go manually or use the normal build-elsewhere path" >&2
+			exit 1
+			;;
+	esac
+	if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+		echo "build-and-install.sh: no curl or wget on this box to download Go — install one of them, install Go manually, or use the normal build-elsewhere path" >&2
+		exit 1
+	fi
+
+	url="https://go.dev/dl/go${version}.linux-${arch}.tar.gz"
+	read -r -p "    Download and install Go ${version} from go.dev now? [y/N] " ans
+	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting — install a Go toolchain yourself, or use the normal build-elsewhere path"; exit 1; }
+
+	tmp="$(mktemp -d)"
+	echo "==> Downloading ${url}"
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL "$url" -o "${tmp}/go.tar.gz"
+	else
+		wget -qO "${tmp}/go.tar.gz" "$url"
+	fi
+	rm -rf /usr/local/go
+	tar -C /usr/local -xzf "${tmp}/go.tar.gz"
+	rm -rf "$tmp"
+	export PATH="/usr/local/go/bin:${PATH}"
+
+	if ! command -v go >/dev/null 2>&1; then
+		echo "build-and-install.sh: installed Go to /usr/local/go but it's still not on PATH — add /usr/local/go/bin to PATH and re-run" >&2
+		exit 1
+	fi
+	echo "==> Go installed: $(go version)"
 }
 
 prompt_if_unset() {
@@ -92,11 +134,10 @@ collect_config() {
 	echo "==> Per-box configuration (set as env vars beforehand to skip these prompts)"
 	prompt_if_unset TEAM_PUBKEY "Team's login public key (e.g. 'ssh-ed25519 AAAA... team@ccdc')"
 	prompt_if_unset TEAM_FROM_IP "Team's source IP or CIDR opmenu will accept connections from"
+	# Left empty on purpose: install.sh auto-selects an unused,
+	# inconspicuous name itself (see its resolve_install_path) unless
+	# INSTALL_PATH is already set here.
 	INSTALL_PATH="${INSTALL_PATH:-}"
-	if [[ -z "$INSTALL_PATH" ]]; then
-		read -r -p "Install path, matching this box's naming conventions (default: /usr/local/sbin/svchelper): " INSTALL_PATH
-		INSTALL_PATH="${INSTALL_PATH:-/usr/local/sbin/svchelper}"
-	fi
 
 	TOTP_SECRET="${TOTP_SECRET:-}"
 	if [[ -z "$TOTP_SECRET" ]]; then
@@ -178,7 +219,7 @@ step_cleanup_repo() {
 
 main() {
 	require_root
-	require_go
+	ensure_go
 	step_confirm_clean
 	collect_config
 	build

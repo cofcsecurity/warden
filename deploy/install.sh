@@ -241,13 +241,26 @@ step_install_cron_entry() {
 	( { crontab -l 2>/dev/null | grep -vF "$marker" || true; }; echo "$line" ) | crontab -
 }
 
+# nologin_shell finds whatever this distro actually calls its no-login
+# shell — /usr/sbin/nologin covers most current Debian- and RHEL-family
+# boxes (usrmerge means /sbin/nologin is the same file), but older or
+# minimal images can differ, so check rather than assume.
+nologin_shell() {
+	local candidate
+	for candidate in /usr/sbin/nologin /sbin/nologin; do
+		[[ -x "$candidate" ]] && { echo "$candidate"; return; }
+	done
+	command -v nologin 2>/dev/null && return
+	echo "/bin/false"
+}
+
 step_create_opmenu_user() {
 	echo "==> Creating the dedicated account for the access layer ($OPMENU_USER)"
 	if id "$OPMENU_USER" >/dev/null 2>&1; then
 		echo "    $OPMENU_USER already exists — leaving it as-is"
 		return
 	fi
-	useradd -r -m -d "$OPMENU_USER_HOME" -s /usr/sbin/nologin "$OPMENU_USER"
+	useradd -r -m -d "$OPMENU_USER_HOME" -s "$(nologin_shell)" "$OPMENU_USER"
 }
 
 step_authorize_key() {
