@@ -52,7 +52,7 @@ Open `deploy/install.sh` and fill in the `CHANGE-ME` block: `INSTALL_PATH` (matc
 
 ## 5. Deploy to each box
 
-Once the box has been swept clean with `seer` (see `docs/DESIGN.md`'s "No Clean Window: Assume Compromise"):
+Once the box has been swept clean of any existing compromise (see `docs/DESIGN.md`'s "No Clean Window: Assume Compromise"):
 
 ```
 scp bin/warden deploy/install.sh -r deploy/systemd <box>:~/

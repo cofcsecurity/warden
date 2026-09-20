@@ -1,6 +1,6 @@
 # warden
 
-Persistence and backup/restore for a host under active attack, built for the CofC Cybersecurity Club's SECCDC/PCDC defense team. Companion tool to [seer](https://github.com/cofcsecurity/seer).
+Persistence and backup/restore for a host under active attack, built for the CofC Cybersecurity Club's SECCDC/PCDC defense team.
 
 Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, [docs/PLAN.md](docs/PLAN.md) for what's built versus what's left, phased, and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the step-by-step checklist to actually stand this up ahead of a competition.
 

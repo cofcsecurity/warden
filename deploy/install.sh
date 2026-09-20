@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One-shot deploy script for a single box. Run once, during the team's
-# setup window, after confirming with seer that the box is clean. See
-# docs/DESIGN.md ("Install Sequence", "Footprint and Evidence Policy") for
-# the reasoning behind each step.
+# setup window, after confirming the box is clean of any existing
+# compromise. See docs/DESIGN.md ("Install Sequence", "Footprint and
+# Evidence Policy") for the reasoning behind each step.
 #
 # This is a template: fill in the CHANGE-ME values for the target box
 # before running it, then delete it (step 8 does this automatically on
@@ -64,7 +64,7 @@ require_filled_in() {
 
 step_confirm_clean() {
 	echo "==> Confirm this box is clean before continuing."
-	echo "    Run seer against it and eliminate anything found first."
+	echo "    Enumerate it for beacons, keyloggers, and altered binaries, and eliminate anything found first."
 	read -r -p "    Box confirmed clean? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting"; exit 1; }
 }

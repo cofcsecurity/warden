@@ -1,5 +1,5 @@
-// Warden is a companion tool to seer: resilient, audited persistence and
-// automatic backup/restore for a host under active attack in a CCDC-style
+// Warden provides resilient, audited persistence and automatic
+// backup/restore for a host under active attack in a CCDC-style
 // competition. See docs/DESIGN.md for the full design.
 package main
 

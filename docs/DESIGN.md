@@ -6,7 +6,7 @@ Sep 20, 2026 · @Tyler
 
 ## Project Description
 
-Warden is a companion tool to seer, built as a separate Go binary for the CofC Cybersecurity Club's SECCDC/PCDC defense team. It provides two things: resilient, audited persistence back into a host red team is actively attacking, and automatic backup/restore for the configs and service data that keep a box scored. It works by piggybacking on services already running on the box and by continuously re-asserting known-good state, rather than by opening new listeners or holding a standing shell open.
+Warden is a Go binary built for the CofC Cybersecurity Club's SECCDC/PCDC defense team. It provides two things: resilient, audited persistence back into a host red team is actively attacking, and automatic backup/restore for the configs and service data that keep a box scored. It works by piggybacking on services already running on the box and by continuously re-asserting known-good state, rather than by opening new listeners or holding a standing shell open.
 
 ## Overview and Goals
 
@@ -32,11 +32,9 @@ Before deployment:
 
 ## Architecture Decision: Separate Binary
 
-Warden ships as its own compiled binary, separate from seer.
+Warden ships as its own compiled binary, kept separate from any other tooling the team runs on the box (enumeration scripts, monitoring agents, and the like).
 
-seer is a read-only enumeration tool, which makes it lower value if red team dumps or reverses it. The moment persistence and backup/restore capability gets bundled into that same binary, seer becomes the single highest-value target on the box: compromising it would hand over both recon and the team's own access channel.
-
-Warden and seer can still share code. Common logic (file hashing, the manifest format) lives in a small internal package that both import, but each compiles to a distinct binary with its own permissions and its own blast radius if reversed.
+A read-only enumeration tool is lower value if red team dumps or reverses it. The moment persistence and backup/restore capability gets bundled into that same binary, it becomes the single highest-value target on the box: compromising it would hand over both recon and the team's own access channel. Keeping Warden as its own binary, with its own permissions, means reversing it only ever exposes Warden's own blast radius — not whatever else the team happens to run alongside it.
 
 ## Language and Build Strategy
 
@@ -68,7 +66,7 @@ warden/
     install.sh                # one-shot deploy script, run once per box
 ```
 
-Conventions, matching seer: each `internal/` package exposes a constructor (`manifest.New(path string) (*Manifest, error)`), no package-level globals, no `init()`. Cobra subcommands in `cmd/warden` stay thin and call into these packages, so every piece is independently testable.
+Conventions: each `internal/` package exposes a constructor (`manifest.New(path string) (*Manifest, error)`), no package-level globals, no `init()`. Cobra subcommands in `cmd/warden` stay thin and call into these packages, so every piece is independently testable.
 
 Cobra subcommand surface:
 
@@ -196,7 +194,7 @@ Tradeoff worth naming: a value change (a new TOTP seed, say) requires a rebuild 
 
 One script, run once, does the entire setup:
 
-1. Confirm via seer that the box is clean of known beacons, keyloggers, and altered binaries. Assume compromise by default, not a clean starting point, and eliminate anything found before continuing.
+1. Confirm the box is clean of known beacons, keyloggers, and altered binaries. Assume compromise by default, not a clean starting point, and eliminate anything found before continuing.
 2. Place the binary at a path and name that match conventions already on that box (check what's there before choosing).
 3. Set restrictive permissions (0700, root-owned).
 4. Write the systemd timer and unit files for the watch loop and the sentinel pair, and the cron entry for the sentinel's second trigger.
