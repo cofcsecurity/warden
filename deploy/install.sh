@@ -44,6 +44,24 @@ require_root() {
 	fi
 }
 
+require_filled_in() {
+	local unfilled=()
+	for var in TEAM_PUBKEY TEAM_FROM_IP; do
+		if [[ "${!var}" == CHANGE-ME* ]]; then
+			unfilled+=("$var")
+		fi
+	done
+	if [[ ! -f "$WARDEN_BIN_SRC" ]]; then
+		echo "install.sh: WARDEN_BIN_SRC ($WARDEN_BIN_SRC) doesn't exist — build it first with 'make build'" >&2
+		exit 1
+	fi
+	if [[ ${#unfilled[@]} -gt 0 ]]; then
+		echo "install.sh: still has placeholder CHANGE-ME values for: ${unfilled[*]}" >&2
+		echo "            edit the per-box values at the top of this script before running it." >&2
+		exit 1
+	fi
+}
+
 step_confirm_clean() {
 	echo "==> Confirm this box is clean before continuing."
 	echo "    Run seer against it and eliminate anything found first."
@@ -133,6 +151,7 @@ step_self_delete() {
 
 main() {
 	require_root
+	require_filled_in
 	step_confirm_clean
 	step_place_binary
 	step_install_systemd_units

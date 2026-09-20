@@ -51,9 +51,12 @@ The most sensitive component; landed after Phases 1–2 so `status` and `restore
 
 ## Phase 5 — Deployment prep
 
-- Fill in `deploy/install.sh`'s `CHANGE-ME` values and confirm the naming (`svchelper` is a placeholder) actually blends in with whatever's already running on the target boxes.
-- Generate and securely distribute the TOTP seed and the team's replication-only SSH key ahead of time — neither belongs in this repo.
-- Rules of engagement check: confirm with organizers/advisors that a forced-command SSH channel with auto-revert is permitted before any of this touches a real box. Don't skip this because the code is ready.
+Most of what's left here is team decisions and one-time manual steps, not code — `docs/DEPLOYMENT.md` is the actionable checklist; this section just tracks what tooling now exists to support it.
+
+- `scripts/generate-keys.sh`: generates the replication-only SSH keypair and the TOTP seed into `secrets/` (added to `.gitignore`), and prints a ready-to-fill `make build` invocation. Verified its output round-trips through our own code (`ssh.ParsePrivateKey` on the base64'd key, `totp.Generate`/`Validate` on the seed) before trusting it.
+- `deploy/install.sh` now refuses to run (`require_filled_in`) if `TEAM_PUBKEY`/`TEAM_FROM_IP` are still `CHANGE-ME` placeholders or the binary hasn't been built yet — it can't judge whether `INSTALL_PATH` genuinely blends in with a given box, though, so that part's still a manual call per box.
+- `warden debug-config` (hidden, hasn't shipped to a box — meant to be run on the build machine against a native build right after `make build`): prints every baked-in value except the TOTP secret and replication private key, which it only reports as set/not-set. Answers "did my build actually capture what I intended" without needing to exercise opmenu/replicate for real first.
+- **Still open, and these are the team's calls, not code**: the actual `INSTALL_PATH`/naming convention per box, the real `TEAM_FROM_IP`, whether there's a second box for replication (Phase 2) or removable media, and the rules-of-engagement confirmation with organizers/advisors — `docs/DEPLOYMENT.md` step 0, deliberately first, not last.
 
 ## Phase 6 — Verification (design doc's "Verification Plan")
 

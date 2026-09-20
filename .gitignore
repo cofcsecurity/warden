@@ -1,3 +1,6 @@
 /bin/
 *.log
 .DS_Store
+
+# generated per-competition secrets (scripts/generate-keys.sh) — never commit
+/secrets/

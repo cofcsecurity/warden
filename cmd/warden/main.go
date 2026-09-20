@@ -53,6 +53,7 @@ func main() {
 	root.AddCommand(restoreCmd())
 	root.AddCommand(sentinelCheckCmd())
 	root.AddCommand(opmenuCmd())
+	root.AddCommand(debugConfigCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

@@ -2,7 +2,7 @@
 
 Persistence and backup/restore for a host under active attack, built for the CofC Cybersecurity Club's SECCDC/PCDC defense team. Companion tool to [seer](https://github.com/cofcsecurity/seer).
 
-Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, and [docs/PLAN.md](docs/PLAN.md) for what's built versus what's left, phased.
+Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, [docs/PLAN.md](docs/PLAN.md) for what's built versus what's left, phased, and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the step-by-step checklist to actually stand this up ahead of a competition.
 
 **Before deploying any of this against a real box, confirm it's allowed under that competition's rules of engagement.** See DESIGN.md's "Rules of Engagement Note".
 
@@ -12,15 +12,19 @@ Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, and [do
 cmd/warden/    Cobra CLI: snapshot, replicate, watch, restore, sentinel-check, opmenu
 internal/      manifest, store, replicate, watch, restore, audit, opmenu, sentinel, totp
 deploy/        systemd unit/timer templates, install.sh
-docs/          design notes and implementation plan
+scripts/       generate-keys.sh — one-time per-competition secret generation
+docs/          design notes, implementation plan, and the deployment checklist
 ```
 
 ## Building
 
 ```
+./scripts/generate-keys.sh   # once per competition; writes to ./secrets/ (gitignored)
+
 make build TEAM_PUBKEY="ssh-ed25519 AAAA... team@ccdc" TEAM_FROM_IP=203.0.113.10 \
-           TOTP_SECRET=<base32 seed> REPLICATE_URL=ssh://warden@backup-box/warden \
-           REPLICATE_KEY=$(base64 -i replicate_key) REPLICATE_HOST_KEY="$(cat backup_box_host_key.pub)"
+           TOTP_SECRET=$(cat secrets/totp_secret) REPLICATE_URL=ssh://warden@backup-box/warden \
+           REPLICATE_KEY=$(base64 < secrets/replicate_key | tr -d '\n') \
+           REPLICATE_HOST_KEY="$(ssh-keyscan -t ed25519 backup-box 2>/dev/null | cut -d' ' -f2-)"
 ```
 
 `REPLICATE_URL` can be `file:///path` instead (removable media) if there's no second team-controlled box; in that case `REPLICATE_KEY`/`REPLICATE_HOST_KEY` aren't needed.
