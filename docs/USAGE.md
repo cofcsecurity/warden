@@ -113,16 +113,21 @@ warden disarm   # turn auto-restore back off, e.g. ahead of a planned maintenanc
 
 `arm` takes a fresh config-tier snapshot immediately before flipping the switch, so whatever's on disk at that moment — not a stale pre-hardening snapshot — becomes the enforced baseline. Both log to `audit.log`; `status` (below) reports the current armed state.
 
-### `warden uninstall [--force]`
+### `warden uninstall <code> [--force] [--yes]`
 
 Reverses `install.sh`: stops and deletes every systemd timer it created, the cron fallback entry, the sudoers rule, the dedicated access-layer account, the installed binary and its hidden spare, and all local state under `/var/lib/<name>` (manifests, the backup store, the audit log, the static secret). Off-box replicas already pushed to a peer box are untouched.
 
 ```
-warden uninstall            # refuses if the box is armed
-warden uninstall --force    # removes it anyway
+warden uninstall <totp-or-static-code>              # asks for a typed 'yes', then removes it
+warden uninstall <code> --force                     # also removes it even if the box is armed
+warden uninstall <code> --yes                        # skip the interactive confirmation (scripted use)
 ```
 
-There's no fully transactional install that rolls back automatically on any mid-setup failure — that would need every step of `install.sh` kept in exact lockstep with a reverse for it forever. This is the more honest version: one explicit command that undoes everything, for when setup went wrong and the cleanest fix is starting over. It refuses on an armed box without `--force`, since arming means the team's actual hardening is presumably riding on this box staying defended — before that point, nothing here is load-bearing yet, so it's a plain "start over" button. Deletes its own binary last; safe on Linux (the running process keeps executing from the file it already has open), but leaves nothing named `warden` on the box afterward.
+There's no fully transactional install that rolls back automatically on any mid-setup failure — that would need every step of `install.sh` kept in exact lockstep with a reverse for it forever. This is the more honest version: one explicit command that undoes everything, for when setup went wrong and the cleanest fix is starting over.
+
+This is also the single most dangerous thing this binary can do, and it runs locally as root with no opmenu round-trip — so it requires the same proof of authorization `restore`/`shell`/`accept` do (a valid TOTP code or the static secret), not just a root shell. Without that check, anyone who got root through some completely unrelated route (a vulnerable service, not opmenu at all) could strip out every persistence mechanism Warden has in one command. It also asks for a typed `yes` on top of that, so a leaked or shoulder-surfed code alone can't wipe a box unattended — pass `--yes` to skip that specific prompt for scripted testing, but the code check always still applies.
+
+It refuses on an armed box without `--force`, since arming means the team's actual hardening is presumably riding on this box staying defended — before that point, nothing here is load-bearing yet, so it's a plain "start over" button. Deletes its own binary last; safe on Linux (the running process keeps executing from the file it already has open), but leaves nothing named `warden` on the box afterward.
 
 ### `warden rotate-secret [value]`
 

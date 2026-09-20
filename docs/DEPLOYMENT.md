@@ -142,6 +142,8 @@ Read the tradeoff at the top of that script's own comments first: per-competitio
 
 No Go toolchain on the box either? `build-and-install.sh` offers to download the official release from go.dev and install it to `/usr/local/go` — needs this box to reach go.dev over HTTPS. It never tries a distro package (names for Go vary by distro and are often outdated, e.g. Debian/Ubuntu call it `golang-go`, not `go`).
 
+Nothing else on the box either (a genuinely locked-down PCDC laptop can be missing `git`, `curl`, `python3`, `cron`, `sudo`, `qrencode`)? `build-and-install.sh` detects `apt-get`/`dnf`/`yum` and installs whatever's missing before doing anything else — best-effort, not fatal: a box that can't get one of these (e.g. `qrencode` needing a repo like EPEL that isn't enabled) just falls back to what that tool was a convenience for (text instead of a QR code) rather than aborting the whole install. `deploy/install.sh` does the same for `cron`/`sudo` specifically when run on its own.
+
 ### Step 1: get the source code onto the box
 
 This needs the whole repository on the target box, not just the finished binary.

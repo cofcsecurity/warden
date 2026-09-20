@@ -95,6 +95,104 @@ step_confirm_clean() {
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting"; exit 1; }
 }
 
+# PKG_MANAGER/PKG_UPDATED back ensure_deps below — set once, on first use.
+PKG_MANAGER=""
+PKG_UPDATED=0
+
+detect_pkg_manager() {
+	if command -v apt-get >/dev/null 2>&1; then
+		PKG_MANAGER=apt-get
+	elif command -v dnf >/dev/null 2>&1; then
+		PKG_MANAGER=dnf
+	elif command -v yum >/dev/null 2>&1; then
+		PKG_MANAGER=yum
+	fi
+}
+
+# pkg_name_for translates a logical dependency name to the package name
+# this distro family actually calls it, for the handful where it differs.
+# Everything else passes through unchanged (git, curl, python3, qrencode,
+# sudo are all named the same across apt/dnf/yum).
+pkg_name_for() {
+	case "$1" in
+	cron)
+		[[ "$PKG_MANAGER" == "apt-get" ]] && echo cron || echo cronie
+		;;
+	ssh-client)
+		[[ "$PKG_MANAGER" == "apt-get" ]] && echo openssh-client || echo openssh-clients
+		;;
+	*)
+		echo "$1"
+		;;
+	esac
+}
+
+# pkg_install installs the package that provides $2 (a logical name, e.g.
+# "cron") if $1 (the command it should leave on PATH, e.g. "crontab")
+# isn't already there. Never aborts the script over a failed install —
+# `set -e` is deliberately suspended around the actual package-manager
+# call, since a missing repo (e.g. qrencode needing EPEL on some RHEL
+# images) is exactly the kind of failure this should report and move
+# past, not treat as fatal. Callers that actually require the result
+# check for it themselves afterward (ensure_go already does this for go
+# itself; nothing here is as hard a requirement as that one).
+pkg_install() {
+	local check_cmd="$1" logical="$2" pkg
+	command -v "$check_cmd" >/dev/null 2>&1 && return 0
+	if [[ -z "$PKG_MANAGER" ]]; then
+		echo "    No apt-get/dnf/yum found — install ${logical} (for ${check_cmd}) manually if this box needs it." >&2
+		return 1
+	fi
+	pkg="$(pkg_name_for "$logical")"
+	echo "==> Installing ${pkg} (${check_cmd} not found)"
+
+	set +e
+	case "$PKG_MANAGER" in
+	apt-get)
+		if [[ "$PKG_UPDATED" -eq 0 ]]; then
+			apt-get update -qq && PKG_UPDATED=1
+		fi
+		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg"
+		;;
+	dnf|yum)
+		"$PKG_MANAGER" install -y -q "$pkg"
+		;;
+	esac
+	set -e
+
+	if ! command -v "$check_cmd" >/dev/null 2>&1; then
+		echo "    Failed to install ${pkg} — install it manually if this box actually needs it." >&2
+		return 1
+	fi
+}
+
+# ensure_deps installs, best-effort, everything this script and the ones
+# it hands off to (install.sh, generate-team-key.sh) shell out to that a
+# locked-down or minimal box might not already have — the same situation
+# ensure_go below already handles for the Go toolchain specifically.
+# Nothing here is fatal on its own: a box missing one of these still
+# works for whatever doesn't need it (no cron package just means the
+# systemd timer is sentinel's only trigger instead of two independent
+# ones; no qrencode just means the TOTP secret prints as text instead of
+# a QR code). ensure_go's own requirement is checked separately, right
+# after this, since Go genuinely has no fallback.
+ensure_deps() {
+	detect_pkg_manager
+	if [[ -z "$PKG_MANAGER" ]]; then
+		echo "==> No apt-get/dnf/yum found — skipping automatic dependency install."
+		echo "    If a step below fails over a missing command, install it yourself first."
+		return
+	fi
+	echo "==> Checking for git, curl, python3, cron, sudo, qrencode, ssh-keygen"
+	pkg_install git git || true
+	pkg_install curl curl || true
+	pkg_install python3 python3 || true
+	pkg_install crontab cron || true
+	pkg_install visudo sudo || true
+	pkg_install qrencode qrencode || true
+	pkg_install ssh-keygen ssh-client || true
+}
+
 # ensure_go finds a usable `go`, or offers to download the official
 # upstream tarball (go.dev, not a distro package — distro package names
 # for Go vary and are frequently outdated or absent, e.g. Debian/Ubuntu
@@ -351,6 +449,7 @@ step_cleanup_team_key() {
 
 main() {
 	require_root
+	ensure_deps
 	ensure_go
 	step_confirm_clean
 	collect_config

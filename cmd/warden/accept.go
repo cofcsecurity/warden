@@ -10,7 +10,6 @@ import (
 	"warden/internal/audit"
 	"warden/internal/manifest"
 	"warden/internal/store"
-	"warden/internal/totp"
 )
 
 // acceptCmd is the deliberate, auth-backed way to tell Warden "this
@@ -20,15 +19,16 @@ import (
 // drift along with it) and without needing to disarm/re-arm the whole box
 // just to land one change.
 //
-// It requires a TOTP code the same way opmenu's restore/shell do, even
-// though anyone running this already has a local shell (which, in
-// production, only exists after passing opmenu's own TOTP check to get
-// it) — a second check here means a change can't be silently laundered
-// into "known good" by whatever got the shell in the first place, only by
-// someone who currently holds a valid code.
+// It requires a code the same way opmenu's restore/shell do (TOTP or the
+// static secret — see verifySecondFactor), even though anyone running
+// this already has a local shell (which, in production, only exists
+// after passing opmenu's own check to get it) — a second check here
+// means a change can't be silently laundered into "known good" by
+// whatever got the shell in the first place, only by someone who
+// currently holds a valid code.
 func acceptCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "accept <path> <totp-code>",
+		Use:   "accept <path> <code>",
 		Short: "Authorize a deliberate change to one watched path as the new known-good state",
 		Long: `Re-baselines exactly one path in the config-tier manifest to whatever's on
 disk right now, so watch stops flagging (or would stop reverting, once
@@ -36,8 +36,9 @@ armed) a change that was actually intentional. Every other watched path's
 baseline is left untouched, unlike 'warden snapshot' which regenerates
 all of them.
 
-Requires the current TOTP code as proof this is an authorized change, not
-just something run from whatever shell happened to be open.`,
+Requires a current TOTP code or the static secret (see rotate-secret) as
+proof this is an authorized change, not just something run from whatever
+shell happened to be open.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAccept(args[0], args[1])
@@ -46,12 +47,12 @@ just something run from whatever shell happened to be open.`,
 }
 
 func runAccept(path, code string) error {
-	ok, err := totp.Validate(buildTOTPSecret, code, time.Now(), 1)
+	ok, err := verifySecondFactor(code)
 	if err != nil {
 		return fmt.Errorf("accept: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("accept: invalid or expired TOTP code")
+		return fmt.Errorf("accept: invalid or expired code")
 	}
 
 	watched := false

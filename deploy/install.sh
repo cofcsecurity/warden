@@ -47,6 +47,80 @@ require_root() {
 	fi
 }
 
+# PKG_MANAGER/PKG_UPDATED back ensure_deps below — set once, on first use.
+PKG_MANAGER=""
+PKG_UPDATED=0
+
+detect_pkg_manager() {
+	if command -v apt-get >/dev/null 2>&1; then
+		PKG_MANAGER=apt-get
+	elif command -v dnf >/dev/null 2>&1; then
+		PKG_MANAGER=dnf
+	elif command -v yum >/dev/null 2>&1; then
+		PKG_MANAGER=yum
+	fi
+}
+
+pkg_name_for() {
+	case "$1" in
+	cron)
+		[[ "$PKG_MANAGER" == "apt-get" ]] && echo cron || echo cronie
+		;;
+	*)
+		echo "$1"
+		;;
+	esac
+}
+
+# pkg_install mirrors scripts/build-and-install.sh's identical helper —
+# see its comment for why `set -e` is suspended around the actual
+# package-manager call and why a failure here is reported, not fatal.
+pkg_install() {
+	local check_cmd="$1" logical="$2" pkg
+	command -v "$check_cmd" >/dev/null 2>&1 && return 0
+	if [[ -z "$PKG_MANAGER" ]]; then
+		echo "    No apt-get/dnf/yum found — install ${logical} (for ${check_cmd}) manually if this box needs it." >&2
+		return 1
+	fi
+	pkg="$(pkg_name_for "$logical")"
+	echo "==> Installing ${pkg} (${check_cmd} not found)"
+
+	set +e
+	case "$PKG_MANAGER" in
+	apt-get)
+		if [[ "$PKG_UPDATED" -eq 0 ]]; then
+			apt-get update -qq && PKG_UPDATED=1
+		fi
+		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg"
+		;;
+	dnf|yum)
+		"$PKG_MANAGER" install -y -q "$pkg"
+		;;
+	esac
+	set -e
+
+	if ! command -v "$check_cmd" >/dev/null 2>&1; then
+		echo "    Failed to install ${pkg} — install it manually if this box actually needs it." >&2
+		return 1
+	fi
+}
+
+# ensure_deps installs, best-effort, the two things this script shells
+# out to directly that a minimal competition image might genuinely be
+# missing: cron (step_install_cron_entry's crontab) and sudo (
+# step_configure_sudoers' visudo). Neither failure is fatal here — it's
+# reported and this keeps going, since the step that actually needs it
+# will fail with a much clearer error at that point if it's still
+# missing than a bare "command not found" would.
+ensure_deps() {
+	detect_pkg_manager
+	if [[ -z "$PKG_MANAGER" ]]; then
+		return
+	fi
+	pkg_install crontab cron || true
+	pkg_install visudo sudo || true
+}
+
 # ask prints $1 as a prompt and reads a line into the variable named by
 # $2, always from the controlling terminal directly (/dev/tty) rather
 # than whatever fd 0 currently is — see scripts/build-and-install.sh's
@@ -411,9 +485,10 @@ step_next_steps() {
 	echo "         auto-restore. Arming before hardening just locks in the pre-hardening"
 	echo "         state instead, so don't skip 1-2."
 	echo ""
-	echo "    Something about this setup wrong? '${INSTALL_PATH} uninstall' removes"
+	echo "    Something about this setup wrong? '${INSTALL_PATH} uninstall <code>' removes"
 	echo "    everything above (timers, cron entry, sudoers rule, the ${OPMENU_USER}"
-	echo "    account, the binary itself) and starts clean. It refuses once armed"
+	echo "    account, the binary itself) and starts clean — <code> is a live TOTP code"
+	echo "    or the static secret, same as restore/shell/accept. It refuses once armed"
 	echo "    (--force overrides) — before that, nothing here is load-bearing yet."
 	echo ""
 	if "$INSTALL_PATH" debug-config 2>/dev/null | grep -Eq "^autoban_enabled:\s+true$"; then
@@ -429,6 +504,7 @@ step_next_steps() {
 
 main() {
 	require_root
+	ensure_deps
 	require_filled_in
 	warn_if_already_installed
 	resolve_install_path

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,13 +19,23 @@ import (
 // explicit command that undoes it all, callable either after a failed
 // setup or any time before arming.
 //
-// Refuses once the box is armed unless --force is passed — see the Long
-// help text below for why that line is drawn at arm, not at install.
+// This is one of the most dangerous things this binary can do — it's how
+// a team member undoes a bad setup, but it's also exactly what red team
+// would run first if they ever got root through some completely
+// unrelated route (a vulnerable service, say) rather than through
+// opmenu: a single command that strips out every persistence mechanism
+// Warden has, no opmenu second factor required, since this runs locally
+// as root already. Gated the same way accept.go is (a valid TOTP code or
+// the static secret — see verifySecondFactor), so holding root alone is
+// never enough, plus a typed confirmation on top of that so a leaked or
+// shoulder-surfed code can't wipe the box unattended. Refuses once armed
+// unless --force is also passed — see the Long help text for why that
+// line is drawn at arm, not at install.
 func uninstallCmd() *cobra.Command {
-	var force bool
+	var force, assumeYes bool
 
 	cmd := &cobra.Command{
-		Use:   "uninstall",
+		Use:   "uninstall <code>",
 		Short: "Remove everything install.sh set up on this box",
 		Long: `Reverses install.sh: stops and deletes every systemd timer (watch,
 sentinel, both snapshot tiers, replicate), the cron fallback entry, the
@@ -33,6 +44,13 @@ and its hidden spare copy, and all local state under /var/lib/<name>
 (manifests, the backup store, the audit log, the static secret). Off-box
 replicas already pushed to a peer box are never touched — recovering
 from one later still works the same way docs/DEPLOYMENT.md describes.
+
+Requires a current TOTP code or the static secret (see rotate-secret) —
+the same proof of authorization restore/shell/accept require — since
+otherwise anyone who gets a root shell through any route at all, not
+just opmenu, could use this to strip every defense Warden has in one
+command. Also asks for a typed 'yes' before doing anything (skip with
+--yes for scripted use, but the code is still checked either way).
 
 Refuses to run on an armed box unless --force is given. Before 'warden
 arm', nothing here is load-bearing yet — this is a plain "start over"
@@ -45,15 +63,25 @@ This removes its own binary as its last step, which is safe on Linux —
 the running process keeps executing from the file it already has open
 until it exits — but leaves nothing named 'warden' on this box to run
 anything else with afterward.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUninstall(force)
+			return runUninstall(args[0], force, assumeYes)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "remove even if the box is currently armed")
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "skip the interactive confirmation prompt (the code is still required)")
 	return cmd
 }
 
-func runUninstall(force bool) error {
+func runUninstall(code string, force, assumeYes bool) error {
+	ok, err := verifySecondFactor(code)
+	if err != nil {
+		return fmt.Errorf("uninstall: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("uninstall: invalid or expired code")
+	}
+
 	p, err := loadPaths()
 	if err != nil {
 		return err
@@ -64,6 +92,15 @@ func runUninstall(force bool) error {
 	}
 	if armed && !force {
 		return fmt.Errorf("uninstall: this box is armed — hardening is presumably riding on it now; re-run with --force if you really mean to remove Warden anyway")
+	}
+
+	if !assumeYes {
+		fmt.Print("This removes Warden entirely from this box. Type 'yes' to confirm: ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		if strings.TrimSpace(answer) != "yes" {
+			return fmt.Errorf("uninstall: not confirmed, nothing removed")
+		}
 	}
 
 	path, err := installPath()
