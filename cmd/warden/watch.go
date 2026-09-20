@@ -37,6 +37,13 @@ func runWatch() error {
 		return err
 	}
 
+	if err := log.Log("watch", "pass", map[string]any{
+		"auto_restored": len(res.AutoRestored),
+		"flagged":       len(res.Flagged),
+	}); err != nil {
+		return err
+	}
+
 	fmt.Printf("auto-restored: %d, flagged: %d\n", len(res.AutoRestored), len(res.Flagged))
 	return nil
 }

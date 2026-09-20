@@ -34,13 +34,14 @@ The parts of the design that only need this box, no network.
 - `cmd/warden/replicate.go`: parses `buildReplicateURL` (`ssh://user@host[:port]/root` or `file:///path`) and dispatches to the right backend. New build-time values `buildReplicateKey` (base64 PEM, ssh:// only) and `buildReplicateHostKey` (authorized_keys-format pinned host key), wired into the `Makefile`.
 - Still open, and it's a decision only the team can make: is there an actual second team-controlled box this season, or does `replicate` point at removable media instead? Generate the replication-only key pair and the destination's host key ahead of time either way (Phase 5).
 
-## Phase 3 — opmenu's remaining commands
+## Phase 3 — opmenu's remaining commands (done)
 
-The most sensitive component; do this after Phases 1–2 so `status` and `restore` have real logic to call into.
+The most sensitive component; landed after Phases 1–2 so `status` and `restore` had real logic to call into.
 
-- `runStatus`: manifest generation, last snapshot time, last `watch` result, sentinel registration state — read-only, no TOTP required, so keep it that way deliberately.
-- `runOpmenuRestore`: call `restore.Plan`/`Apply` the same way the `restore` subcommand does, defaulting to dry-run unless the parsed args explicitly ask to apply.
-- End-to-end test of the forced-command path itself: a real `authorized_keys` entry, a real SSH client hitting it, confirming `from=` and the TOTP gate actually block what they're supposed to block. Unit tests around `Handle` already cover the dispatch logic; they don't cover the SSH layer in front of it.
+- `runStatus`: manifest generation, last snapshot time, and the last recorded `watch` and `sentinel-check` pass — read from a new `audit.Read`/`audit.LastByComponent` (both unit tested, including a skip-malformed-trailing-line case for a log truncated mid-write). Still no TOTP required, deliberately. `watch`/`sentinel-check` now also log a `"pass"` summary entry each run so there's always something recent for `status` to report, even when nothing changed.
+- `runOpmenuRestore`: calls the same `restore.Plan`/`applyPlan` the `restore` subcommand does — the apply logic was factored out of `cmd/warden/restore.go` into shared `planLines`/`applyPlan` helpers so the two entry points can't drift. Defaults to dry-run; applies only when the parsed SSH command's last argument is literally `apply` (there's no `--flag` over a raw `$SSH_ORIGINAL_COMMAND` string).
+- Verified the whole chain (manifest → audit log → status string; drift → plan → apply → restored content) against a temp directory standing in for `/var/lib/warden`, since `cmd/warden`'s data paths are fixed consts by design and not something a unit test can override.
+- **Not done here, moved to Phase 6**: an end-to-end test of the SSH forced-command layer itself (`authorized_keys`' `from=`/`command=` actually blocking what they should). That's enforced by sshd against the installed `authorized_keys` line, not by anything in the `opmenu` package, so it belongs in the VM integration test where `install.sh` actually runs, not a Go unit test. `Handle`'s own dispatch/TOTP logic is already unit tested independent of that layer.
 
 ## Phase 4 — sentinel's real registrations
 
@@ -57,4 +58,5 @@ The most sensitive component; do this after Phases 1–2 so `status` and `restor
 
 - Unit tests: covered incrementally per phase above rather than as one pass at the end.
 - Integration test in a VM mirroring the actual target distro: run `install.sh`, kill the sentinel and confirm it respawns, edit a watched config and confirm `watch` reverts it, delete the SSH key and confirm `sentinel-check` restores it.
+- From Phase 3: hit the installed `authorized_keys` forced-command entry with a real SSH client and confirm `from=` actually rejects a connection from outside the team's IP, and that `opmenu`'s TOTP gate rejects a missing/wrong code end-to-end (not just at the `Handle` unit-test level).
 - Adversarial test before the real competition: a teammate with no knowledge of where to look tries to find and kill this, timed, so the team knows its actual survival window instead of assuming one.

@@ -3,6 +3,7 @@
 package audit
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -66,4 +67,45 @@ func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.f.Close()
+}
+
+// Read returns every entry in the log at path, oldest first. A missing log
+// returns no entries rather than an error, matching manifest.New's
+// treatment of a not-yet-created file. A malformed line is skipped rather
+// than failing the whole read, since a corrupted last entry (e.g. from a
+// crash mid-write) shouldn't hide everything before it.
+func Read(path string) ([]Entry, error) {
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("audit: open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	var entries []Entry
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		var e Entry
+		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+			continue
+		}
+		entries = append(entries, e)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("audit: read %s: %w", path, err)
+	}
+	return entries, nil
+}
+
+// LastByComponent returns the most recent entry for each component seen in
+// entries (which should be oldest-first, as Read returns them).
+func LastByComponent(entries []Entry) map[string]Entry {
+	last := map[string]Entry{}
+	for _, e := range entries {
+		last[e.Component] = e
+	}
+	return last
 }

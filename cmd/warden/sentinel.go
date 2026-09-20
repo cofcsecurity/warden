@@ -41,6 +41,13 @@ func runSentinelCheck() error {
 		return err
 	}
 
+	if err := log.Log("sentinel", "pass", map[string]any{
+		"ok":        len(res.OK),
+		"recreated": len(res.Recreated),
+	}); err != nil {
+		return err
+	}
+
 	if len(res.Recreated) > 0 {
 		fmt.Printf("recreated: %v\n", res.Recreated)
 	}

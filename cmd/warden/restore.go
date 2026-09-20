@@ -40,12 +40,8 @@ func runRestore(target, snapshotID string, apply bool) error {
 		return err
 	}
 
-	for _, e := range entries {
-		status := "unchanged"
-		if e.Changed {
-			status = "DRIFTED"
-		}
-		fmt.Printf("%s  %s  current=%s target=%s\n", status, e.Path, e.CurrentHash, e.TargetHash)
+	for _, l := range planLines(entries) {
+		fmt.Println(l)
 	}
 
 	if !apply {
@@ -53,19 +49,58 @@ func runRestore(target, snapshotID string, apply bool) error {
 		return nil
 	}
 
-	st, err := store.New(objectsDir)
-	if err != nil {
-		return err
-	}
 	log, err := audit.New(auditLogPath)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
 
+	lines, err := applyPlan(entries, log)
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	return err
+}
+
+// loadSnapshot loads the requested generation, or the latest live manifest
+// when snapshotID is empty.
+func loadSnapshot(snapshotID string) (*manifest.Manifest, error) {
+	if snapshotID == "" {
+		return manifest.New(manifestPath)
+	}
+	gen, err := strconv.Atoi(snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("restore: --snapshot must be a generation number: %w", err)
+	}
+	return manifest.LoadGeneration(manifestsDir, gen)
+}
+
+// planLines renders a restore plan the same way for both `warden restore`
+// and opmenu's restore command.
+func planLines(entries []restore.PlanEntry) []string {
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		status := "unchanged"
+		if e.Changed {
+			status = "DRIFTED"
+		}
+		lines = append(lines, fmt.Sprintf("%s  %s  current=%s target=%s", status, e.Path, e.CurrentHash, e.TargetHash))
+	}
+	return lines
+}
+
+// applyPlan applies entries and logs each step, shared by `restore --apply`
+// and opmenu's restore command so both go through the identical sequence.
+func applyPlan(entries []restore.PlanEntry, log *audit.Logger) ([]string, error) {
+	st, err := store.New(objectsDir)
+	if err != nil {
+		return nil, err
+	}
+
 	r := restore.New(st, serviceForPath)
 	results := r.Apply(entries)
 
+	var lines []string
 	var failed int
 	for _, res := range results {
 		if res.Skipped {
@@ -83,29 +118,16 @@ func runRestore(target, snapshotID string, apply bool) error {
 			"error":           errString(res.Err),
 		})
 		if res.Err != nil {
-			fmt.Printf("FAILED  %s: %v\n", res.Path, res.Err)
+			lines = append(lines, fmt.Sprintf("FAILED  %s: %v", res.Path, res.Err))
 		} else {
-			fmt.Printf("restored  %s\n", res.Path)
+			lines = append(lines, fmt.Sprintf("restored  %s", res.Path))
 		}
 	}
 
 	if failed > 0 {
-		return fmt.Errorf("restore: %d of %d paths failed", failed, len(results))
+		return lines, fmt.Errorf("restore: %d of %d paths failed", failed, len(results))
 	}
-	return nil
-}
-
-// loadSnapshot loads the requested generation, or the latest live manifest
-// when snapshotID is empty.
-func loadSnapshot(snapshotID string) (*manifest.Manifest, error) {
-	if snapshotID == "" {
-		return manifest.New(manifestPath)
-	}
-	gen, err := strconv.Atoi(snapshotID)
-	if err != nil {
-		return nil, fmt.Errorf("restore: --snapshot must be a generation number: %w", err)
-	}
-	return manifest.LoadGeneration(manifestsDir, gen)
+	return lines, nil
 }
 
 func errString(err error) string {
