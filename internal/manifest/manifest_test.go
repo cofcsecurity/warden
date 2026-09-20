@@ -86,6 +86,54 @@ func TestDiffDetectsAddedRemovedModified(t *testing.T) {
 	}
 }
 
+func TestArchiveAndLoadGeneration(t *testing.T) {
+	dir := t.TempDir()
+	archiveDir := filepath.Join(dir, "manifests")
+
+	path := filepath.Join(dir, "a.conf")
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gen1, err := Generate([]string{path}, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gen1.Archive(archiveDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(path, []byte("v2-different-length"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gen2, err := Generate([]string{path}, nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gen2.Archive(archiveDir); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadGeneration(archiveDir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Records[0].Hash != gen1.Records[0].Hash {
+		t.Fatalf("loaded generation 1 doesn't match: %s != %s", loaded.Records[0].Hash, gen1.Records[0].Hash)
+	}
+
+	gens, err := Generations(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gens) != 2 || gens[0] != 1 || gens[1] != 2 {
+		t.Fatalf("got generations %v, want [1 2]", gens)
+	}
+
+	if _, err := LoadGeneration(archiveDir, 99); err == nil {
+		t.Fatalf("expected error loading a generation that was never archived")
+	}
+}
+
 func TestClassifyDefaultsToSafeAutoRestore(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a.conf")

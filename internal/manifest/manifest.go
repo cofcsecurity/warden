@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -82,6 +84,66 @@ func (m *Manifest) Save() error {
 func (m *Manifest) SaveAs(path string) error {
 	m.path = path
 	return m.Save()
+}
+
+// ArchivePath returns where a given generation lives under an archive dir.
+func ArchivePath(dir string, generation int) string {
+	return filepath.Join(dir, fmt.Sprintf("manifest-%d.json", generation))
+}
+
+// Archive writes m to dir under its generation number, leaving m's own
+// backing path untouched. Unlike the live manifest.json, archived
+// generations are never overwritten, so restore --snapshot <id> and
+// store.Prune's "last N generations" rule both have something to read.
+func (m *Manifest) Archive(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("manifest: create archive dir %s: %w", dir, err)
+	}
+
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("manifest: encode: %w", err)
+	}
+	path := ArchivePath(dir, m.Generation)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("manifest: archive %s: %w", path, err)
+	}
+	return nil
+}
+
+// LoadGeneration loads a specific archived generation from dir.
+func LoadGeneration(dir string, generation int) (*Manifest, error) {
+	path := ArchivePath(dir, generation)
+	m, err := New(path)
+	if err != nil {
+		return nil, err
+	}
+	if m.Generation == 0 && generation != 0 {
+		return nil, fmt.Errorf("manifest: no archived generation %d in %s", generation, dir)
+	}
+	return m, nil
+}
+
+// Generations returns the archived generation numbers found in dir, sorted
+// oldest first.
+func Generations(dir string) ([]int, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("manifest: list %s: %w", dir, err)
+	}
+
+	var gens []int
+	for _, e := range entries {
+		var g int
+		if _, err := fmt.Sscanf(e.Name(), "manifest-%d.json", &g); err == nil {
+			gens = append(gens, g)
+		}
+	}
+	sort.Ints(gens)
+	return gens, nil
 }
 
 // Classify reports the class to use for a watched path.

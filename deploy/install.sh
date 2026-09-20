@@ -19,10 +19,17 @@ TEAM_FROM_IP="CHANGE-ME 203.0.113.10"
 
 WATCH_UNIT_NAME="svchelper-watch"
 SENTINEL_UNIT_NAME="svchelper-sentinel"
+SNAPSHOT_CONFIG_UNIT_NAME="svchelper-snap-cfg"
+SNAPSHOT_DATA_UNIT_NAME="svchelper-snap-data"
+
 WATCH_INTERVAL="5min"
 WATCH_JITTER="90"
 SENTINEL_INTERVAL="10min"
 SENTINEL_JITTER="120"
+SNAPSHOT_CONFIG_INTERVAL="5min"
+SNAPSHOT_CONFIG_JITTER="60"
+SNAPSHOT_DATA_INTERVAL="1h"
+SNAPSHOT_DATA_JITTER="300"
 # -------------------------------------------------------------------------
 
 require_root() {
@@ -64,8 +71,28 @@ step_install_systemd_units() {
 	    -e "s#%SENTINEL_JITTER%#${SENTINEL_JITTER}#g" \
 	    systemd/warden-sentinel.timer.template > "${unit_dir}/${SENTINEL_UNIT_NAME}.timer"
 
+	sed -e "s#%SNAPSHOT_CONFIG_NAME_ON_BOX%#${SNAPSHOT_CONFIG_UNIT_NAME}#g" \
+	    -e "s#%INSTALL_PATH%#${INSTALL_PATH}#g" \
+	    systemd/warden-snapshot-config.service.template > "${unit_dir}/${SNAPSHOT_CONFIG_UNIT_NAME}.service"
+	sed -e "s#%SNAPSHOT_CONFIG_NAME_ON_BOX%#${SNAPSHOT_CONFIG_UNIT_NAME}#g" \
+	    -e "s#%SNAPSHOT_CONFIG_INTERVAL%#${SNAPSHOT_CONFIG_INTERVAL}#g" \
+	    -e "s#%SNAPSHOT_CONFIG_JITTER%#${SNAPSHOT_CONFIG_JITTER}#g" \
+	    systemd/warden-snapshot-config.timer.template > "${unit_dir}/${SNAPSHOT_CONFIG_UNIT_NAME}.timer"
+
+	sed -e "s#%SNAPSHOT_DATA_NAME_ON_BOX%#${SNAPSHOT_DATA_UNIT_NAME}#g" \
+	    -e "s#%INSTALL_PATH%#${INSTALL_PATH}#g" \
+	    systemd/warden-snapshot-data.service.template > "${unit_dir}/${SNAPSHOT_DATA_UNIT_NAME}.service"
+	sed -e "s#%SNAPSHOT_DATA_NAME_ON_BOX%#${SNAPSHOT_DATA_UNIT_NAME}#g" \
+	    -e "s#%SNAPSHOT_DATA_INTERVAL%#${SNAPSHOT_DATA_INTERVAL}#g" \
+	    -e "s#%SNAPSHOT_DATA_JITTER%#${SNAPSHOT_DATA_JITTER}#g" \
+	    systemd/warden-snapshot-data.timer.template > "${unit_dir}/${SNAPSHOT_DATA_UNIT_NAME}.timer"
+
 	systemctl daemon-reload
-	systemctl enable --now "${WATCH_UNIT_NAME}.timer" "${SENTINEL_UNIT_NAME}.timer"
+	systemctl enable --now \
+		"${WATCH_UNIT_NAME}.timer" \
+		"${SENTINEL_UNIT_NAME}.timer" \
+		"${SNAPSHOT_CONFIG_UNIT_NAME}.timer" \
+		"${SNAPSHOT_DATA_UNIT_NAME}.timer"
 }
 
 step_install_cron_entry() {
@@ -89,8 +116,9 @@ step_authorize_key() {
 }
 
 step_initial_snapshot() {
-	echo "==> Generating initial manifest and taking the first snapshot"
-	"$INSTALL_PATH" snapshot
+	echo "==> Generating initial manifest and taking the first snapshots"
+	"$INSTALL_PATH" snapshot --tier config
+	"$INSTALL_PATH" snapshot --tier data
 }
 
 step_self_delete() {

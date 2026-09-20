@@ -1,0 +1,11 @@
+[Unit]
+Description=%SNAPSHOT_DATA_NAME_ON_BOX% timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=%SNAPSHOT_DATA_INTERVAL%
+RandomizedDelaySec=%SNAPSHOT_DATA_JITTER%
+Unit=%SNAPSHOT_DATA_NAME_ON_BOX%.service
+
+[Install]
+WantedBy=timers.target

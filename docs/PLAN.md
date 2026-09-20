@@ -17,14 +17,14 @@ Tracks what's built against [DESIGN.md](DESIGN.md) and what's left, broken into 
 - `cmd/warden`: Cobra root and all six subcommands wired. `snapshot` and `watch` run end-to-end against real paths; `restore` dry-run works via `Plan`; `replicate`, `sentinel-check`, and `opmenu`'s restore/status paths are stubbed pending their packages.
 - `deploy/systemd/*.template` and `deploy/install.sh`: structurally complete, with `CHANGE-ME` placeholders for anything box- or competition-specific.
 
-## Phase 1 — Finish the local repair path
+## Phase 1 — Finish the local repair path (done)
 
 The parts of the design that only need this box, no network.
 
-- `internal/restore.Apply`: stop the mapped systemd unit (`os/exec`), write from the store, reverify the hash, restart the unit, surface errors per-file rather than aborting the whole batch.
-- `cmd/warden/config.go`: replace the empty `watchedPaths`/`classifyPath`/`serviceForPath` stubs with the real watch list for the target distro(s) — decide this against whatever the team is actually defending this season.
-- Manifest generation history: right now there's one mutable `manifest.json`, which is enough for `watch` and for restoring from the latest snapshot, but not enough for `restore --snapshot <id>` or for `store.Prune`'s "keep the last N manifests" rule. Add generation archiving (e.g. `manifest-<n>.json` alongside the live one) before either of those can work.
-- Two snapshot tiers per the design (fast/config vs. slow/data): currently `snapshot` treats `watchedPaths` as one flat list. Split into two invocations with two path sets and two systemd timers.
+- `internal/restore.Apply`: stops the mapped systemd unit via `os/exec`, writes from the store, reverifies the hash, restarts the unit. Returns one `EntryResult` per path instead of aborting the batch on the first failure. Unit tested, including the "no service mapped" and "unchanged path is skipped" cases.
+- `internal/manifest`: added `Archive`/`LoadGeneration`/`Generations` so generations are retained as `manifest-<n>.json` files rather than overwritten in place. Unit tested.
+- `cmd/warden/config.go`: `watchedPaths`/`classifyPath`/`serviceForPath` now hold a worked example (passwd/shadow/sudoers/sshd_config as confirm-first, nginx/apache/mysql/sshd as safe-auto-restore with service mappings) instead of being empty. **Still needs a real pass**: this is a template covering common CCDC services, not this season's actual scored image — confirm the real path list and service map before relying on it.
+- Two snapshot tiers: `snapshot --tier config|data` (config is also what `watch` checks), `cmd/warden/snapshot.go` archives each generation and prunes `store` objects outside the last `retainGenerations`. `restore --snapshot <id>` now loads a specific archived generation via `manifest.LoadGeneration`. Two new systemd timer pairs added to `deploy/systemd/` and wired into `install.sh`.
 
 ## Phase 2 — Off-host replication
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
+	"warden/internal/audit"
 	"warden/internal/manifest"
 	"warden/internal/restore"
 	"warden/internal/store"
@@ -28,15 +30,9 @@ func restoreCmd() *cobra.Command {
 }
 
 func runRestore(target, snapshotID string, apply bool) error {
-	m, err := manifest.New(manifestPath)
+	m, err := loadSnapshot(snapshotID)
 	if err != nil {
 		return err
-	}
-	if snapshotID != "" {
-		// TODO: load the specific requested generation once manifest
-		// generations are retained as separate files rather than one
-		// mutable manifest.json.
-		return fmt.Errorf("restore: --snapshot not yet implemented, only the latest generation is available")
 	}
 
 	entries, err := restore.Plan(m, target)
@@ -61,6 +57,60 @@ func runRestore(target, snapshotID string, apply bool) error {
 	if err != nil {
 		return err
 	}
+	log, err := audit.New(auditLogPath)
+	if err != nil {
+		return err
+	}
+	defer log.Close()
+
 	r := restore.New(st, serviceForPath)
-	return r.Apply(entries)
+	results := r.Apply(entries)
+
+	var failed int
+	for _, res := range results {
+		if res.Skipped {
+			continue
+		}
+		action := "restored"
+		if res.Err != nil {
+			action = "failed"
+			failed++
+		}
+		_ = log.Log("restore", action, map[string]any{
+			"path":            res.Path,
+			"service_stopped": res.ServiceStopped,
+			"service_started": res.ServiceStarted,
+			"error":           errString(res.Err),
+		})
+		if res.Err != nil {
+			fmt.Printf("FAILED  %s: %v\n", res.Path, res.Err)
+		} else {
+			fmt.Printf("restored  %s\n", res.Path)
+		}
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("restore: %d of %d paths failed", failed, len(results))
+	}
+	return nil
+}
+
+// loadSnapshot loads the requested generation, or the latest live manifest
+// when snapshotID is empty.
+func loadSnapshot(snapshotID string) (*manifest.Manifest, error) {
+	if snapshotID == "" {
+		return manifest.New(manifestPath)
+	}
+	gen, err := strconv.Atoi(snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("restore: --snapshot must be a generation number: %w", err)
+	}
+	return manifest.LoadGeneration(manifestsDir, gen)
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

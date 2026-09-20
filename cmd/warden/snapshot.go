@@ -12,16 +12,24 @@ import (
 )
 
 func snapshotCmd() *cobra.Command {
-	return &cobra.Command{
+	var tierFlag string
+
+	cmd := &cobra.Command{
 		Use:   "snapshot",
 		Short: "Take a backup snapshot of the watched paths",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSnapshot()
+			tier, err := parseTier(tierFlag)
+			if err != nil {
+				return err
+			}
+			return runSnapshot(tier)
 		},
 	}
+	cmd.Flags().StringVar(&tierFlag, "tier", string(tierConfig), `snapshot tier: "config" (fast, frequent) or "data" (slow, larger)`)
+	return cmd
 }
 
-func runSnapshot() error {
+func runSnapshot(tier snapshotTier) error {
 	st, err := store.New(objectsDir)
 	if err != nil {
 		return err
@@ -37,7 +45,7 @@ func runSnapshot() error {
 		return err
 	}
 
-	next, err := manifest.Generate(watchedPaths, classifyPath, last.Generation+1)
+	next, err := manifest.Generate(pathsForTier(tier), classifyPath, last.Generation+1)
 	if err != nil {
 		return err
 	}
@@ -55,9 +63,42 @@ func runSnapshot() error {
 	if err := next.SaveAs(manifestPath); err != nil {
 		return err
 	}
+	if err := next.Archive(manifestsDir); err != nil {
+		return err
+	}
+
+	if err := pruneOldObjects(st); err != nil {
+		return fmt.Errorf("snapshot: prune: %w", err)
+	}
 
 	return log.Log("snapshot", "taken", map[string]any{
+		"tier":       string(tier),
 		"generation": next.Generation,
 		"records":    len(next.Records),
 	})
+}
+
+// pruneOldObjects keeps every object referenced by the last
+// retainGenerations archived manifests and drops the rest.
+func pruneOldObjects(st *store.Store) error {
+	gens, err := manifest.Generations(manifestsDir)
+	if err != nil {
+		return err
+	}
+	if len(gens) > retainGenerations {
+		gens = gens[len(gens)-retainGenerations:]
+	}
+
+	keep := map[string]bool{}
+	for _, g := range gens {
+		m, err := manifest.LoadGeneration(manifestsDir, g)
+		if err != nil {
+			return err
+		}
+		for _, r := range m.Records {
+			keep[r.Hash] = true
+		}
+	}
+
+	return st.Prune(keep)
 }

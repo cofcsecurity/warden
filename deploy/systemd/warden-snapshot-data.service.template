@@ -1,0 +1,6 @@
+[Unit]
+Description=%SNAPSHOT_DATA_NAME_ON_BOX%
+
+[Service]
+Type=oneshot
+ExecStart=%INSTALL_PATH% snapshot --tier data

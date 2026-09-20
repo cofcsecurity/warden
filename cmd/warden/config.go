@@ -1,6 +1,11 @@
 package main
 
-import "warden/internal/manifest"
+import (
+	"fmt"
+	"strings"
+
+	"warden/internal/manifest"
+)
 
 // Local, on-disk paths. Deliberately not overridable by flag or env var —
 // see docs/DESIGN.md's "Configuration" section for why these stay fixed
@@ -8,26 +13,97 @@ import "warden/internal/manifest"
 const (
 	dataDir      = "/var/lib/warden"
 	manifestPath = dataDir + "/manifest.json"
+	manifestsDir = dataDir + "/manifests" // archived generations, one file each
 	objectsDir   = dataDir + "/objects"
 	auditLogPath = dataDir + "/audit.log"
+
+	// retainGenerations bounds store.Prune's mark-and-sweep: objects
+	// referenced only by generations older than the last N are dropped.
+	retainGenerations = 10
 )
 
-// watchedPaths and classifyPath are per-box: fill these in for the target
-// distro's actual config layout before building for a competition. Left
-// empty here so a dev build doesn't silently watch nothing meaningful.
-var watchedPaths []string
+// EXAMPLE VALUES — everything below this line is a starting template, not
+// a real watch list. Replace configTierPaths, dataTierPaths, classifyPath,
+// and serviceForPath with the actual paths and services for whatever this
+// season's target distro and scoring services are before building for a
+// competition (docs/PLAN.md Phase 1).
+
+// configTierPaths is the fast snapshot/watch tier: small, frequently
+// checked files whose drift usually means tampering rather than normal
+// service operation.
+var configTierPaths = []string{
+	"/etc/passwd",
+	"/etc/shadow",
+	"/etc/group",
+	"/etc/sudoers",
+	"/etc/ssh/sshd_config",
+	"/etc/nginx/nginx.conf",
+	"/etc/apache2/apache2.conf",
+	"/etc/mysql/my.cnf",
+}
+
+// dataTierPaths is the slow snapshot tier: larger service data, snapshotted
+// less often. watch only ever runs against configTierPaths.
+var dataTierPaths []string
+
+// watchedPaths is what `warden watch` checks; it's the config tier, since
+// that's what drift-detection is actually meant to catch.
+var watchedPaths = configTierPaths
+
+var confirmFirstPaths = map[string]bool{
+	"/etc/passwd":          true,
+	"/etc/shadow":          true,
+	"/etc/group":           true,
+	"/etc/sudoers":         true,
+	"/etc/ssh/sshd_config": true,
+}
 
 func classifyPath(path string) manifest.Class {
-	// TODO: return manifest.ConfirmFirst for keys, passwd, sudoers, and
-	// anything else that should never be auto-reverted; SafeAutoRestore
-	// for everything else.
+	if confirmFirstPaths[path] {
+		return manifest.ConfirmFirst
+	}
 	return manifest.SafeAutoRestore
+}
+
+var pathServices = map[string]string{
+	"/etc/nginx/nginx.conf":     "nginx",
+	"/etc/apache2/apache2.conf": "apache2",
+	"/etc/mysql/my.cnf":         "mysql",
+	"/etc/ssh/sshd_config":      "sshd",
 }
 
 // serviceForPath maps a watched path to the systemd unit that owns it, for
 // restore's stop/write/restart sequence. Returns ok=false for paths with no
-// mapped service.
+// mapped service (e.g. passwd/shadow/sudoers, which don't need a restart).
 func serviceForPath(path string) (unit string, ok bool) {
-	// TODO: fill in per box, e.g. "/etc/nginx/nginx.conf" -> "nginx".
-	return "", false
+	unit, ok = pathServices[path]
+	return unit, ok
+}
+
+// snapshotTier selects which path list a snapshot covers.
+type snapshotTier string
+
+const (
+	tierConfig snapshotTier = "config"
+	tierData   snapshotTier = "data"
+)
+
+func pathsForTier(tier snapshotTier) []string {
+	switch tier {
+	case tierData:
+		return dataTierPaths
+	default:
+		return configTierPaths
+	}
+}
+
+func parseTier(s string) (snapshotTier, error) {
+	switch strings.ToLower(s) {
+	case "", string(tierConfig):
+		return tierConfig, nil
+	case string(tierData):
+		return tierData, nil
+	default:
+		return "", fmt.Errorf("config: unknown tier %q (want %q or %q)", s, tierConfig, tierData)
+	}
 }
