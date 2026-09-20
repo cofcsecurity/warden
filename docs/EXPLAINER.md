@@ -58,23 +58,59 @@ The reasoning: silently "fixing" a credential file could just as easily undo
 something your own teammate meant to change, or paper over exactly the thing
 a judge needs to see. Some decisions need a person.
 
+## Turning auto-restore on: arm and disarm
+
+There's a wrinkle in "reverts it immediately": right after Warden is
+installed, your team is usually still actively *hardening* the box —
+tightening `sshd_config`, locking down `nginx.conf`, and so on. Those are
+exactly the same files watch would otherwise consider "drift" and revert.
+Without something to stop it, watch would undo your own hardening work
+every few minutes, back to whatever the box looked like the moment Warden
+was installed.
+
+So auto-restore starts **off**. Right after install, watch still runs on
+its normal schedule and still flags the sensitive stuff (passwd, sudoers,
+etc.), it just doesn't overwrite anything — it reports what it *would* have
+reverted and leaves it alone. Once your team is done hardening, run:
+
+```
+warden arm
+```
+
+This takes one more snapshot of exactly what's on disk right now — locking
+in your hardened state as the new "known good" — and turns auto-restore on.
+From that point forward, watch behaves the way "What Warden actually does"
+above describes. If you need to do more maintenance later (patching a
+service, say) without watch fighting you, `warden disarm` turns auto-restore
+back off first; run `arm` again when you're done.
+
+Detecting *what* to watch and harden in the first place is its own step —
+run `warden detect` to scan the box for common CCDC services (web, database,
+mail, DNS, file transfer, DHCP) already running or configured, and see which
+of their config files are and aren't already in Warden's watch list.
+
 ## How it survives being killed
 
 This is the part that makes Warden more than "a backup script." There's no
 single process to kill — nothing you could find with `ps` and `kill -9` and
-be done with. Instead there are three independent things keeping each other
-alive: a scheduled timer, a separate `cron` entry, and the SSH key entry
-itself. Every few minutes, whichever of the timer or the cron entry fires
-checks that all three still exist, and rebuilds whichever one is missing —
-including, if it comes to that, whichever one just fired the check in the
-first place.
+be done with. There are three things involved — a scheduled timer, a
+separate `cron` entry, and the SSH key entry itself — but only two of them,
+the timer and the cron entry, can actually *trigger* anything. Every few
+minutes, whichever of those two fires checks that all three still exist and
+rebuilds whichever one is missing, including, if it comes to that, the other
+trigger.
 
-Think of it like three people who each check on each other on a rotating
-schedule and restore whoever's missing. Red team would have to destroy all
-three in the exact same instant, before the next check runs, to actually cut
-you off — and even then, your watched config files are still getting
-auto-reverted in the meantime by the piece described above, so *those*
-changes don't stick either.
+Think of it less like three equal peers and more like two guards who each,
+independently, patrol and repair all three things — the SSH key line itself
+never patrols anything, it's just one of the things getting checked. So
+killing any one or two of the three doesn't matter: whichever guard is still
+standing puts the rest back on its next round. Red team would have to take
+out *both* guards (the timer and the cron entry) in the exact same instant
+to stop the patrols entirely — and even then, your existing SSH access
+wouldn't vanish on its own, it would just stop being defended going forward.
+Meanwhile, your watched config files are still getting auto-reverted (once
+armed — see "Turning auto-restore on" above) by the piece described earlier,
+so *those* changes don't stick either.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md)'s "Persistence: how it survives a kill
 attempt" diagram if you want to see this laid out visually.
@@ -84,8 +120,10 @@ attempt" diagram if you want to see this laid out visually.
 You don't run Warden by hand day-to-day — it's installed once at the start of
 the competition and then runs itself on a schedule. What that looks like:
 
-1. Every ~5 minutes: it checks your watched configs for changes, and either
-   fixes them quietly or flags them loudly.
+1. Every ~5 minutes: it checks your watched configs for changes. Sensitive
+   ones get flagged either way; everything else gets silently fixed *only if
+   armed* — otherwise it's flagged too, so nothing is lost, it's just not
+   acted on yet.
 2. Every ~5 minutes: it takes a fresh config-tier backup.
 3. Every hour: it takes a backup of the bigger service data.
 4. Every ~15 minutes: it pushes new backup data to your other team-controlled
@@ -93,10 +131,12 @@ the competition and then runs itself on a schedule. What that looks like:
 5. Every ~10 minutes: it double-checks its own persistence (the timer, the
    cron entry, the SSH key) is all still in place.
 
-The only time a human actually *does* anything with Warden is: checking in on
-its status, telling it to actually restore something after a flagged change,
-or — in the worst case — recovering a box's entire backup history from a
-peer after that box got wiped and rebuilt from scratch.
+The times a human actually *does* something with Warden: running `warden
+detect` and hardening the box early on, running `warden arm` once that's
+done, checking in on its status, telling it to actually restore something
+after a flagged change, or — in the worst case — recovering a box's entire
+backup history from a peer after that box got wiped and rebuilt from
+scratch.
 
 ## What Warden deliberately does NOT do
 
@@ -119,6 +159,12 @@ assume incorrectly:
   a service that's already running (SSH) instead of opening a new listening
   port, and the forced-command restriction means even someone who steals the
   team's key still can't get an open shell without the second-factor code.
+- **It does not fight back.** Warden is entirely defensive: it restores
+  your own state and protects your own access, and never touches red
+  team's infrastructure, blocks their IP, or takes any action against
+  them. "Survives an attack" here means resilience, not retaliation —
+  partly because most competitions' rules of engagement don't allow
+  offensive action against red team even once you can identify them.
 - **It does not scrub evidence or hide what it did.** Every single action —
   a restore, a flagged file, a rejected login attempt — gets written to a
   log file your team can show a judge if asked. Trying to look invisible by

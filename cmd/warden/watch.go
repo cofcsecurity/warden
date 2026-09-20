@@ -36,19 +36,29 @@ func runWatch() error {
 	}
 	defer log.Close()
 
-	w := watch.New(p.configManifestPath, watchedPaths, classifyPath, st, log)
+	armed, err := isArmed(p)
+	if err != nil {
+		return err
+	}
+
+	w := watch.New(p.configManifestPath, watchedPaths, classifyPath, armed, st, log)
 	res, err := w.Check()
 	if err != nil {
 		return err
 	}
 
 	if err := log.Log("watch", "pass", map[string]any{
+		"armed":         armed,
 		"auto_restored": len(res.AutoRestored),
+		"suppressed":    len(res.Suppressed),
 		"flagged":       len(res.Flagged),
 	}); err != nil {
 		return err
 	}
 
-	fmt.Printf("auto-restored: %d, flagged: %d\n", len(res.AutoRestored), len(res.Flagged))
+	fmt.Printf("armed: %t, auto-restored: %d, suppressed: %d, flagged: %d\n", armed, len(res.AutoRestored), len(res.Suppressed), len(res.Flagged))
+	if !armed && len(res.Suppressed) > 0 {
+		fmt.Println("note: disarmed — the paths above were left as-is. run 'warden arm' once hardening is done.")
+	}
 	return nil
 }

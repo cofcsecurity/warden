@@ -29,6 +29,7 @@ type Watcher struct {
 	manifestPath string
 	paths        []string
 	classify     manifest.Classify
+	armed        bool
 	store        *store.Store
 	log          *audit.Logger
 }
@@ -36,11 +37,19 @@ type Watcher struct {
 // New builds a Watcher. manifestPath is where the last known-good manifest
 // lives; paths are what this pass watches; classify assigns each path's
 // Class (safe-auto-restore vs confirm-first).
-func New(manifestPath string, paths []string, classify manifest.Classify, st *store.Store, log *audit.Logger) *Watcher {
+//
+// armed gates auto-restore only. While disarmed — the default until a human
+// runs `warden arm` — a SafeAutoRestore path that drifted is reported as
+// Suppressed instead of being overwritten, so the box can be hardened
+// (editing exactly these same config files) without watch fighting that
+// work every few minutes. ConfirmFirst and unexpected-new-path handling are
+// unaffected either way, since neither of those ever writes to disk.
+func New(manifestPath string, paths []string, classify manifest.Classify, armed bool, st *store.Store, log *audit.Logger) *Watcher {
 	return &Watcher{
 		manifestPath: manifestPath,
 		paths:        paths,
 		classify:     classify,
+		armed:        armed,
 		store:        st,
 		log:          log,
 	}
@@ -49,6 +58,7 @@ func New(manifestPath string, paths []string, classify manifest.Classify, st *st
 // Result summarizes one Check pass.
 type Result struct {
 	AutoRestored []string
+	Suppressed   []string // would have been auto-restored, but disarmed
 	Flagged      []string
 }
 
@@ -76,6 +86,11 @@ func (w *Watcher) Check() (*Result, error) {
 			w.logChange("flagged", change)
 
 		case change.Kind == manifest.Modified || change.Kind == manifest.Removed:
+			if !w.armed {
+				res.Suppressed = append(res.Suppressed, change.Path)
+				w.logChange("drift-suppressed", change)
+				continue
+			}
 			if err := w.restore(change); err != nil {
 				return res, fmt.Errorf("watch: restore %s: %w", change.Path, err)
 			}

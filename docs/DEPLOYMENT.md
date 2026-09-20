@@ -130,6 +130,16 @@ ssh <box> 'rm -rf ~/systemd'
 - `ssh -i <team's own login private key> <box> status` (over the opmenu forced command) reports a manifest generation and recent watch/sentinel passes. This is the team's own key from step 3/`TEAM_PUBKEY` — not a `secrets/<box>/replicate_key`, which authenticates the *box* to its replication peers, not an operator to the box.
 - Run `warden replicate` by hand once (don't wait for the timer) and confirm objects landed on **both** neighbors: `ssh <neighbor> 'find /home/warden-backup/from-<box> -type f'` should show `manifests-config/`, `manifests-data/`, and `objects/`.
 
+## 6.5. Harden, then arm
+
+The box comes up **disarmed**: `watch` runs on schedule and flags sensitive drift, but won't auto-revert anything yet. That's the window for the team's actual hardening work — get a shell (`ssh <box> "shell <code>"` over opmenu, TOTP required) and:
+
+1. Run `warden detect` to see what's actually running on this box and which of its config files aren't yet in `configTierPaths` — add the ones that matter for this competition's scoring to `cmd/warden/config.go` and rebuild/redeploy if anything's missing (steps 3–5 again for just this box).
+2. Do the actual hardening: lock down `sshd_config`, tighten service configs, rotate anything default, whatever this box needs.
+3. Once that's done: `warden arm`. This snapshots the box's current (hardened) state and turns on auto-restore — from here on, drift in a watched file gets reverted, not just flagged.
+
+Don't skip straight to step 3 before steps 1–2: arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done.
+
 ## 7. Recovery: pulling a box's own backups back
 
 If a box is wiped and rebuilt (rebuild it with the **same** `TEAM_PUBKEY`/`TOTP_SECRET`/`REPLICATE_TARGETS`/`REPLICATE_KEY` it had before — recovery assumes the rebuilt binary can still authenticate to the same peers), it starts with no local manifest and `watch` will flag everything as unexpected rather than restore anything, since it has no baseline to restore from. Pull its own prior backups back from either neighbor:

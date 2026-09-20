@@ -61,7 +61,7 @@ func TestCheckAutoRestoresModifiedFile(t *testing.T) {
 	manifestPath := filepath.Join(dir, "manifest.json")
 	snapshotBaseline(t, manifestPath, []string{confPath}, nil, st)
 
-	w := New(manifestPath, []string{confPath}, nil, st, log)
+	w := New(manifestPath, []string{confPath}, nil, true, st, log)
 
 	// A clean check right after the baseline should find nothing to do.
 	res, err := w.Check()
@@ -120,7 +120,7 @@ func TestCheckDoesNotWriteManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := New(manifestPath, []string{confPath}, nil, st, log)
+	w := New(manifestPath, []string{confPath}, nil, true, st, log)
 	if _, err := w.Check(); err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +131,45 @@ func TestCheckDoesNotWriteManifest(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Fatalf("expected Check to leave the manifest file byte-for-byte untouched\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+func TestCheckSuppressesRestoreWhenDisarmed(t *testing.T) {
+	dir, st, log := setup(t)
+
+	confPath := filepath.Join(dir, "nginx.conf")
+	if err := os.WriteFile(confPath, []byte("known-good"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := filepath.Join(dir, "manifest.json")
+	snapshotBaseline(t, manifestPath, []string{confPath}, nil, st)
+
+	w := New(manifestPath, []string{confPath}, nil, false, st, log)
+
+	// Simulate a team member hardening this exact file during the
+	// pre-arm window.
+	if err := os.WriteFile(confPath, []byte("hardened-by-hand"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := w.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.AutoRestored) != 0 {
+		t.Fatalf("expected nothing auto-restored while disarmed, got %+v", res.AutoRestored)
+	}
+	if len(res.Suppressed) != 1 || res.Suppressed[0] != confPath {
+		t.Fatalf("expected %s to be reported suppressed, got %+v", confPath, res.Suppressed)
+	}
+
+	got, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hardened-by-hand" {
+		t.Fatalf("disarmed watch must not touch the file, got %q", got)
 	}
 }
 
@@ -146,7 +185,7 @@ func TestCheckFlagsConfirmFirstChanges(t *testing.T) {
 	manifestPath := filepath.Join(dir, "manifest.json")
 	snapshotBaseline(t, manifestPath, []string{sudoersPath}, classify, st)
 
-	w := New(manifestPath, []string{sudoersPath}, classify, st, log)
+	w := New(manifestPath, []string{sudoersPath}, classify, true, st, log)
 
 	if err := os.WriteFile(sudoersPath, []byte("attacker ALL=(ALL) NOPASSWD:ALL"), 0o644); err != nil {
 		t.Fatal(err)

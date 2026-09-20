@@ -45,15 +45,15 @@ Deployed as two systemd timers (`*-snap-cfg`, every 5 min; `*-snap-data`, hourly
 
 Runs one integrity check pass over the config tier: generates a fresh manifest, diffs it against the last snapshot, and acts on what changed —
 
-- **`safe-auto-restore`** paths (most config files): reverted immediately from `objects/`, logged as `auto-restored`.
-- **`confirm-first`** paths (keys, `passwd`, `sudoers`, `sshd_config` — see `cmd/warden/config.go`'s `confirmFirstPaths`): never touched. Logged as `flagged`, and it'll be flagged again on every subsequent run for as long as the drift is unresolved — `watch` never updates its own baseline, so nothing makes the alert go away except a human fixing it and running `snapshot` again to accept the new state.
+- **`safe-auto-restore`** paths (most config files): reverted immediately from `objects/` **if armed** (see `warden arm`/`warden disarm` above), logged as `auto-restored`. While disarmed, the same drift is left untouched and logged as `drift-suppressed` instead — nothing is lost, it's just not acted on until the box is armed.
+- **`confirm-first`** paths (keys, `passwd`, `sudoers`, `sshd_config` — see `cmd/warden/config.go`'s `confirmFirstPaths`): never touched, armed or not. Logged as `flagged`, and it'll be flagged again on every subsequent run for as long as the drift is unresolved — `watch` never updates its own baseline, so nothing makes the alert go away except a human fixing it and running `snapshot` again to accept the new state.
 - **Unexpected new paths**: flagged, not restored — there's no known-good content to restore from.
 
 Not a daemon; invoked by a jittered systemd timer (`*-watch`, every 5 min ± up to 90s).
 
 ```
 warden watch
-# auto-restored: 1, flagged: 0
+# armed: true, auto-restored: 1, suppressed: 0, flagged: 0
 ```
 
 ### `warden restore <target> [--snapshot <generation>] [--apply]`
@@ -88,6 +88,29 @@ warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1 --tier dat
 ```
 
 Dry run (the default) fetches the manifest and reports what's available without touching local state. `--apply` also fetches every object the manifest references into the local store and adopts the manifest as the local live baseline for that tier — after which `warden watch`/`warden restore` work normally again. See DEPLOYMENT.md's "Recovery" section for the full rebuild-and-recover workflow.
+
+### `warden detect`
+
+Read-only scan for what this box is actually running: checks the box's processes and on-disk config paths against a table of services common on CCDC-style images (web, database, mail, DNS, file transfer, DHCP, SSH — see `internal/detect`), and reports which of their config files are and aren't already in `configTierPaths`. Changes nothing; it's meant to answer "what should the watch list actually cover" before relying on it (`docs/PLAN.md` Phase 1).
+
+```
+warden detect
+nginx            running
+  /etc/nginx/nginx.conf                   watched
+MySQL/MariaDB    configured, not running
+  /etc/mysql/my.cnf                       NOT in watch list
+```
+
+### `warden arm` / `warden disarm`
+
+Gates `watch`'s auto-restore. A box comes up **disarmed** right after `install.sh` — `watch` still runs on schedule and still flags `ConfirmFirst` drift, but a `SafeAutoRestore` path that changed is reported as suppressed rather than overwritten. That's deliberate: the team is usually still hardening the box (locking down `sshd_config`, `nginx.conf`, etc.) in this window, and armed auto-restore would just revert that hardening back to the pre-install state every few minutes.
+
+```
+warden arm      # snapshot the current (hardened) state, then turn auto-restore on
+warden disarm   # turn auto-restore back off, e.g. ahead of a planned maintenance window
+```
+
+`arm` takes a fresh config-tier snapshot immediately before flipping the switch, so whatever's on disk at that moment — not a stale pre-hardening snapshot — becomes the enforced baseline. Both log to `audit.log`; `status` (below) reports the current armed state.
 
 ### `warden sentinel-check`
 
@@ -127,7 +150,9 @@ ssh -i <team private key> root@<box>
 
 `<code>` is the current 6-digit TOTP code from the seed baked in at build time. Anything else — an unrecognized command, a missing/wrong code on `restore`/`shell` — is rejected and logged to `audit.log` either way, along with the source IP (already constrained by `authorized_keys`' `from=` before opmenu ever runs).
 
-`status` deliberately needs no second factor, so it stays a safe, cheap way to check in without spending a TOTP window.
+`status` deliberately needs no second factor, so it stays a safe, cheap way to check in without spending a TOTP window. It now also reports whether the box is armed (see `warden arm`/`warden disarm` above).
+
+`arm`/`disarm`/`detect` aren't opmenu commands — there was no compelling reason to add a third TOTP-gated write path when `shell` already gets the team a real shell to run any CLI command from, including these.
 
 ## Audit log
 
@@ -137,11 +162,13 @@ ssh -i <team private key> root@<box>
 {"time":"2026-09-20T17:47:41Z","component":"watch","action":"auto-restored","fields":{"kind":"modified","path":"/etc/nginx/nginx.conf"}}
 ```
 
-`component` is which part of Warden logged it (`snapshot`, `watch`, `restore`, `replicate`, `sentinel`, `opmenu`); `fields` is action-specific detail. This file, kept current, is the team's evidence of exactly what Warden did if a judge asks — see DESIGN.md's Rules of Engagement note.
+`component` is which part of Warden logged it (`snapshot`, `watch`, `restore`, `replicate`, `sentinel`, `opmenu`, `arm`); `fields` is action-specific detail. This file, kept current, is the team's evidence of exactly what Warden did if a judge asks — see DESIGN.md's Rules of Engagement note.
 
 ## Known limitations
 
 - `restore` only operates on the config tier — there's no CLI path to restore an individual data-tier file today. `retrieve` does cover both tiers.
-- `configTierPaths`/`dataTierPaths`/`classifyPath`/`serviceForPath` in `cmd/warden/config.go` are a worked example (common CCDC services), not this season's actual scored image — see `docs/PLAN.md` Phase 1.
+- `configTierPaths`/`dataTierPaths`/`classifyPath`/`serviceForPath` in `cmd/warden/config.go` ship with a broad multi-distro default (see `warden detect`), not this season's actual scored image — see `docs/PLAN.md` Phase 1.
+- `detect` only recognizes the services in `internal/detect.KnownServices`; a scored service outside that list won't show up and needs adding to `configTierPaths` by hand.
+- Warden has no active-response capability — it never blocks an IP, kills a process, or takes any action against red team. It's purely defensive; see `docs/EXPLAINER.md`'s "What Warden deliberately does NOT do".
 
 See `docs/PLAN.md` for the full phased build history and what's still open.

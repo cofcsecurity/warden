@@ -109,7 +109,17 @@ func runStatus(p paths) (string, error) {
 	}
 	last := audit.LastByComponent(entries)
 
+	armed, err := isArmed(p)
+	if err != nil {
+		return "", err
+	}
+
 	var b strings.Builder
+	if armed {
+		fmt.Fprintf(&b, "armed: yes (auto-restore is on)\n")
+	} else {
+		fmt.Fprintf(&b, "armed: NO — auto-restore is off, drift is only flagged. run 'arm' once hardening is done.\n")
+	}
 	fmt.Fprintf(&b, "manifest generation: %d\n", m.Generation)
 	if m.CreatedAt.IsZero() {
 		fmt.Fprintf(&b, "last snapshot: none\n")

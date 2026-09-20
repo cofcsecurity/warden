@@ -59,6 +59,9 @@ func main() {
 	root.AddCommand(sentinelCheckCmd())
 	root.AddCommand(opmenuCmd())
 	root.AddCommand(debugConfigCmd())
+	root.AddCommand(armCmd())
+	root.AddCommand(disarmCmd())
+	root.AddCommand(detectCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

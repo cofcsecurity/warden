@@ -61,6 +61,12 @@ type paths struct {
 	// directory").
 	storeRoot    string
 	auditLogPath string
+	// armedMarkerPath's presence is the only thing that gates watch's
+	// auto-restore — see arm.go. Its absence (the state right after
+	// install) is the safe default: drift is still detected and logged,
+	// just never overwritten, so the box can be hardened without watch
+	// fighting that work every few minutes.
+	armedMarkerPath string
 }
 
 // loadPaths resolves paths for the current box. configManifestPath and
@@ -88,41 +94,82 @@ func loadPaths() (paths, error) {
 		dataManifestsDir:   dir + "/manifests-data",
 		storeRoot:          dir,
 		auditLogPath:       dir + "/audit.log",
+		armedMarkerPath:    dir + "/armed",
 	}, nil
 }
 
-// EXAMPLE VALUES — everything below this line is a starting template, not
-// a real watch list. Replace configTierPaths, dataTierPaths, classifyPath,
-// and serviceForPath with the actual paths and services for whatever this
-// season's target distro and scoring services are before building for a
-// competition (docs/PLAN.md Phase 1).
+// STARTING DEFAULTS, not a substitute for a real pass per docs/PLAN.md
+// Phase 1. configTierPaths below is deliberately broad — every entry that
+// doesn't exist on a given box is silently skipped by manifest.Generate,
+// so it's safe to ship a list covering common CCDC-image services across
+// both Debian- and RHEL-family paths rather than a single distro's exact
+// layout. Still confirm the real path list before a competition: run
+// `warden detect` on the actual target box (or an image of it) to see
+// which of these are actually present, plus anything it finds running
+// that isn't on this list yet — see internal/detect for the full table of
+// known services it checks for.
 //
-// WARNING when doing that: never add a scoring engine's own credentials
-// (a scoring account's authorized_keys, an app login the scoring checks
-// authenticate with, anything the scoring engine itself rotates) as
-// SafeAutoRestore. If the scoring engine legitimately changes it and
-// watch reverts it back to a stale snapshot, that's Warden silently
+// WARNING when editing this list: never add a scoring engine's own
+// credentials (a scoring account's authorized_keys, an app login the
+// scoring checks authenticate with, anything the scoring engine itself
+// rotates) as SafeAutoRestore. If the scoring engine legitimately changes
+// it and watch reverts it back to a stale snapshot, that's Warden silently
 // breaking the box's own score, indistinguishable from red team having
 // done it. If such a path needs watching at all, classify it
-// ConfirmFirst — flagged for a human, never auto-reverted — the same
-// way passwd/shadow/sudoers already are below.
+// ConfirmFirst — flagged for a human, never auto-reverted — the same way
+// passwd/shadow/sudoers already are below.
 
 // configTierPaths is the fast snapshot/watch tier: small, frequently
 // checked files whose drift usually means tampering rather than normal
-// service operation.
+// service operation. Grouped by what they're for; anything not installed
+// on a given box just never shows up in a manifest.
 var configTierPaths = []string{
+	// Core identity/access — always watched, always ConfirmFirst below.
 	"/etc/passwd",
 	"/etc/shadow",
 	"/etc/group",
+	"/etc/gshadow",
 	"/etc/sudoers",
 	"/etc/ssh/sshd_config",
+	"/etc/hosts",
+	"/etc/hostname",
+	"/etc/crontab",
+
+	// Web servers
 	"/etc/nginx/nginx.conf",
 	"/etc/apache2/apache2.conf",
+	"/etc/httpd/conf/httpd.conf", // RHEL-family Apache
+
+	// Databases
 	"/etc/mysql/my.cnf",
+	"/etc/my.cnf", // RHEL-family MySQL/MariaDB
+	"/etc/postgresql/postgresql.conf",
+
+	// Mail
+	"/etc/postfix/main.cf",
+	"/etc/dovecot/dovecot.conf",
+	"/etc/mail/sendmail.cf",
+
+	// DNS
+	"/etc/bind/named.conf",
+	"/etc/named.conf", // RHEL-family BIND
+
+	// File transfer / sharing
+	"/etc/vsftpd.conf",
+	"/etc/proftpd/proftpd.conf",
+	"/etc/samba/smb.conf",
+	"/etc/exports", // NFS
+
+	// DHCP
+	"/etc/dhcp/dhcpd.conf",
 }
 
 // dataTierPaths is the slow snapshot tier: larger service data, snapshotted
-// less often. watch only ever runs against configTierPaths.
+// less often. watch only ever runs against configTierPaths. Left empty by
+// default — unlike configTierPaths, this needs the season's real scored
+// service data files named explicitly (e.g. a specific database dump path
+// or web root file), since manifest.Generate only records individual
+// files, not whole directories (see docs/PLAN.md Phase 1).
 var dataTierPaths []string
 
 // watchedPaths is what `warden watch` checks; it's the config tier, since
@@ -133,6 +180,7 @@ var confirmFirstPaths = map[string]bool{
 	"/etc/passwd":          true,
 	"/etc/shadow":          true,
 	"/etc/group":           true,
+	"/etc/gshadow":         true,
 	"/etc/sudoers":         true,
 	"/etc/ssh/sshd_config": true,
 }
@@ -145,10 +193,22 @@ func classifyPath(path string) manifest.Class {
 }
 
 var pathServices = map[string]string{
-	"/etc/nginx/nginx.conf":     "nginx",
-	"/etc/apache2/apache2.conf": "apache2",
-	"/etc/mysql/my.cnf":         "mysql",
-	"/etc/ssh/sshd_config":      "sshd",
+	"/etc/nginx/nginx.conf":           "nginx",
+	"/etc/apache2/apache2.conf":       "apache2",
+	"/etc/httpd/conf/httpd.conf":      "httpd",
+	"/etc/mysql/my.cnf":               "mysql",
+	"/etc/my.cnf":                     "mariadb",
+	"/etc/postgresql/postgresql.conf": "postgresql",
+	"/etc/postfix/main.cf":            "postfix",
+	"/etc/dovecot/dovecot.conf":       "dovecot",
+	"/etc/mail/sendmail.cf":           "sendmail",
+	"/etc/bind/named.conf":            "bind9",
+	"/etc/named.conf":                 "named",
+	"/etc/vsftpd.conf":                "vsftpd",
+	"/etc/proftpd/proftpd.conf":       "proftpd",
+	"/etc/samba/smb.conf":             "smbd",
+	"/etc/dhcp/dhcpd.conf":            "isc-dhcp-server",
+	"/etc/ssh/sshd_config":            "sshd",
 }
 
 // serviceForPath maps a watched path to the systemd unit that owns it, for
