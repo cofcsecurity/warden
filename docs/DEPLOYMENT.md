@@ -154,7 +154,7 @@ Only if the box itself already has outbound access to wherever this repo is host
 
 ```bash
 ssh root@<box>
-git clone <this repo's URL> ~/warden
+git clone https://github.com/cofcsecurity/warden.git ~/warden
 cd ~/warden
 ```
 
