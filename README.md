@@ -2,7 +2,7 @@
 
 Persistence and backup/restore for a host under active attack, built for the CofC Cybersecurity Club's SECCDC/PCDC defense team.
 
-Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, [docs/PLAN.md](docs/PLAN.md) for what's built versus what's left, phased, and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the step-by-step checklist to actually stand this up ahead of a competition.
+Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, [docs/USAGE.md](docs/USAGE.md) for every command and what it does, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the step-by-step checklist to stand this up ahead of a competition, and [docs/PLAN.md](docs/PLAN.md) for what's built versus what's left, phased.
 
 **Before deploying any of this against a real box, confirm it's allowed under that competition's rules of engagement.** See DESIGN.md's "Rules of Engagement Note".
 
@@ -13,7 +13,7 @@ cmd/warden/    Cobra CLI: snapshot, replicate, watch, restore, sentinel-check, o
 internal/      manifest, store, replicate, watch, restore, audit, opmenu, sentinel, totp
 deploy/        systemd unit/timer templates, install.sh
 scripts/       generate-keys.sh — one-time per-competition secret generation
-docs/          design notes, implementation plan, and the deployment checklist
+docs/          design notes, usage reference, deployment checklist, implementation plan
 ```
 
 ## Building

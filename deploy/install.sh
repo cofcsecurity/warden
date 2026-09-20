@@ -164,7 +164,7 @@ main() {
 	step_initial_snapshot
 
 	echo "==> Before deleting this script, verify the access layer works:"
-	echo "    ssh -i <team replication key> root@127.0.0.1 status"
+	echo "    ssh -i <team's own login private key, matching TEAM_PUBKEY above> root@127.0.0.1 status"
 	read -r -p "    Verified? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "not deleting install.sh; re-run once verified"; exit 1; }
 

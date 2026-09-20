@@ -67,7 +67,7 @@ ssh <box> 'rm -rf ~/systemd'
 
 ## 6. Verify
 
-- `ssh -i secrets/replicate_key <box> status` (over the opmenu forced command) reports a manifest generation and recent watch/sentinel passes.
+- `ssh -i <team's own login private key> <box> status` (over the opmenu forced command) reports a manifest generation and recent watch/sentinel passes. This is the team's own key from step 3/`TEAM_PUBKEY` — not `secrets/replicate_key`, which authenticates the *box* to its replication target, not an operator to the box.
 - If using a second box for replication, confirm `warden replicate` on the target actually lands objects there.
 
 ## 7. Repeat per box
