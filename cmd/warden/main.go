@@ -76,6 +76,7 @@ func main() {
 	root.AddCommand(unbanCmd())
 	root.AddCommand(acceptCmd())
 	root.AddCommand(alertsCmd())
+	root.AddCommand(rotateSecretCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

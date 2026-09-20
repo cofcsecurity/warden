@@ -2,6 +2,7 @@ package opmenu
 
 import (
 	"encoding/base32"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +13,15 @@ import (
 
 func testHandler(t *testing.T, restoreCalled *bool) (*Handler, string) {
 	t.Helper()
+	h, secret, _ := testHandlerWithStaticSecret(t, restoreCalled, "")
+	return h, secret
+}
+
+// testHandlerWithStaticSecret is testHandler plus a static-secret file
+// (created with the given initial content, or left absent if empty), for
+// exercising the non-TOTP fallback path.
+func testHandlerWithStaticSecret(t *testing.T, restoreCalled *bool, staticSecretContent string) (*Handler, string, string) {
+	t.Helper()
 	secret := base32.StdEncoding.EncodeToString([]byte("test-secret-1234567890"))
 
 	log, err := audit.New(filepath.Join(t.TempDir(), "audit.log"))
@@ -20,8 +30,17 @@ func testHandler(t *testing.T, restoreCalled *bool) (*Handler, string) {
 	}
 	t.Cleanup(func() { log.Close() })
 
+	staticSecretPath := ""
+	if staticSecretContent != "" {
+		staticSecretPath = filepath.Join(t.TempDir(), "second-factor")
+		if err := os.WriteFile(staticSecretPath, []byte(staticSecretContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	h := New(
 		secret,
+		staticSecretPath,
 		func() (string, error) { return "ok", nil },
 		func(target string, args []string) (string, error) {
 			if restoreCalled != nil {
@@ -32,7 +51,7 @@ func testHandler(t *testing.T, restoreCalled *bool) (*Handler, string) {
 		"", // no shell path in tests; shell path is exercised separately
 		log,
 	)
-	return h, secret
+	return h, secret, staticSecretPath
 }
 
 func TestStatusNeedsNoTOTP(t *testing.T) {
@@ -100,5 +119,69 @@ func TestUnrecognizedCommandRejected(t *testing.T) {
 	_, err := h.Handle(Request{Command: "rm -rf /"})
 	if err == nil {
 		t.Fatal("expected error for unrecognized command")
+	}
+}
+
+func TestRestoreAcceptedWithValidStaticSecret(t *testing.T) {
+	called := false
+	h, _, _ := testHandlerWithStaticSecret(t, &called, "my-static-passphrase\n")
+
+	out, err := h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: "my-static-passphrase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "restored nginx" {
+		t.Errorf("got %q, want %q", out, "restored nginx")
+	}
+	if !called {
+		t.Errorf("RestoreFn should have been invoked with a valid static secret")
+	}
+}
+
+func TestRestoreRejectedWithWrongStaticSecret(t *testing.T) {
+	called := false
+	h, _, _ := testHandlerWithStaticSecret(t, &called, "my-static-passphrase\n")
+
+	_, err := h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: "wrong-guess"})
+	if err == nil {
+		t.Fatal("expected error for restore with a wrong static secret")
+	}
+	if called {
+		t.Errorf("RestoreFn should not have been invoked with a wrong static secret")
+	}
+}
+
+func TestStaticSecretStillHonorsValidTOTP(t *testing.T) {
+	// A configured static secret must not disable TOTP -- either should
+	// still work.
+	called := false
+	h, secret, _ := testHandlerWithStaticSecret(t, &called, "my-static-passphrase\n")
+
+	code, err := totp.Generate(secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: code})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Errorf("RestoreFn should have been invoked with a valid TOTP code even though a static secret is also configured")
+	}
+}
+
+func TestUnconfiguredStaticSecretPathNeverMatches(t *testing.T) {
+	// StaticSecretPath == "" (the default/unconfigured state) must never
+	// accidentally accept anything.
+	called := false
+	h, _ := testHandler(t, &called)
+
+	_, err := h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: ""})
+	if err == nil {
+		t.Fatal("expected error for an empty code")
+	}
+	if called {
+		t.Errorf("RestoreFn should not have been invoked")
 	}
 }

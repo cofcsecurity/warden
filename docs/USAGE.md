@@ -113,6 +113,18 @@ warden disarm   # turn auto-restore back off, e.g. ahead of a planned maintenanc
 
 `arm` takes a fresh config-tier snapshot immediately before flipping the switch, so whatever's on disk at that moment — not a stale pre-hardening snapshot — becomes the enforced baseline. Both log to `audit.log`; `status` (below) reports the current armed state.
 
+### `warden rotate-secret [value]`
+
+Sets (or replaces) a static, non-TOTP passphrase opmenu accepts as an alternative second factor — for competitions where phones/authenticator apps aren't available at all (PCDC-style events), where TOTP simply isn't usable. Generates a random value if none is given. `install.sh` already runs this once, by default, during setup — this is for rotating it later (e.g. after a leak), not first-time setup.
+
+```
+warden rotate-secret
+# Static second factor set. Save this somewhere secure — it will not be printed again:
+#   ABCDEFGHIJKLMNOPQRSTUVWX
+```
+
+Takes effect immediately — opmenu reads this from disk fresh on every check, nothing is baked into the binary — so rotating it (e.g. after a leak) needs no rebuild or redeploy, just running this again with a new value. Purely additive: setting this doesn't disable TOTP, `restore`/`shell` accept either. `status` reports whether one is currently set.
+
 ### `warden accept <path> <totp-code>`
 
 The sanctioned way to land one deliberate change to a single watched path — say, a real hardening edit to `sshd_config` — without it perpetually flagging (`ConfirmFirst`) or getting reverted next tick (`SafeAutoRestore`, once armed), and without a blanket `warden snapshot`, which re-baselines *every* watched path and would silently swallow any other real, unrelated drift along with the one you meant to accept.

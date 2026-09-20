@@ -116,6 +116,11 @@ type paths struct {
 	// fighting that work every few minutes.
 	armedMarkerPath string
 	bannedIPsPath   string
+	// staticSecretPath is opmenu's rotatable, non-TOTP second factor — see
+	// internal/opmenu's StaticSecretPath and cmd/warden/rotatesecret.go.
+	// Absent until `warden rotate-secret` is run at least once, which is
+	// the safe default: opmenu simply never matches on it until then.
+	staticSecretPath string
 }
 
 // loadPaths resolves paths for the current box. configManifestPath and
@@ -145,6 +150,7 @@ func loadPaths() (paths, error) {
 		auditLogPath:       dir + "/audit.log",
 		armedMarkerPath:    dir + "/armed",
 		bannedIPsPath:      dir + "/banned_ips.json",
+		staticSecretPath:   dir + "/second-factor",
 	}, nil
 }
 

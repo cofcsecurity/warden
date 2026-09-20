@@ -36,13 +36,23 @@ TOTP_SECRET="$(python3 -c 'import secrets, base64; print(base64.b32encode(secret
 printf '%s\n' "$TOTP_SECRET" > "$OUT_DIR/totp_secret"
 chmod 600 "$OUT_DIR/totp_secret"
 
+OTPAUTH_URI="otpauth://totp/Warden:${OUT_DIR}?secret=${TOTP_SECRET}&issuer=Warden&digits=6&period=30"
+echo "==> Two-factor setup — scan this in an authenticator app (Google Authenticator, Authy, 1Password, ...)"
+if command -v qrencode >/dev/null 2>&1; then
+	qrencode -t ANSIUTF8 "$OTPAUTH_URI"
+else
+	echo "    (install 'qrencode' to render this as a scannable QR code here instead of typing it in)"
+fi
+echo "    Or add it manually — most apps have an 'enter setup key' option:"
+echo "      secret: $TOTP_SECRET"
+
 cat <<EOF
 
 Done. Wrote to $OUT_DIR/ (gitignored, do not commit):
   replicate_key      - private key; stays on the box that pushes replication
   replicate_key.pub  - public key; add to the backup box's authorized_keys
-  totp_secret        - base32 seed; distribute to teammates out-of-band
-                        (e.g. as a QR code) so they can generate opmenu codes
+  totp_secret        - base32 seed; re-run this script's QR code (above) for
+                        each teammate who needs it, out-of-band (not Slack)
 
 Still needed before building, that this script can't generate for you:
   - TEAM_PUBKEY:         the team's own login public key (not this script's output)

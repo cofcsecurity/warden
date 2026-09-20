@@ -47,6 +47,30 @@ require_root() {
 	fi
 }
 
+# warn_if_already_installed catches the case where this script (or
+# scripts/build-and-install.sh) already ran on this box once: INSTALL_PATH
+# isn't remembered between runs, so a second run would otherwise just pick
+# a different unused name via choose_install_path and set up a completely
+# separate second installation — not update the first, and not obviously
+# so, since the two would look unrelated. /var/lib/<name>/.spare only
+# exists once install_spare_binary has run, so pairing it with audit.log
+# is a reasonably specific signal without needing a second, more
+# obviously-named marker file.
+warn_if_already_installed() {
+	local dir name
+	for dir in /var/lib/*/; do
+		[[ -f "${dir}audit.log" && -f "${dir}.spare" ]] || continue
+		name="$(basename "$dir")"
+		echo "==> Warden already appears to be installed on this box as '${name}'"
+		echo "    (found ${dir}audit.log). Continuing installs a SEPARATE, second copy"
+		echo "    under a different name — it does not update or replace this one."
+		echo "    To check on the existing install instead: ssh <team key> ${name}@<box> status"
+		read -r -p "    Install a second copy anyway? [y/N] " ans
+		[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting"; exit 1; }
+		return
+	done
+}
+
 require_filled_in() {
 	local unfilled=()
 	for var in TEAM_PUBKEY TEAM_FROM_IP; do
@@ -304,6 +328,16 @@ step_initial_snapshot() {
 	"$INSTALL_PATH" snapshot --tier data
 }
 
+# step_generate_static_secret runs by default, for every install, not just
+# PCDC-style ones with no phones: it's an alternative to TOTP, not a
+# replacement, so there's no downside to always having one ready — a team
+# that ends up not needing it just doesn't use it. Doing this here means
+# nobody has to remember a separate manual step for it later.
+step_generate_static_secret() {
+	echo "==> Generating a static second factor (works without TOTP or a phone at all)"
+	"$INSTALL_PATH" rotate-secret
+}
+
 step_detect_summary() {
 	echo "==> Scanning for what's actually running on this box (read-only)"
 	echo "    Compare this against cmd/warden/config.go's configTierPaths before arming —"
@@ -340,6 +374,11 @@ step_next_steps() {
 	echo ""
 	echo "==> Installed and disarmed. Auto-restore is OFF until you arm it — see below."
 	echo ""
+	echo "    A static second factor was generated above (scroll up if you missed it) —"
+	echo "    restore/shell accept it exactly like a TOTP code, no phone or authenticator"
+	echo "    app needed. Works whether or not TOTP is also usable at this competition."
+	echo "    Save that value now; run '${INSTALL_PATH} rotate-secret' any time to change it."
+	echo ""
 	echo "    Next, from a shell on this box (get one with:"
 	echo "      ssh -i <team login key> ${OPMENU_USER}@<this box> \"shell <totp-code>\"    # over opmenu, from off-box"
 	echo "    or just stay logged in here if you're already on it):"
@@ -368,6 +407,7 @@ step_next_steps() {
 main() {
 	require_root
 	require_filled_in
+	warn_if_already_installed
 	resolve_install_path
 	step_confirm_clean
 	step_place_binary
@@ -378,6 +418,7 @@ main() {
 	step_authorize_key
 	step_configure_sudoers
 	step_initial_snapshot
+	step_generate_static_secret
 	step_detect_summary
 
 	echo "==> Before deleting this script, verify the access layer works:"

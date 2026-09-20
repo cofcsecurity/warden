@@ -44,7 +44,13 @@ For multiple boxes (see step 2 if defending several), pass a distinct output dir
 
 Either way it writes (gitignored): a replication-only SSH keypair (`replicate_key`/`replicate_key.pub`) and a TOTP seed (`totp_secret`). None of this belongs in this repo or anywhere else public. Distribute each TOTP seed to teammates who'll need to generate opmenu codes — out-of-band (e.g. a QR code shown once, not pasted into Slack).
 
-This does **not** generate the team's own login keypair (`TEAM_PUBKEY`) — that should already exist; use whatever key a team member actually holds the private half of.
+This does **not** generate the team's own login keypair (`TEAM_PUBKEY`) — use whatever key a team member already holds the private half of, or generate one now, **on your own machine, never on a target box**:
+
+```
+./scripts/generate-team-key.sh
+```
+
+Prints the public key to use as `TEAM_PUBKEY`. Generate this once per competition, not once per box — every box uses the same value, and every teammate who'll operate a box needs a copy of the private half, shared out-of-band.
 
 ## 2. Replication topology
 
@@ -221,6 +227,8 @@ Once the access-layer verification prompt near the end passes, `install.sh` dele
 
 - `ssh -i <team's own login private key> <opmenu-user>@<box> status` (over the opmenu forced command) reports a manifest generation and recent watch/sentinel passes. `<opmenu-user>` is `INSTALL_PATH`'s basename (`docs/DESIGN.md`'s opmenu section). This is the team's own key from step 3/`TEAM_PUBKEY` — not a `secrets/<box>/replicate_key`, which authenticates the *box* to its replication peers, not an operator to the box.
 - Run `warden replicate` by hand once (don't wait for the timer) and confirm objects landed on **both** neighbors: `ssh <neighbor> 'find /home/warden-backup/from-<box> -type f'` should show `manifests-config/`, `manifests-data/`, and `objects/`.
+
+`install.sh` already generated a static second factor during setup (printed to the terminal — scroll back if you missed it) — `restore`/`shell` accept it exactly like a TOTP code, no phone or authenticator app needed, which is what makes step 6.5 below possible at competitions where phones aren't allowed at all (PCDC-style). Make sure that value got saved somewhere secure; `<INSTALL_PATH> rotate-secret` (from a shell you already have) changes it later, e.g. if it leaks.
 
 ## 6.5. Harden, then arm
 

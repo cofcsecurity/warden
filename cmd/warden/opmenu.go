@@ -49,6 +49,7 @@ func runOpmenu() error {
 
 	h := opmenu.New(
 		buildTOTPSecret,
+		p.staticSecretPath,
 		func() (string, error) { return runStatus(p) },
 		func(target string, args []string) (string, error) { return runOpmenuRestore(p, target, args) },
 		"/bin/bash",
@@ -119,6 +120,11 @@ func runStatus(p paths) (string, error) {
 		fmt.Fprintf(&b, "armed: yes (auto-restore is on)\n")
 	} else {
 		fmt.Fprintf(&b, "armed: NO — auto-restore is off, drift is only flagged. run 'arm' once hardening is done.\n")
+	}
+	if _, err := os.Stat(p.staticSecretPath); err == nil {
+		fmt.Fprintf(&b, "static second factor: set (in addition to TOTP — run 'rotate-secret' to change it)\n")
+	} else {
+		fmt.Fprintf(&b, "static second factor: not set (TOTP only — run 'rotate-secret' if phones/authenticator apps aren't usable here)\n")
 	}
 	fmt.Fprintf(&b, "manifest generation: %d\n", m.Generation)
 	if m.CreatedAt.IsZero() {

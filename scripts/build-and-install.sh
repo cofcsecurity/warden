@@ -132,6 +132,13 @@ prompt_if_unset() {
 
 collect_config() {
 	echo "==> Per-box configuration (set as env vars beforehand to skip these prompts)"
+	if [[ -z "${TEAM_PUBKEY:-}" ]]; then
+		echo "    TEAM_PUBKEY is the team's own login key — the SAME one across every box"
+		echo "    this competition, not a new one per box. If this is the first box and you"
+		echo "    don't have one yet, generate it on YOUR OWN machine (never here — this is"
+		echo "    the box being defended) with: scripts/generate-team-key.sh"
+		echo "    Then paste the public key it prints below."
+	fi
 	prompt_if_unset TEAM_PUBKEY "Team's login public key (e.g. 'ssh-ed25519 AAAA... team@ccdc')"
 	prompt_if_unset TEAM_FROM_IP "Team's source IP or CIDR opmenu will accept connections from"
 	# Left empty on purpose: install.sh auto-selects an unused,
@@ -157,12 +164,19 @@ collect_config() {
 	REPLICATE_TARGETS="${REPLICATE_TARGETS:-}"
 	REPLICATE_KEY="${REPLICATE_KEY:-}"
 	if [[ -z "$REPLICATE_TARGETS" ]]; then
-		read -r -p "Set up replication to a peer now? [y/N] " ans
-		if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
-			echo "    See docs/DEPLOYMENT.md's 'Replication topology' — this needs a peer already reachable"
-			echo "    and its receiving account already set up. Skipping for now if that's not true yet;"
-			echo "    rebuild and rerun later once it is."
-			read -r -p "    REPLICATE_TARGETS (\"<url>||<hostkey>\" pairs, ';;'-separated, blank to skip): " REPLICATE_TARGETS
+		echo "    Off-box backups (optional, but recommended — without this, backups only"
+		echo "    exist on this one box). Three options:"
+		echo "      1. Skip for now — no second box, no removable media. No keypair needed;"
+		echo "         you can rebuild and rerun later once you have one of the other two."
+		echo "      2. A peer box also running Warden, over SSH — needs a replication keypair"
+		echo "         (generated below) and that peer's receiving account already set up,"
+		echo "         see docs/DEPLOYMENT.md's 'Replication topology'."
+		echo "      3. A mounted USB drive / removable media on this box — no keypair needed"
+		echo "         at all, just a local path."
+		read -r -p "    Choice [1/2/3, default 1]: " choice
+		case "$choice" in
+		2)
+			read -r -p "    REPLICATE_TARGETS (\"<url>||<hostkey>\" pairs, ';;'-separated): " REPLICATE_TARGETS
 			if [[ -n "$REPLICATE_TARGETS" ]]; then
 				if [[ -z "$REPLICATE_KEY" && ! -f secrets/replicate_key ]]; then
 					./scripts/generate-keys.sh >/dev/null
@@ -172,7 +186,15 @@ collect_config() {
 				fi
 				REPLICATE_KEY="${REPLICATE_KEY:-$(base64 < secrets/replicate_key | tr -d '\n')}"
 			fi
-		fi
+			;;
+		3)
+			read -r -p "    Path to the mounted media (e.g. /mnt/usb): " media_path
+			[[ -n "$media_path" ]] && REPLICATE_TARGETS="file://${media_path}||"
+			;;
+		*)
+			: # skip — REPLICATE_TARGETS/REPLICATE_KEY stay empty
+			;;
+		esac
 	fi
 
 	AUTOBAN_ENABLED="${AUTOBAN_ENABLED:-}"
