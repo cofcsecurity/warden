@@ -5,21 +5,25 @@ package replicate
 import (
 	"fmt"
 
-	"golang.org/x/crypto/ssh"
+	"warden/internal/manifest"
+	"warden/internal/store"
 )
 
 // Target is where a Replicator pushes to. Both an SSH host and a local
 // filesystem path (e.g. removable media, when no second box is available)
 // satisfy this interface, so callers don't branch on which is configured.
+//
+// Every method must be additive-only: a Target implementation must never
+// delete or overwrite something that's already there. A compromised source
+// box can then never destroy prior backups, only add to them.
 type Target interface {
-	// Put writes an object if the destination doesn't already have one
-	// under this hash. Implementations must never delete or overwrite an
-	// existing object — replication is additive-only.
-	Put(hash string, content []byte) error
 	Has(hash string) (bool, error)
+	Put(hash string, content []byte) error
+	HasManifest(generation int) (bool, error)
+	PutManifest(generation int, data []byte) error
 }
 
-// Replicator pushes store objects and the current manifest to a Target.
+// Replicator pushes store objects and manifest generations to a Target.
 type Replicator struct {
 	target Target
 }
@@ -29,56 +33,37 @@ func New(target Target) *Replicator {
 	return &Replicator{target: target}
 }
 
-// SSHTarget is a Target backed by golang.org/x/crypto/ssh, authenticating
-// with a key generated only for replication (never a personal or team
-// login key).
-type SSHTarget struct {
-	client     *ssh.Client
-	remoteRoot string
-}
+// Push replicates m: every object m's records reference that the target
+// doesn't already have, then the manifest generation itself. Existing
+// objects and generations are left untouched.
+func (r *Replicator) Push(m *manifest.Manifest, manifestData []byte, st *store.Store) error {
+	for _, rec := range m.Records {
+		has, err := r.target.Has(rec.Hash)
+		if err != nil {
+			return fmt.Errorf("replicate: check %s: %w", rec.Hash, err)
+		}
+		if has {
+			continue
+		}
 
-// DialSSH connects to addr as user, authenticating with signer, and returns
-// a Target rooted at remoteRoot on that host.
-//
-// TODO: implement the actual object transfer (SFTP subsystem or exec'd
-// commands over the session) and host key verification against a pinned
-// key baked in at build time.
-func DialSSH(addr, user string, signer ssh.Signer, remoteRoot string) (*SSHTarget, error) {
-	return nil, fmt.Errorf("replicate: DialSSH not yet implemented")
-}
+		content, err := st.Get(rec.Hash)
+		if err != nil {
+			return fmt.Errorf("replicate: read %s from local store: %w", rec.Hash, err)
+		}
+		if err := r.target.Put(rec.Hash, content); err != nil {
+			return fmt.Errorf("replicate: push %s: %w", rec.Hash, err)
+		}
+	}
 
-func (t *SSHTarget) Put(hash string, content []byte) error {
-	return fmt.Errorf("replicate: SSHTarget.Put not yet implemented")
-}
-
-func (t *SSHTarget) Has(hash string) (bool, error) {
-	return false, fmt.Errorf("replicate: SSHTarget.Has not yet implemented")
-}
-
-// FSTarget is a Target backed by a local (or removable-media) filesystem
-// path, used when no second team-controlled box is available.
-type FSTarget struct {
-	root string
-}
-
-// NewFSTarget returns a Target rooted at root.
-func NewFSTarget(root string) *FSTarget {
-	return &FSTarget{root: root}
-}
-
-func (t *FSTarget) Put(hash string, content []byte) error {
-	return fmt.Errorf("replicate: FSTarget.Put not yet implemented")
-}
-
-func (t *FSTarget) Has(hash string) (bool, error) {
-	return false, fmt.Errorf("replicate: FSTarget.Has not yet implemented")
-}
-
-// Push replicates every object referenced by manifestData (the manifest's
-// raw bytes) plus objects, skipping any hash the target already has.
-//
-// TODO: parse the manifest, iterate its records, pull each from the local
-// store, and call target.Put for anything target.Has reports missing.
-func (r *Replicator) Push(manifestData []byte, objects map[string][]byte) error {
-	return fmt.Errorf("replicate: Push not yet implemented")
+	hasManifest, err := r.target.HasManifest(m.Generation)
+	if err != nil {
+		return fmt.Errorf("replicate: check manifest generation %d: %w", m.Generation, err)
+	}
+	if hasManifest {
+		return nil
+	}
+	if err := r.target.PutManifest(m.Generation, manifestData); err != nil {
+		return fmt.Errorf("replicate: push manifest generation %d: %w", m.Generation, err)
+	}
+	return nil
 }

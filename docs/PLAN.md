@@ -26,13 +26,13 @@ The parts of the design that only need this box, no network.
 - `cmd/warden/config.go`: `watchedPaths`/`classifyPath`/`serviceForPath` now hold a worked example (passwd/shadow/sudoers/sshd_config as confirm-first, nginx/apache/mysql/sshd as safe-auto-restore with service mappings) instead of being empty. **Still needs a real pass**: this is a template covering common CCDC services, not this season's actual scored image — confirm the real path list and service map before relying on it.
 - Two snapshot tiers: `snapshot --tier config|data` (config is also what `watch` checks), `cmd/warden/snapshot.go` archives each generation and prunes `store` objects outside the last `retainGenerations`. `restore --snapshot <id>` now loads a specific archived generation via `manifest.LoadGeneration`. Two new systemd timer pairs added to `deploy/systemd/` and wired into `install.sh`.
 
-## Phase 2 — Off-host replication
+## Phase 2 — Off-host replication (done)
 
-- `internal/replicate.SSHTarget`: real object transfer over `golang.org/x/crypto/ssh` (SFTP subsystem or exec'd remote commands — pick one and justify it in a comment), plus host key verification against a key pinned at build time rather than TOFU.
-- `internal/replicate.FSTarget`: plain file copy to a local/removable-media path, same `Target` interface.
-- `internal/replicate.Push`: walk a manifest's records, pull each object from the local `store`, and call `target.Put` for anything `target.Has` reports missing. Must stay additive-only on the destination — no deletes, no overwrites.
-- `cmd/warden/replicate.go`: parse `buildReplicateURL` into an `ssh://` or `file://` target and dispatch to the right backend.
-- Decide, before the competition: is there an actual second team-controlled box for this, or does `replicate` point at removable media instead? That decision changes which backend gets exercised in practice.
+- `internal/replicate.SSHTarget`: transfers over `golang.org/x/crypto/ssh` using small `sh -c` exec commands (`mkdir`/`test -e`/`cat > tmp && mv`) rather than SFTP, so the only third-party dependency stays the one the design calls for. Host key verified via `ssh.FixedHostKey` against a key pinned at build time — `DialSSH` takes the expected host key as a parameter, it never learns one on first connect. Tested against a real in-process SSH server (a minimal `ssh.ServerConfig` that execs through the local shell) covering Put/Has, additive-only (a second `Put` under the same hash doesn't clobber), and both host-key and client-key rejection.
+- `internal/replicate.FSTarget`: same `Target` interface, plain files under `objects/`/`manifests/`, additive-only writes via temp-file-then-rename. Unit tested.
+- `internal/replicate.Push`: walks a manifest's records, pulls anything missing from the local `store`, calls `target.Put`, then pushes the manifest generation itself if the target doesn't have it yet — restoring from a replica only needs to list `manifests/manifest-*.json` and take the max, no separate "latest" pointer to keep additive-only. Unit tested against a fake in-memory `Target`.
+- `cmd/warden/replicate.go`: parses `buildReplicateURL` (`ssh://user@host[:port]/root` or `file:///path`) and dispatches to the right backend. New build-time values `buildReplicateKey` (base64 PEM, ssh:// only) and `buildReplicateHostKey` (authorized_keys-format pinned host key), wired into the `Makefile`.
+- Still open, and it's a decision only the team can make: is there an actual second team-controlled box this season, or does `replicate` point at removable media instead? Generate the replication-only key pair and the destination's host key ahead of time either way (Phase 5).
 
 ## Phase 3 — opmenu's remaining commands
 

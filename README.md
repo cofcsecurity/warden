@@ -19,8 +19,11 @@ docs/          design notes and implementation plan
 
 ```
 make build TEAM_PUBKEY="ssh-ed25519 AAAA... team@ccdc" TEAM_FROM_IP=203.0.113.10 \
-           TOTP_SECRET=<base32 seed> REPLICATE_URL=ssh://backup-box/warden
+           TOTP_SECRET=<base32 seed> REPLICATE_URL=ssh://warden@backup-box/warden \
+           REPLICATE_KEY=$(base64 -i replicate_key) REPLICATE_HOST_KEY="$(cat backup_box_host_key.pub)"
 ```
+
+`REPLICATE_URL` can be `file:///path` instead (removable media) if there's no second team-controlled box; in that case `REPLICATE_KEY`/`REPLICATE_HOST_KEY` aren't needed.
 
 Produces a stripped, static `bin/warden` for `linux/amd64` with no build-time config file — see DESIGN.md's "Configuration" section for why.
 

@@ -17,7 +17,16 @@ var (
 	buildTeamPubKey   string
 	buildTeamFromIP   string
 	buildTOTPSecret   string
-	buildReplicateURL string
+	buildReplicateURL string // ssh://user@host:port/remote/root or file:///local/path
+
+	// buildReplicateKey is a base64-encoded PEM private key, generated only
+	// for replication (see docs/DESIGN.md's replicate section) — never a
+	// personal or team login key. Only used for an ssh:// buildReplicateURL.
+	buildReplicateKey string
+	// buildReplicateHostKey is the destination's public key in
+	// authorized_keys format, pinned at build time rather than learned on
+	// first connect.
+	buildReplicateHostKey string
 )
 
 func main() {
