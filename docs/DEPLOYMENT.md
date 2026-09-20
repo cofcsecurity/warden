@@ -1,6 +1,21 @@
 # Deployment Checklist
 
-The step-by-step version of `docs/PLAN.md`'s Phase 5. Work through this once per competition, on the team's own build machine — never on a target box.
+The step-by-step version of `docs/PLAN.md`'s Phase 5. Two phases: **Part A**, once per competition on the team's own build machine, produces one binary per box; **Part B**, once per box, gets it installed, verified, hardened, and armed.
+
+## Quick reference
+
+Section numbers below match the headers exactly. Skip to any of them for full detail.
+
+**Part A — once per competition, build machine only:**
+- **Step 0** — [confirm rules of engagement](#0-rules-of-engagement-do-this-first-not-last) with organizers, before anything else.
+- **Step 0.5, 1, 2** — [decide what to watch without fighting the scoring engine](#05-dont-let-warden-fight-the-scoring-engine), [generate secrets](#1-generate-per-competition-secrets) (`generate-keys.sh`), [plan replication topology](#2-replication-topology) if defending multiple boxes.
+- **Step 3** — [build](#3-build) one binary per box (`make build`), and verify it with `debug-config` before trusting it.
+
+**Part B — once per box:**
+- **Step 4, 5** — [fill in `install.sh`'s per-box values](#4-confirm-installshs-per-box-values) and [deploy](#5-deploy-to-each-box) (`scp` + `sudo ./install.sh`, which now prints its own next-steps summary when it finishes).
+- **Step 6** — [verify](#6-verify) the access layer and replication both actually work.
+- **Step 6.5** — [harden the box, then arm it](#65-harden-then-arm) (`warden detect` → harden → `warden arm`). **The box is unprotected against config drift until this step — a fresh install is not the same as a defended box.**
+- **Step 7, 8** — keep [recovery](#7-recovery-pulling-a-boxs-own-backups-back) in mind for if a box gets wiped later, and repeat steps 3–6.5 [per box](#8-repeat-per-box).
 
 ## 0. Rules of engagement (do this first, not last)
 
@@ -121,11 +136,9 @@ scp bin/warden deploy/install.sh -r deploy/systemd <box>:~/
 ssh <box> 'sudo ./install.sh'
 ```
 
-`install.sh` deletes itself on success. It does **not** delete `deploy/systemd/` — do that by hand after confirming the units came up, since leaving the template directory behind is exactly the kind of artifact `docs/DESIGN.md`'s footprint policy warns about:
+Once the access-layer verification prompt near the end passes, `install.sh` cleans up after itself and deletes itself: the leftover `~/warden` source binary (its literal, un-disguised filename would otherwise sit right next to the disguised one at `$INSTALL_PATH`, giving the game away to anyone who runs `ls ~`), the `~/systemd/` template directory (same problem — its filenames spell out exactly what each unit is for), and finally the script itself. Nothing manual needed here anymore; if verification fails, none of this cleanup runs, so the templates and source binary stay in place for debugging.
 
-```
-ssh <box> 'rm -rf ~/systemd'
-```
+`install.sh` also prints a "what's next" summary before it deletes itself — the same detect → harden → arm sequence from step 6.5 below — so it doesn't rely on whoever's running it remembering to come back to this doc.
 
 ## 6. Verify
 
@@ -143,6 +156,12 @@ The box comes up **disarmed**: `watch` runs on schedule and flags sensitive drif
 Don't skip straight to step 3 before steps 1–2: arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done. If a specific hardening edit needs to land on a `ConfirmFirst` path (which is never auto-reverted anyway, armed or not) without perpetually flagging, `warden accept <path> <totp-code>` marks just that one file's current state as known-good.
 
 If this build has `AUTOBAN_ENABLED` set, open a second SSH session now (`ssh <box> "shell <code>"`) and leave `warden alerts` running in it — that's the only way anyone sees a guarded-path alert as it happens, by design (see `docs/DESIGN.md`'s "Active Response" section on why it's pull-based instead of a broadcast).
+
+### A note on shell history
+
+`opmenu`'s `shell` command execs bash over a `no-pty` SSH channel, which bash treats as non-interactive — verified directly: a non-interactive bash never writes a history file at all, so commands typed there (`arm`, `disarm`, `ban`, `accept`, ...) leave nothing in `~/.bash_history` regardless of any setting. That's not something Warden arranges deliberately, just a side effect of `no-pty` already being there for other reasons (see `docs/DESIGN.md`'s opmenu section) — don't rely on it if that restriction ever changes.
+
+The real exposure is any *other* interactive root shell on the box — physical console access, or any admin path outside opmenu — where history is recorded normally, and a line like `svchelper disarm` hands anyone who later reads that file both the disguised binary's real path and how to turn off its protection. If your team has that kind of access to a box, set `HISTCONTROL=ignorespace` for root there (most distros support it; check `root`'s `.bashrc`, since it isn't always on by default) and prefix sensitive commands with a leading space — a normal, unremarkable sysadmin habit, not something that needs explaining to a judge, unlike editing a history file after the fact would be.
 
 ## 7. Recovery: pulling a box's own backups back
 

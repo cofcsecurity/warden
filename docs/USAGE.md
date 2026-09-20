@@ -179,6 +179,8 @@ ssh -i <team private key> root@<box>
 
 `arm`/`disarm`/`detect` aren't opmenu commands — there was no compelling reason to add a third TOTP-gated write path when `shell` already gets the team a real shell to run any CLI command from, including these.
 
+`shell`'s bash runs over a `no-pty` channel, which bash treats as non-interactive — confirmed directly, a non-interactive bash never writes a history file at all, so nothing typed there lands in `~/.bash_history`. That's incidental, not something Warden arranges on purpose, so don't assume it holds if `no-pty` is ever dropped. Any *other* interactive root shell on the box (physical console, or an admin path outside opmenu) records history normally — see `docs/DEPLOYMENT.md`'s "A note on shell history" for why that's the one place a stray `<disguised-path> disarm` line actually matters.
+
 ## Audit log
 
 `/var/lib/warden/audit.log` is JSON-lines, one entry per action:

@@ -176,9 +176,65 @@ step_initial_snapshot() {
 	"$INSTALL_PATH" snapshot --tier data
 }
 
+step_detect_summary() {
+	echo "==> Scanning for what's actually running on this box (read-only)"
+	echo "    Compare this against cmd/warden/config.go's configTierPaths before arming —"
+	echo "    anything listed as running/configured but 'NOT in watch list' isn't backed up"
+	echo "    or protected yet."
+	"$INSTALL_PATH" detect || true
+}
+
+step_cleanup_artifacts() {
+	echo "==> Cleaning up setup artifacts"
+	# WARDEN_BIN_SRC is the literal, un-disguised "warden" binary this
+	# script scp'd in alongside itself — install already copied it to
+	# INSTALL_PATH under its real (disguised) name, so leaving the source
+	# copy sitting in this directory would give the game away to anyone
+	# who runs `ls` here, the exact thing installing under a blended-in
+	# name was supposed to prevent.
+	if [[ -f "$WARDEN_BIN_SRC" ]]; then
+		rm -f -- "$WARDEN_BIN_SRC"
+	fi
+	# The template directory's filenames (warden-watch.service.template,
+	# etc.) are just as revealing, and everything in it has already been
+	# rendered into place under $unit_dir — nothing here is needed again.
+	if [[ -d systemd ]]; then
+		rm -rf -- systemd
+	fi
+}
+
 step_self_delete() {
 	echo "==> Removing this install script"
 	rm -- "$0"
+}
+
+step_next_steps() {
+	echo ""
+	echo "==> Installed and disarmed. Auto-restore is OFF until you arm it — see below."
+	echo ""
+	echo "    Next, from a shell on this box (get one with:"
+	echo "      ssh -i <team login key> <this box> \"shell <totp-code>\"    # over opmenu, from off-box"
+	echo "    or just stay logged in here if you're already on it):"
+	echo ""
+	echo "      1. Review the 'warden detect' output above (or re-run it) against"
+	echo "         cmd/warden/config.go's configTierPaths. Add anything missing that"
+	echo "         matters for this season's scoring, then rebuild + redeploy just this box."
+	echo "      2. Do the actual hardening: lock down sshd_config, tighten service configs,"
+	echo "         rotate defaults, whatever this box needs."
+	echo "      3. Run: ${INSTALL_PATH} arm"
+	echo "         This snapshots the box's current (hardened) state and turns on"
+	echo "         auto-restore. Arming before hardening just locks in the pre-hardening"
+	echo "         state instead, so don't skip 1-2."
+	echo ""
+	if "$INSTALL_PATH" debug-config 2>/dev/null | grep -Eq "^autoban_enabled:\s+true$"; then
+		echo "    This build has AUTOBAN_ENABLED set. Open a second session now and leave"
+		echo "    running: ${INSTALL_PATH} alerts"
+		echo "    (that's the only way anyone sees a guarded-path alert as it happens —"
+		echo "    it's deliberately not a system-wide broadcast, see docs/DESIGN.md.)"
+		echo ""
+	fi
+	echo "    Full detail: docs/DEPLOYMENT.md's 'Harden, then arm' section."
+	echo ""
 }
 
 main() {
@@ -190,12 +246,15 @@ main() {
 	step_install_cron_entry
 	step_authorize_key
 	step_initial_snapshot
+	step_detect_summary
 
 	echo "==> Before deleting this script, verify the access layer works:"
 	echo "    ssh -i <team's own login private key, matching TEAM_PUBKEY above> root@127.0.0.1 status"
 	read -r -p "    Verified? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "not deleting install.sh; re-run once verified"; exit 1; }
 
+	step_next_steps
+	step_cleanup_artifacts
 	step_self_delete
 }
 
