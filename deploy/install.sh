@@ -6,16 +6,20 @@
 #
 # This is a template: fill in the CHANGE-ME values for the target box
 # before running it, then delete it (step 8 does this automatically on
-# success).
+# success). Every value below can also be overridden by exporting the
+# same-named environment variable before running this script instead of
+# editing the file — hand-editing is still the normal path, but this
+# means another script (see scripts/build-and-install.sh, the single-box
+# build-then-install path) can drive this one without touching it.
 
 set -euo pipefail
 
 # --- CHANGE-ME: per-box values -----------------------------------------
-WARDEN_BIN_SRC="./warden"                # binary built by `make build`
-INSTALL_PATH="/usr/local/sbin/svchelper" # match this box's naming conventions
-AUTHORIZED_KEYS="/root/.ssh/authorized_keys"
-TEAM_PUBKEY="CHANGE-ME ssh-ed25519 AAAA... team@ccdc"
-TEAM_FROM_IP="CHANGE-ME 203.0.113.10"
+WARDEN_BIN_SRC="${WARDEN_BIN_SRC:-./warden}" # binary built by `make build`
+INSTALL_PATH="${INSTALL_PATH:-/usr/local/sbin/svchelper}" # match this box's naming conventions
+AUTHORIZED_KEYS="${AUTHORIZED_KEYS:-/root/.ssh/authorized_keys}"
+TEAM_PUBKEY="${TEAM_PUBKEY:-CHANGE-ME ssh-ed25519 AAAA... team@ccdc}"
+TEAM_FROM_IP="${TEAM_FROM_IP:-CHANGE-ME 203.0.113.10}"
 
 # Leave empty to skip scheduling replication (e.g. still deciding on a
 # replication peer — see docs/DEPLOYMENT.md's "Replication topology").
@@ -23,7 +27,7 @@ TEAM_FROM_IP="CHANGE-ME 203.0.113.10"
 # into the binary at build time, or `warden replicate` will just fail
 # every time this timer fires. This script never needs the real value —
 # it's baked into the binary — just whether replication is configured.
-REPLICATE_TARGETS=""
+REPLICATE_TARGETS="${REPLICATE_TARGETS:-}"
 
 # Unit names are derived from INSTALL_PATH's basename, not chosen
 # separately: sentinel-check re-derives these same names at runtime from

@@ -232,6 +232,8 @@ assume incorrectly:
   competition's rules. None of that happens automatically — see
   [DEPLOYMENT.md](DEPLOYMENT.md).
 
+One more thing worth knowing up front: getting Warden onto a box normally means building it on a machine your team controls (usually someone's own laptop) and only transferring the finished file — that machine never needs to touch the competition network at all. If your team genuinely doesn't have a machine like that available (some events only issue a locked-down laptop), there's a second path that builds and installs directly on the box itself in one step; see [DEPLOYMENT.md](DEPLOYMENT.md)'s "Alternative: build directly on the target box" if that's your situation.
+
 ## Where to go next
 
 - Setting this up before a competition: [DEPLOYMENT.md](DEPLOYMENT.md)

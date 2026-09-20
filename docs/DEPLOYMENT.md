@@ -2,6 +2,8 @@
 
 The step-by-step version of `docs/PLAN.md`'s Phase 5. Two phases: **Part A**, once per competition on the team's own build machine, produces one binary per box; **Part B**, once per box, gets it installed, verified, hardened, and armed.
 
+**No separate build machine available** (e.g. PCDC-style events where the only laptop you get is locked down, with no permission to install a toolchain on it)? Skip to [Alternative: build directly on the target box](#alternative-build-directly-on-the-target-box) — it replaces Part A and steps 3–5 of Part B with one script run on the box itself, at the cost of a real tradeoff spelled out there. Otherwise, the normal flow below is the safer default.
+
 ## Quick reference
 
 Section numbers below match the headers exactly. Skip to any of them for full detail.
@@ -9,7 +11,7 @@ Section numbers below match the headers exactly. Skip to any of them for full de
 **Part A — once per competition, build machine only:**
 - **Step 0** — [confirm rules of engagement](#0-rules-of-engagement-do-this-first-not-last) with organizers, before anything else.
 - **Step 0.5, 1, 2** — [decide what to watch without fighting the scoring engine](#05-dont-let-warden-fight-the-scoring-engine), [generate secrets](#1-generate-per-competition-secrets) (`generate-keys.sh`), [plan replication topology](#2-replication-topology) if defending multiple boxes.
-- **Step 3** — [build](#3-build) one binary per box (`make build`), and verify it with `debug-config` before trusting it.
+- **Step 3** — [build](#3-build) one binary per box (`make build`), and verify it with `debug-config` before trusting it. *(No build machine? See [the alternative](#alternative-build-directly-on-the-target-box) instead.)*
 
 **Part B — once per box:**
 - **Step 4, 5** — [fill in `install.sh`'s per-box values](#4-confirm-installshs-per-box-values) and [deploy](#5-deploy-to-each-box) (`scp` + `sudo ./install.sh`, which now prints its own next-steps summary when it finishes).
@@ -120,6 +122,65 @@ GOOS=$(go env GOHOSTOS) GOARCH=$(go env GOHOSTARCH) make build TEAM_PUBKEY=... T
 ```
 
 `debug-config` is a hidden command (not shown in `--help`) meant for exactly this — it prints every baked-in value except the TOTP secret and replication private key, which it only reports as set/not-set. Rebuild for `linux/amd64` (drop the `GOOS`/`GOARCH` override) before actually deploying.
+
+## Alternative: build directly on the target box
+
+Everything above assumes a separate machine the team controls, with Go installed, to build on — normally someone's personal laptop, not whatever the competition issues you (see the note at the top of this doc if that's not available at all: some events genuinely only hand out a locked-down laptop with no permission to install anything on it, e.g. PCDC). If that's your situation, or a separate build machine is just more coordination than it's worth for how many boxes there are, `scripts/build-and-install.sh` builds Warden **directly on the box being defended** and installs it in the same run instead — **replacing steps 3 through 5 below entirely.** Steps 0, 0.5, 6, 6.5, 7, and 8 still apply exactly as written; come back to step 6 once this is done.
+
+Read the tradeoff spelled out at the top of that script's own comments first: because the per-competition secrets get passed to `go build` as command-line flags, they're briefly visible in this box's own process list (`ps`) while the build runs — a real, if narrow, exposure the normal path doesn't have, since a machine red team has never touched never sees them at all. Doing this as early as possible in the box's clean-first window (the script still asks you to confirm that, same as `install.sh`) is the mitigation.
+
+### Step 1: get the source code onto the box
+
+Unlike the normal path (which only ever needs the one finished binary), this needs the whole repository on the target box. A few ways to get it there, in order of preference:
+
+**A. Copy it from a machine that already has it checked out (recommended)**
+
+If you or a teammate already have this repo cloned somewhere, `scp` it straight to the box — this needs nothing beyond the SSH access you're about to use anyway, and no internet access on the target box at all:
+
+```bash
+# from the machine that has this repo, at ./warden:
+scp -r ./warden root@<box>:~/warden
+```
+
+For a build that needs **zero internet access** on the target box (the safer default — see `docs/DESIGN.md`'s threat model), do this once first, on whatever machine you're copying *from*, before the `scp` above:
+
+```bash
+make vendor   # downloads every dependency into ./vendor, once, on a machine with internet
+```
+
+**B. Clone it directly on the box**
+
+Only if the box itself already has outbound access to wherever this repo is hosted, and you're comfortable with that — `docs/DESIGN.md`'s original "Delivery Mechanism" section steers away from `git clone` on a target box for the plain-binary path specifically because of this egress dependency; here, needing the source there at all means that tradeoff is at least a deliberate one:
+
+```bash
+ssh root@<box>
+git clone <this repo's URL> ~/warden
+cd ~/warden
+```
+
+If the repo is private, cloning needs credentials (a deploy key or access token) on the box temporarily — treat those like any other secret. `build-and-install.sh`'s cleanup step removes the whole checkout, credentials included, once installation succeeds.
+
+**C. USB drive (no network needed on the box at all)**
+
+```bash
+# on your own machine, with this repo at ./warden:
+tar czf warden.tar.gz --exclude=.git -C . warden
+# copy warden.tar.gz to a USB drive, plug it into the box's console, then on the box:
+tar xzf warden.tar.gz -C ~/
+```
+
+### Step 2: run it
+
+```bash
+cd ~/warden   # wherever it landed
+sudo ./scripts/build-and-install.sh
+```
+
+It asks for the same things `install.sh` normally needs (team pubkey, team IP, install path), plus offers to generate a TOTP seed — and, if you want replication, a replication keypair — right there on the spot. Set any of `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED` as environment variables beforehand to skip that particular prompt.
+
+It builds, self-verifies with `debug-config`, hands off to the normal `install.sh` (so you still get its own "confirm access works" prompt and next-steps summary), and — once that succeeds — **deletes the entire source tree it just ran from**, converging back to the same minimal footprint the off-box path leaves behind. Set `KEEP_SOURCE=1` beforehand if you have a real reason to keep the checkout around instead.
+
+From here, pick back up at step 6 (Verify) below.
 
 ## 4. Confirm `install.sh`'s per-box values
 

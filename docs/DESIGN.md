@@ -186,7 +186,7 @@ There is no guaranteed clean setup window, only an informal grace period at the 
 
 ### Delivery Mechanism
 
-Ruled out:
+For the built *binary*, ruled out:
 
 - `git clone` on the target: needs outbound access the box may not have, leaves the clone URL and a `.git` directory as an obvious artifact, and depends on the box's own git binary being intact, which the whole threat model assumes it might not be.
 - `curl`/`wget` on the target: same egress and history problems, plus depends on curl/wget being present and un-tampered.
@@ -195,13 +195,15 @@ Instead: `scp` (or the team's own jump host, if the competition provides one) pu
 
 ### Build Location Contingency
 
-The plan above assumes there's some machine the team controls and has permission to build on, even if it isn't literally a laptop issued for the competition. That might be a personal machine or a home lab box rather than team-owned equipment.
+The plan above assumes there's some machine the team controls and has permission to build on, even if it isn't literally a laptop issued for the competition — a personal machine or a home lab box, not necessarily team-owned equipment. That covers most cases (SECCDC-style events, where teams typically do have their own laptops alongside whatever the competition provides), but not all of them: some events (PCDC-style) issue a laptop with no permission to install anything on it at all, and that's the only machine the team has.
 
-If no such machine exists and the build genuinely has to happen on the target box itself:
+For that case, `scripts/build-and-install.sh` builds directly on the target box and installs immediately — see `docs/DEPLOYMENT.md`'s "Alternative: build directly on the target box" for the actual steps. Design notes on why it's structured the way it is:
 
-- Bring the source tree plus a vendored module cache (`go mod vendor`), so `go build` can run offline if the box has a Go toolchain, or one can be installed once without needing to fetch dependencies separately.
-- This is a bigger footprint than the pushed-binary plan by nature. A temporary build directory (source, module cache, build artifacts) exists on the box during the build, where the pre-built plan leaves nothing but the finished binary. Delete that build directory once the binary is produced. Removing your own working files after a build is ordinary software hygiene, not evidence-scrubbing, so it doesn't carry the same red-flag risk as wiping shell history does.
-- If the box has no Go toolchain and no way to get one (no internet, no local mirror), building there isn't possible. That's a real limitation worth testing for ahead of the competition rather than discovering it mid-event.
+- It needs the whole source tree on the box, not just a binary — the "ruled out" reasoning above was specifically about a target box pulling a finished, secret-laden artifact over the network when it didn't need to; here, the source has to arrive somehow regardless, so `scp` from a machine that already has it checked out is still the preferred transport (needs nothing the team doesn't already have — the SSH access to the box itself), with `git clone` directly on the box, or a USB drive for a fully air-gapped transfer, as fallbacks.
+- Building this way means the per-competition secrets get passed to `go build -ldflags -X ...`, which puts them briefly into this box's own process list (`ps`/`/proc/<pid>/cmdline`) for the few seconds the build runs — a real, if narrow, exposure a machine red team has never touched doesn't have. The mitigation is timing (build during the clean-first sweep, before the box has been exposed to anything untrusted), not elimination — there's no way to pass `-ldflags -X` values without them being literal command-line arguments.
+- A vendored module cache (`make vendor`, run once on any internet-connected machine, brought along as part of the tree) lets the build run with zero network access from the target box at all; without it, `go build` needs the box itself to reach Go's module proxy or a configured mirror.
+- The whole source tree (source, vendored dependencies, `.git` if cloned, build artifacts) is a much bigger, more identifiable footprint than the finished-binary plan leaves — `build-and-install.sh` deletes the entire checkout once installation succeeds, the same reasoning `install.sh` already applies to itself and its own template directory. Removing your own working files after a build is ordinary software hygiene, not evidence-scrubbing, so it doesn't carry the same red-flag risk as wiping shell history does (see "Footprint and Evidence Policy" below).
+- If the box has no Go toolchain and no way to get one (no internet, no local mirror, no package already staged), this path isn't available at all — that's a real limitation worth testing for ahead of the competition rather than discovering it mid-event.
 
 ### Configuration
 
