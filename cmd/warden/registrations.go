@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,12 +12,13 @@ import (
 )
 
 // buildRegistrations wires sentinel-check's real checks together: the
-// authorized_keys entry, its own systemd timer, its own cron entry, and —
-// when a replication target is configured — the replicate timer too.
-// Without that last one, red team could disable backups leaving the box
-// (the actual point of replicate) without touching anything else sentinel
-// watches. Every Check reads the relevant file directly rather than
-// shelling to systemctl/crontab, per docs/DESIGN.md's threat model.
+// authorized_keys entry (and the sudoers rule it depends on), its own
+// systemd timer, its own cron entry, and — when a replication target is
+// configured — the replicate timer too. Without that last one, red team
+// could disable backups leaving the box (the actual point of replicate)
+// without touching anything else sentinel watches. Every Check reads the
+// relevant file directly rather than shelling to systemctl/crontab, per
+// docs/DESIGN.md's threat model.
 func buildRegistrations() ([]sentinel.Registration, error) {
 	path, err := installPath()
 	if err != nil {
@@ -30,6 +32,17 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 	if err != nil {
 		return nil, err
 	}
+	akPath, err := authorizedKeysPath()
+	if err != nil {
+		return nil, err
+	}
+	opUser, err := opmenuUser()
+	if err != nil {
+		return nil, err
+	}
+	sudoersPath := sudoersDropInPath(opUser)
+	sudoersContent := sudoersDropInContent(opUser, path)
+	sparePath := spareBinaryPath(path)
 
 	servicePath := filepath.Join(systemdUnitDir, unitName+".service")
 	timerPath := filepath.Join(systemdUnitDir, unitName+".timer")
@@ -38,8 +51,17 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 	regs := []sentinel.Registration{
 		{
 			Name:     "authorized_keys",
-			Check:    func() (bool, error) { return checkAuthorizedKeysFile(authorizedKeysPath, line) },
-			Recreate: func() error { return recreateAuthorizedKeysFile(authorizedKeysPath, line) },
+			Check:    func() (bool, error) { return checkAuthorizedKeysFile(akPath, line) },
+			Recreate: func() error { return recreateAuthorizedKeysFile(akPath, line) },
+		},
+		{
+			// Without this, the authorized_keys entry above is inert —
+			// the forced command runs `sudo <path> opmenu`, and if the
+			// sudoers rule granting that is gone, every opmenu invocation
+			// just fails at the sudo step.
+			Name:     "sudoers",
+			Check:    func() (bool, error) { return checkSudoersFile(sudoersPath, sudoersContent) },
+			Recreate: func() error { return recreateSudoersFile(sudoersPath, sudoersContent) },
 		},
 		{
 			Name:  "systemd-timer",
@@ -60,6 +82,17 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 			Recreate: func() error {
 				return recreateCronEntryFile(cronSpoolPath, cronMarker(unitName), cronLine(unitName, path))
 			},
+		},
+		{
+			// watch/sentinel-check/retrieve are all *inside* this binary —
+			// none of them can run to restore it if the binary file itself
+			// is deleted. Keeping a hidden spare in sync means the cron
+			// trigger's test/cp/chmod fallback (see cronLine) has
+			// something to restore from, without depending on the Go
+			// binary at all.
+			Name:     "binary-backup",
+			Check:    func() (bool, error) { return checkSpareBinary(path, sparePath) },
+			Recreate: func() error { return recreateSpareBinary(path, sparePath) },
 		},
 	}
 
@@ -145,15 +178,47 @@ func writeSystemdTimerFiles(servicePath, timerPath, serviceContent, timerContent
 	return nil
 }
 
-// runSystemctl is the one place sentinel-check shells out: activating a
-// timer (the symlink in timers.target.wants plus telling the running
-// daemon about it) isn't something writing files alone can do. This is
-// distinct from using systemctl to check status, which the design
-// deliberately avoids trusting.
+// runSystemctl is one of two places sentinel-check shells out (the other
+// is visudo, below): activating a timer (the symlink in
+// timers.target.wants plus telling the running daemon about it) isn't
+// something writing files alone can do. This is distinct from using
+// systemctl to check status, which the design deliberately avoids
+// trusting.
 func runSystemctl(args ...string) error {
 	out, err := exec.Command("systemctl", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("sentinel: systemctl %s: %w: %s", strings.Join(args, " "), err, out)
+	}
+	return nil
+}
+
+func checkSudoersFile(path, expectedContent string) (bool, error) {
+	content, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("sentinel: read %s: %w", path, err)
+	}
+	return string(content) == expectedContent, nil
+}
+
+// recreateSudoersFile validates with visudo -cf before installing — a
+// malformed sudoers file breaks sudo box-wide, for every account, not
+// just this one. Written to a temp file and renamed into place only once
+// validated, so a failed check never leaves a bad file where sudo would
+// read it. 0440 matches sudoers.d's own permission requirement.
+func recreateSudoersFile(path, content string) error {
+	tmp := path + ".warden-tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o440); err != nil {
+		return fmt.Errorf("sentinel: write %s: %w", tmp, err)
+	}
+	if out, err := exec.Command("visudo", "-cf", tmp).CombinedOutput(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("sentinel: generated sudoers content failed validation: %w: %s", err, out)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("sentinel: install %s: %w", path, err)
 	}
 	return nil
 }
@@ -194,6 +259,47 @@ func recreateCronEntryFile(path, marker, newLine string) error {
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0o600); err != nil {
 		return fmt.Errorf("sentinel: write %s: %w", path, err)
+	}
+	return nil
+}
+
+// spareBinaryPath matches deploy/install.sh's SPARE_BINARY_PATH exactly —
+// hidden alongside the rest of this binary's own state under
+// /var/lib/<name>, not a second name to keep track of.
+func spareBinaryPath(installedPath string) string {
+	return "/var/lib/" + filepath.Base(installedPath) + "/.spare"
+}
+
+// checkSpareBinary compares against the currently running binary, not a
+// stored hash — this only defends against the binary file being deleted,
+// not a subtler tamper-and-still-runs substitution, which would need
+// content-addressed verification against something outside the binary
+// itself to catch.
+func checkSpareBinary(installedPath, sparePath string) (bool, error) {
+	want, err := os.ReadFile(installedPath)
+	if err != nil {
+		return false, fmt.Errorf("sentinel: read %s: %w", installedPath, err)
+	}
+	got, err := os.ReadFile(sparePath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("sentinel: read %s: %w", sparePath, err)
+	}
+	return bytes.Equal(want, got), nil
+}
+
+func recreateSpareBinary(installedPath, sparePath string) error {
+	content, err := os.ReadFile(installedPath)
+	if err != nil {
+		return fmt.Errorf("sentinel: read %s: %w", installedPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(sparePath), 0o700); err != nil {
+		return fmt.Errorf("sentinel: mkdir for %s: %w", sparePath, err)
+	}
+	if err := os.WriteFile(sparePath, content, 0o700); err != nil {
+		return fmt.Errorf("sentinel: write %s: %w", sparePath, err)
 	}
 	return nil
 }

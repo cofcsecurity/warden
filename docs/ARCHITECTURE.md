@@ -34,7 +34,7 @@ flowchart TB
 
     subgraph External["Outside this box"]
         watchedfiles["Watched files\n/etc/passwd, nginx.conf, ..."]
-        akeys["/root/.ssh/authorized_keys"]
+        akeys["opmenu-user's authorized_keys\n+ /etc/sudoers.d/<opmenu-user>"]
         units["/etc/systemd/system/*.timer/.service"]
         peers["Replication peers\n(other boxes in the mesh)"]
         operator["Operator's SSH client\n(team key + TOTP)"]
@@ -78,15 +78,16 @@ flowchart TB
 
 ## Persistence: how it survives a kill attempt
 
-The actual persistence mechanism isn't a running process — there's nothing to `kill -9`. It's three independent *registrations* (a systemd timer, a cron entry, and an `authorized_keys` line) that each independently trigger `sentinel-check`, which verifies all three exist and rebuilds whichever doesn't.
+The actual persistence mechanism isn't a running process — there's nothing to `kill -9`. It's four independent *registrations* (a systemd timer, a cron entry, an `authorized_keys` line, and the sudoers rule that line's forced command depends on) that `sentinel-check` verifies and rebuilds whichever is missing, triggered by either of the first two.
 
 ```mermaid
 flowchart LR
-    subgraph Registrations["Three independent registrations"]
+    subgraph Registrations["Four independent registrations"]
         direction TB
         R1["authorized_keys\nforced-command line"]
         R2["systemd timer\n(*-sentinel.timer)"]
         R3["cron entry\n(*/10 * * * *)"]
+        R4["sudoers.d rule\n(NOPASSWD for this binary)"]
     end
 
     R2 -- "fires" --> SC["sentinel-check"]
@@ -95,21 +96,26 @@ flowchart LR
     SC -- "reads directly\n(no systemctl/crontab)" --> R1
     SC -- "reads directly" --> R2
     SC -- "reads directly" --> R3
+    SC -- "reads directly" --> R4
 
     SC -- "missing? append-only\nrecreate" --> R1
     SC -- "missing? write unit files\n+ systemctl enable --now" --> R2
     SC -- "missing? append-only\nrecreate" --> R3
+    SC -- "missing? visudo -cf,\nthen recreate" --> R4
 
     SC --> AL["audit.log"]
 
     style R1 fill:#2d3748,color:#fff
     style R2 fill:#2d3748,color:#fff
     style R3 fill:#2d3748,color:#fff
+    style R4 fill:#2d3748,color:#fff
 ```
 
-**Why killing one doesn't kill persistence**: `sentinel-check` is triggered by *two* of the three registrations (the timer and the cron entry), so removing either trigger still leaves the other one calling `sentinel-check`, which then notices and rebuilds whatever's missing — including, if it comes to it, the trigger that just fired it. The `authorized_keys` line has no trigger of its own; it's purely a target `sentinel-check` verifies and restores. All three would have to be destroyed in the same instant, before the next timer or cron tick, to actually cut off access for good — and even then, the box's watched files are still being auto-reverted by `watch` in the meantime, so read team's edits to *those* don't stick either.
+**Why killing one doesn't kill persistence**: `sentinel-check` is triggered by *two* of the four registrations (the timer and the cron entry), so removing either trigger still leaves the other one calling `sentinel-check`, which then notices and rebuilds whatever's missing — including, if it comes to it, the trigger that just fired it. The `authorized_keys` line and the sudoers rule have no trigger of their own; they're purely targets `sentinel-check` verifies and restores. All four would have to be destroyed in the same instant, before the next timer or cron tick, to actually cut off access for good — and even then, the box's watched files are still being auto-reverted by `watch` in the meantime, so red team's edits to *those* don't stick either.
 
 **Why this doesn't add new attack surface**: nothing here opens a new listening port. The forced-command entry piggybacks on `sshd`, which is already running (and already the thing red team would need to get past to reach a real shell anyway). `opmenu` never execs a shell itself except after a valid TOTP code, and every other path — `status`, `restore` — stays inside the Go binary.
+
+**What if the binary file itself is deleted, not just a registration?** All four registrations above are checks/recreates run *by* the binary — none of them help if the binary itself is gone, since nothing is left to run them. A fifth registration, `binary-backup`, keeps a hidden spare copy in sync (`/var/lib/<name>/.spare`), and the cron trigger's command line checks for the binary and restores it from that spare using only `test`/`cp`/`chmod` — never the Go binary — before invoking anything else. This is the one piece of recovery that has to work without the thing it's recovering.
 
 ## opmenu: what happens on a forced-command connection
 
@@ -124,7 +130,7 @@ sequenceDiagram
     Op->>sshd: ssh -i team_key box "restore 123456 /etc/nginx/nginx.conf apply"
     sshd->>sshd: check from= against source IP
     Note over sshd: wrong source IP → connection<br/>refused before opmenu ever runs
-    sshd->>opmenu: exec warden opmenu<br/>($SSH_ORIGINAL_COMMAND = the quoted string)
+    sshd->>opmenu: exec sudo warden opmenu<br/>($SSH_ORIGINAL_COMMAND = the quoted string)
     opmenu->>opmenu: parse: command=restore,<br/>totp=123456, args=[path, apply]
     opmenu->>TOTP: Validate(seed, "123456", now, skew=1)
     alt valid code

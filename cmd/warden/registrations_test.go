@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -53,6 +54,144 @@ func TestAuthorizedKeysFilePreservesOtherKeys(t *testing.T) {
 	}
 	if !strings.Contains(string(got), line) {
 		t.Errorf("expected our line to be appended, got:\n%s", got)
+	}
+}
+
+func TestSudoersFileCheckAndRecreate(t *testing.T) {
+	if _, err := exec.LookPath("visudo"); err != nil {
+		t.Skip("visudo not available on this machine")
+	}
+
+	path := filepath.Join(t.TempDir(), "svchelper")
+	content := sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper")
+
+	present, err := checkSudoersFile(path, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		t.Fatalf("expected absent before recreate")
+	}
+
+	if err := recreateSudoersFile(path, content); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("expected exact content, got:\n%s", got)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o440 {
+		t.Errorf("expected mode 0440 (sudoers.d requirement), got %o", info.Mode().Perm())
+	}
+
+	present, err = checkSudoersFile(path, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present {
+		t.Fatalf("expected present after recreate")
+	}
+
+	// recreateSudoersFile must never leave a temp file behind.
+	if _, err := os.Stat(path + ".warden-tmp"); !os.IsNotExist(err) {
+		t.Errorf("expected no leftover temp file, stat returned err=%v", err)
+	}
+}
+
+func TestSudoersFileRejectsInvalidContent(t *testing.T) {
+	if _, err := exec.LookPath("visudo"); err != nil {
+		t.Skip("visudo not available on this machine")
+	}
+
+	path := filepath.Join(t.TempDir(), "svchelper")
+	if err := recreateSudoersFile(path, "this is not valid sudoers syntax {{{\n"); err == nil {
+		t.Fatal("expected invalid sudoers content to be rejected by visudo, not written")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("expected no file written when validation fails, stat returned err=%v", err)
+	}
+}
+
+func TestSpareBinaryCheckAndRecreate(t *testing.T) {
+	dir := t.TempDir()
+	installed := filepath.Join(dir, "svchelper")
+	spare := filepath.Join(dir, ".spare")
+
+	if err := os.WriteFile(installed, []byte("binary-content-v1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	present, err := checkSpareBinary(installed, spare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		t.Fatalf("expected absent before recreate")
+	}
+
+	if err := recreateSpareBinary(installed, spare); err != nil {
+		t.Fatal(err)
+	}
+
+	present, err = checkSpareBinary(installed, spare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present {
+		t.Fatalf("expected present and matching after recreate")
+	}
+
+	// If the installed binary changes (a legitimate update), the spare is
+	// now stale until sentinel-check refreshes it again.
+	if err := os.WriteFile(installed, []byte("binary-content-v2"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	present, err = checkSpareBinary(installed, spare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		t.Fatalf("expected stale spare to be reported absent/mismatched")
+	}
+}
+
+func TestSpareBinaryRestoresAfterInstalledIsDeleted(t *testing.T) {
+	dir := t.TempDir()
+	installed := filepath.Join(dir, "svchelper")
+	spare := filepath.Join(dir, ".spare")
+
+	if err := os.WriteFile(installed, []byte("binary-content"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := recreateSpareBinary(installed, spare); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate red team deleting the installed binary, then the shell-only
+	// cron fallback restoring it from the spare (test/cp/chmod, not Go).
+	if err := os.Remove(installed); err != nil {
+		t.Fatal(err)
+	}
+	spareContent, err := os.ReadFile(spare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(installed, spareContent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(installed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "binary-content" {
+		t.Fatalf("expected restored binary to match the spare, got %q", got)
 	}
 }
 

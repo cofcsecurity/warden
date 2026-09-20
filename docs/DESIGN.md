@@ -129,11 +129,12 @@ Purpose: what the forced SSH command runs. Deliberately not a shell.
 
 Design steps:
 
-1. In `authorized_keys`: `command="/usr/local/sbin/warden opmenu",from="<team IP>",no-port-forwarding,no-X11-forwarding <key>`. The restrictions matter as much as the forced command itself.
+1. The forced-command key lives in a dedicated non-root account's `authorized_keys`, not root's: `command="sudo /usr/local/sbin/warden opmenu",from="<team IP>",no-port-forwarding,no-X11-forwarding,no-pty <key>`. That account (`cmd/warden/units.go`'s `opmenuUser`, reusing the disguised binary name) is granted narrow, passwordless sudo for exactly this binary via `/etc/sudoers.d/<name>` — nothing else. `PermitRootLogin no` disables root SSH authentication entirely, forced-command key included; a non-root account with a scoped sudo rule works regardless of that setting.
 2. Read `$SSH_ORIGINAL_COMMAND` to see what the operator asked for (status, restore nginx, shell). Whitelist a small fixed set of accepted commands and reject everything else.
 3. Require a second factor before anything beyond read-only status. Implement TOTP with `crypto/hmac` and `crypto/sha1` from the standard library (RFC 6238 is small enough that skipping a third-party dependency here is worth it, since this is the most sensitive component in the system).
-4. Only the shell command, after the TOTP check passes, execs an actual shell (`syscall.Exec` into `/bin/bash`). Every other path stays inside the Go binary.
+4. Only the shell command, after the TOTP check passes, execs an actual shell (`syscall.Exec` into `/bin/bash`). Every other path stays inside the Go binary. Since `opmenu` itself is invoked via `sudo`, it's already running as root by the time this runs, so the resulting shell is a real root shell.
 5. Log every invocation, successful or rejected, to the audit log: timestamp, source IP, command requested, whether the second factor passed.
+6. `sentinel-check` treats the sudoers file as its own registration alongside `authorized_keys`: without it, the forced command's `sudo` call has nothing granting it, so the entry is inert. A generated sudoers file is validated with `visudo -cf` before being written — a malformed one can break `sudo` for every account on the box, not just this one.
 
 ## Component: sentinel Package (Self-Healing Pair)
 
@@ -144,6 +145,7 @@ Design steps:
 1. Two independent triggers: a systemd timer and a separate cron entry, both running `warden sentinel-check`, registered two different ways so killing one registration doesn't kill both.
 2. Each run checks: does the SSH key entry still exist (delegate to the manifest/watch logic rather than duplicating it); does the other trigger's registration still exist. Read the crontab file and the systemd unit file directly rather than shelling to `crontab -l` or `systemctl status`, to avoid trusting a binary that could be altered. Re-create whichever is missing.
 3. Keep each run short-lived and quiet: minimal log output outside the audit trail, and naming that matches whatever conventions already exist on the box rather than something generic.
+4. Also keeps a hidden spare copy of the binary itself in sync (`cmd/warden/registrations.go`'s `binary-backup` registration). `watch`/`sentinel-check`/`retrieve` are all *inside* the binary — none of them can run to restore it if the binary file itself is deleted, only if a registration pointing at it is. The cron trigger's command line checks for the binary and restores it from the spare using only `test`/`cp`/`chmod` before invoking the binary at all, so recovery doesn't depend on the thing being recovered.
 
 ## Component: restore Package
 
@@ -221,7 +223,7 @@ One script, run once, does the entire setup:
 2. Place the binary at a path and name that match conventions already on that box (check what's there before choosing).
 3. Set restrictive permissions (0700, root-owned).
 4. Write the systemd timer and unit files for the watch loop and the sentinel pair, and the cron entry for the sentinel's second trigger.
-5. Append the restricted authorized_keys line.
+5. Create the dedicated, low-privilege account the access layer uses (same name as the binary), append the restricted authorized_keys line to its own `authorized_keys`, and grant it a `visudo`-validated `NOPASSWD` sudo rule scoped to exactly this binary.
 6. Generate the initial manifest and take the first snapshot.
 7. Verify by calling `warden opmenu status` once over loopback, confirming the access layer works before walking away from the box.
 8. Delete the install script itself. It's a one-time-use file, and leaving it behind leaves a trace for red to find.

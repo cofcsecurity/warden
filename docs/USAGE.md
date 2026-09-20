@@ -18,8 +18,9 @@ Every command below reads and writes fixed paths under `/var/lib/<binary-name>` 
                                (objects/<hash prefix>/<hash>), shared by both tiers
   audit.log                   append-only JSON-lines log of every action taken
 
-/root/.ssh/authorized_keys   the team's forced-command entry (sentinel-checked)
-/etc/systemd/system/         watch/sentinel/snapshot/replicate timer + service units
+/home/<binary-name>/.ssh/authorized_keys   the team's forced-command entry (sentinel-checked)
+/etc/sudoers.d/<binary-name>                grants that account NOPASSWD sudo for this binary only
+/etc/systemd/system/                        watch/sentinel/snapshot/replicate timer + service units
 ```
 
 All of the above is derived at runtime from the binary's own install path (`cmd/warden/config.go`'s `loadPaths`/`units.go`'s `binaryName`), the same way the systemd unit names and cron entry are — so the one naming decision made in `install.sh` (`INSTALL_PATH`) is the only one anyone has to make.
@@ -161,17 +162,19 @@ A build-time diagnostic, not something you run on a deployed box — build a nat
 Once installed, the team connects with:
 
 ```
-ssh -i <team private key> root@<box>
+ssh -i <team private key> <opmenu-user>@<box>
 ```
+
+`<opmenu-user>` is `INSTALL_PATH`'s basename (`docs/DESIGN.md`'s opmenu section) — not root.
 
 `authorized_keys`' forced command means whatever you'd normally type as a remote command becomes `$SSH_ORIGINAL_COMMAND`, parsed as `<command> [totp-code] [args...]`:
 
 | You run | opmenu sees | Needs TOTP? |
 | --- | --- | --- |
-| `ssh <box> status` | manifest generation, last snapshot time, last `watch`/`sentinel-check` pass | No |
-| `ssh <box> "restore <code> /etc/nginx/nginx.conf"` | dry-run restore of that path | Yes |
-| `ssh <box> "restore <code> /etc/nginx/nginx.conf apply"` | actually restores it (same as `restore --apply`) | Yes |
-| `ssh <box> "shell <code>"` | drops into `/bin/bash` — the only path that leaves the Go binary | Yes |
+| `ssh <opmenu-user>@<box> status` | manifest generation, last snapshot time, last `watch`/`sentinel-check` pass | No |
+| `ssh <opmenu-user>@<box> "restore <code> /etc/nginx/nginx.conf"` | dry-run restore of that path | Yes |
+| `ssh <opmenu-user>@<box> "restore <code> /etc/nginx/nginx.conf apply"` | actually restores it (same as `restore --apply`) | Yes |
+| `ssh <opmenu-user>@<box> "shell <code>"` | drops into `/bin/bash` as root — the only path that leaves the Go binary | Yes |
 
 `<code>` is the current 6-digit TOTP code from the seed baked in at build time. Anything else — an unrecognized command, a missing/wrong code on `restore`/`shell` — is rejected and logged to `audit.log` either way, along with the source IP (already constrained by `authorized_keys`' `from=` before opmenu ever runs).
 

@@ -13,11 +13,13 @@ import (
 // see docs/DESIGN.md's "Configuration" section for why these stay fixed
 // rather than becoming a discoverable config file.
 const (
-	// authorizedKeysPath, systemdUnitDir, and cronSpoolPath are what
-	// sentinel-check verifies and repairs. They match deploy/install.sh's
-	// defaults, not something baked in at build time, since they're paths
-	// on the box rather than per-competition secrets.
-	authorizedKeysPath    = "/root/.ssh/authorized_keys"
+	// systemdUnitDir and cronSpoolPath are what sentinel-check verifies
+	// and repairs. They match deploy/install.sh's defaults, not something
+	// baked in at build time, since they're paths on the box rather than
+	// per-competition secrets. authorizedKeysPath used to live here too,
+	// back when it was the fixed /root/.ssh/authorized_keys — it's now a
+	// function below, since it depends on the disguised binary name (see
+	// units.go's opmenuUser).
 	systemdUnitDir        = "/etc/systemd/system"
 	systemdTimersWantsDir = systemdUnitDir + "/timers.target.wants"
 	// cronSpoolPath is Debian/Ubuntu's root crontab location. RHEL-family
@@ -62,6 +64,18 @@ func findAuthLog() (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// authorizedKeysPath is the opmenu account's own authorized_keys file —
+// never root's; see units.go's opmenuUser for why. A function rather than
+// a const since it depends on the disguised binary name, not a fixed
+// system path.
+func authorizedKeysPath() (string, error) {
+	user, err := opmenuUser()
+	if err != nil {
+		return "", err
+	}
+	return opmenuUserHome(user) + "/.ssh/authorized_keys", nil
 }
 
 // paths is every fixed, per-box path for backup state (manifests, objects,

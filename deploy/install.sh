@@ -16,8 +16,7 @@ set -euo pipefail
 
 # --- CHANGE-ME: per-box values -----------------------------------------
 WARDEN_BIN_SRC="${WARDEN_BIN_SRC:-./warden}" # binary built by `make build`
-INSTALL_PATH="${INSTALL_PATH:-/usr/local/sbin/svchelper}" # match this box's naming conventions
-AUTHORIZED_KEYS="${AUTHORIZED_KEYS:-/root/.ssh/authorized_keys}"
+INSTALL_PATH="${INSTALL_PATH:-}" # leave empty to auto-select an unused, inconspicuous name
 TEAM_PUBKEY="${TEAM_PUBKEY:-CHANGE-ME ssh-ed25519 AAAA... team@ccdc}"
 TEAM_FROM_IP="${TEAM_FROM_IP:-CHANGE-ME 203.0.113.10}"
 
@@ -28,17 +27,6 @@ TEAM_FROM_IP="${TEAM_FROM_IP:-CHANGE-ME 203.0.113.10}"
 # every time this timer fires. This script never needs the real value —
 # it's baked into the binary — just whether replication is configured.
 REPLICATE_TARGETS="${REPLICATE_TARGETS:-}"
-
-# Unit names are derived from INSTALL_PATH's basename, not chosen
-# separately: sentinel-check re-derives these same names at runtime from
-# its own binary path (see cmd/warden/units.go), so there's exactly one
-# place that decides what this box's units are called.
-BINARY_NAME="$(basename "$INSTALL_PATH")"
-WATCH_UNIT_NAME="${BINARY_NAME}-watch"
-SENTINEL_UNIT_NAME="${BINARY_NAME}-sentinel"
-SNAPSHOT_CONFIG_UNIT_NAME="${BINARY_NAME}-snap-cfg"
-SNAPSHOT_DATA_UNIT_NAME="${BINARY_NAME}-snap-data"
-REPLICATE_UNIT_NAME="${BINARY_NAME}-replicate"
 
 WATCH_INTERVAL="5min"
 WATCH_JITTER="90"
@@ -77,6 +65,86 @@ require_filled_in() {
 	fi
 }
 
+# NAME_PREFIXES x NAME_SUFFIXES combine into a couple hundred
+# plausible-looking service names, checked in random order — not a short,
+# easily enumerated list. Name obscurity here is a secondary layer, not
+# the actual defense; that's the self-healing registrations and off-box
+# backups. It only has to raise the cost of a casual look, not survive
+# someone who has this source and is willing to check every combination.
+NAME_PREFIXES=(net sys log cron disk mem pkg ssl dns ntp udev acpi irq pci usb mount fsck swap kernel proc)
+NAME_SUFFIXES=(mgr helper agent watch sync relay proxy check monitor collector reporter handler)
+
+name_collides() {
+	local name="$1"
+	[[ -e "/usr/local/sbin/$name" ]] && return 0
+	[[ -e "/usr/sbin/$name" ]] && return 0
+	[[ -e "/usr/bin/$name" ]] && return 0
+	command -v "$name" >/dev/null 2>&1 && return 0
+	id "$name" >/dev/null 2>&1 && return 0
+	[[ -e "/etc/systemd/system/${name}-sentinel.service" ]] && return 0
+	[[ -e "/etc/sudoers.d/$name" ]] && return 0
+	return 1
+}
+
+choose_install_path() {
+	local prefix suffix name candidates=() ordered
+	for prefix in "${NAME_PREFIXES[@]}"; do
+		for suffix in "${NAME_SUFFIXES[@]}"; do
+			candidates+=("${prefix}${suffix}")
+		done
+	done
+	if command -v shuf >/dev/null 2>&1; then
+		ordered="$(printf '%s\n' "${candidates[@]}" | shuf)"
+	else
+		ordered="$(printf '%s\n' "${candidates[@]}")"
+	fi
+	while IFS= read -r name; do
+		if ! name_collides "$name"; then
+			echo "/usr/local/sbin/$name"
+			return 0
+		fi
+	done <<< "$ordered"
+	echo "install.sh: every candidate name collided with something already on this box — set INSTALL_PATH explicitly" >&2
+	return 1
+}
+
+# resolve_install_path fills in INSTALL_PATH (auto-selecting one if it
+# wasn't set) and derives every name that depends on it — unit names,
+# the access-layer account, its authorized_keys path, and its sudoers
+# rule. Kept as one step run early in main(), rather than plain top-level
+# assignments, since it needs INSTALL_PATH finalized first.
+resolve_install_path() {
+	if [[ -z "$INSTALL_PATH" ]]; then
+		INSTALL_PATH="$(choose_install_path)" || exit 1
+		echo "==> Auto-selected an install path: $INSTALL_PATH"
+	fi
+
+	BINARY_NAME="$(basename "$INSTALL_PATH")"
+	WATCH_UNIT_NAME="${BINARY_NAME}-watch"
+	SENTINEL_UNIT_NAME="${BINARY_NAME}-sentinel"
+	SNAPSHOT_CONFIG_UNIT_NAME="${BINARY_NAME}-snap-cfg"
+	SNAPSHOT_DATA_UNIT_NAME="${BINARY_NAME}-snap-data"
+	REPLICATE_UNIT_NAME="${BINARY_NAME}-replicate"
+
+	# OPMENU_USER holds the team's forced-command SSH key — deliberately
+	# not root, since PermitRootLogin no (independent of Warden, some
+	# teams' standard practice) would make an entry in root's own
+	# authorized_keys inert. Reuses BINARY_NAME: cmd/warden/units.go's
+	# opmenuUser() derives the identical name at runtime, so there's one
+	# place this decision is made.
+	OPMENU_USER="$BINARY_NAME"
+	OPMENU_USER_HOME="/home/${OPMENU_USER}"
+	AUTHORIZED_KEYS="${AUTHORIZED_KEYS:-${OPMENU_USER_HOME}/.ssh/authorized_keys}"
+	SUDOERS_PATH="/etc/sudoers.d/${OPMENU_USER}"
+	# SPARE_BINARY_PATH is a hidden second copy of the binary — see
+	# step_install_spare_binary and cronLine: watch/sentinel-check/retrieve
+	# are all *inside* the binary, so if the binary file itself is deleted,
+	# none of them can run to restore it. The cron trigger below checks
+	# for and restores from this copy using only test/cp/chmod, never the
+	# Go binary, so it still works even when the binary doesn't exist.
+	SPARE_BINARY_PATH="/var/lib/${BINARY_NAME}/.spare"
+}
+
 step_confirm_clean() {
 	echo "==> Confirm this box is clean before continuing."
 	echo "    Enumerate it for beacons, keyloggers, and altered binaries, and eliminate anything found first."
@@ -87,6 +155,12 @@ step_confirm_clean() {
 step_place_binary() {
 	echo "==> Installing binary to $INSTALL_PATH"
 	install -o root -g root -m 0700 "$WARDEN_BIN_SRC" "$INSTALL_PATH"
+}
+
+step_install_spare_binary() {
+	echo "==> Stashing a hidden recovery copy of the binary"
+	mkdir -p "$(dirname "$SPARE_BINARY_PATH")"
+	install -o root -g root -m 0700 "$INSTALL_PATH" "$SPARE_BINARY_PATH"
 }
 
 step_install_systemd_units() {
@@ -153,12 +227,27 @@ step_install_systemd_units() {
 step_install_cron_entry() {
 	echo "==> Installing sentinel's second, independent trigger"
 	local marker="# ${SENTINEL_UNIT_NAME}"
-	local line="*/10 * * * * ${INSTALL_PATH} sentinel-check ${marker}"
+	# The "test -x ... || { cp; chmod; }" prefix restores the binary
+	# itself from the hidden spare copy before doing anything else, using
+	# only test/cp/chmod — never the Go binary — since watch/sentinel-check
+	# are both *inside* that binary and can't run to fix its own absence.
+	# cmd/warden/units.go's cronLine builds the identical line so
+	# sentinel-check's own recreation never drifts from this.
+	local line="*/10 * * * * test -x ${INSTALL_PATH} || { cp ${SPARE_BINARY_PATH} ${INSTALL_PATH}; chmod 0700 ${INSTALL_PATH}; }; ${INSTALL_PATH} sentinel-check ${marker}"
 	# `|| true` matters here: on a box with no crontab yet (a fresh box is
 	# exactly this case), `crontab -l` prints nothing and grep -v on empty
 	# input exits 1, which under `set -e`/pipefail would otherwise abort
 	# this whole subshell before `echo "$line"` ever runs.
 	( { crontab -l 2>/dev/null | grep -vF "$marker" || true; }; echo "$line" ) | crontab -
+}
+
+step_create_opmenu_user() {
+	echo "==> Creating the dedicated account for the access layer ($OPMENU_USER)"
+	if id "$OPMENU_USER" >/dev/null 2>&1; then
+		echo "    $OPMENU_USER already exists — leaving it as-is"
+		return
+	fi
+	useradd -r -m -d "$OPMENU_USER_HOME" -s /usr/sbin/nologin "$OPMENU_USER"
 }
 
 step_authorize_key() {
@@ -168,10 +257,32 @@ step_authorize_key() {
 	chmod 700 "$(dirname "$AUTHORIZED_KEYS")"
 	chmod 600 "$AUTHORIZED_KEYS"
 
-	local entry="command=\"${INSTALL_PATH} opmenu\",from=\"${TEAM_FROM_IP}\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ${TEAM_PUBKEY}"
+	# The forced command runs through sudo, not directly — this key lives
+	# in OPMENU_USER's own authorized_keys, not root's, so it needs
+	# step_configure_sudoers' rule to actually reach root-level access.
+	local entry="command=\"sudo ${INSTALL_PATH} opmenu\",from=\"${TEAM_FROM_IP}\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ${TEAM_PUBKEY}"
 	if ! grep -qF "$TEAM_PUBKEY" "$AUTHORIZED_KEYS" 2>/dev/null; then
 		echo "$entry" >> "$AUTHORIZED_KEYS"
 	fi
+}
+
+step_configure_sudoers() {
+	echo "==> Granting $OPMENU_USER passwordless sudo for exactly this binary"
+	local tmp="${SUDOERS_PATH}.install-tmp"
+	{
+		echo "Defaults:${OPMENU_USER} !requiretty"
+		echo "${OPMENU_USER} ALL=(root) NOPASSWD: ${INSTALL_PATH}"
+	} > "$tmp"
+	chmod 0440 "$tmp"
+	# Never trust a hand-generated sudoers file without checking it first —
+	# a malformed one can break sudo box-wide, for every account, not just
+	# this one. visudo -cf validates without installing.
+	if ! visudo -cf "$tmp" >/dev/null; then
+		echo "install.sh: generated sudoers content failed validation — not installing it" >&2
+		rm -f "$tmp"
+		exit 1
+	fi
+	mv -f "$tmp" "$SUDOERS_PATH"
 }
 
 step_initial_snapshot() {
@@ -217,7 +328,7 @@ step_next_steps() {
 	echo "==> Installed and disarmed. Auto-restore is OFF until you arm it — see below."
 	echo ""
 	echo "    Next, from a shell on this box (get one with:"
-	echo "      ssh -i <team login key> <this box> \"shell <totp-code>\"    # over opmenu, from off-box"
+	echo "      ssh -i <team login key> ${OPMENU_USER}@<this box> \"shell <totp-code>\"    # over opmenu, from off-box"
 	echo "    or just stay logged in here if you're already on it):"
 	echo ""
 	echo "      1. Review the 'warden detect' output above (or re-run it) against"
@@ -244,16 +355,20 @@ step_next_steps() {
 main() {
 	require_root
 	require_filled_in
+	resolve_install_path
 	step_confirm_clean
 	step_place_binary
+	step_install_spare_binary
 	step_install_systemd_units
 	step_install_cron_entry
+	step_create_opmenu_user
 	step_authorize_key
+	step_configure_sudoers
 	step_initial_snapshot
 	step_detect_summary
 
 	echo "==> Before deleting this script, verify the access layer works:"
-	echo "    ssh -i <team's own login private key, matching TEAM_PUBKEY above> root@127.0.0.1 status"
+	echo "    ssh -i <team's own login private key, matching TEAM_PUBKEY above> ${OPMENU_USER}@127.0.0.1 status"
 	read -r -p "    Verified? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "not deleting install.sh; re-run once verified"; exit 1; }
 

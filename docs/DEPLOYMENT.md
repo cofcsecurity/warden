@@ -125,24 +125,26 @@ GOOS=$(go env GOHOSTOS) GOARCH=$(go env GOHOSTARCH) make build TEAM_PUBKEY=... T
 
 ## Alternative: build directly on the target box
 
-Everything above assumes a separate machine the team controls, with Go installed, to build on — normally someone's personal laptop, not whatever the competition issues you (see the note at the top of this doc if that's not available at all: some events genuinely only hand out a locked-down laptop with no permission to install anything on it, e.g. PCDC). If that's your situation, or a separate build machine is just more coordination than it's worth for how many boxes there are, `scripts/build-and-install.sh` builds Warden **directly on the box being defended** and installs it in the same run instead — **replacing steps 3 through 5 below entirely.** Steps 0, 0.5, 6, 6.5, 7, and 8 still apply exactly as written; come back to step 6 once this is done.
+For events with no separate build machine (e.g. PCDC-style, a locked-down provided laptop with no permission to install a toolchain). `scripts/build-and-install.sh` builds Warden directly on the box being defended and installs it in the same run — **replacing steps 3 through 5 below entirely.** Steps 0, 0.5, 6, 6.5, 7, and 8 still apply as written; come back to step 6 once this is done.
 
-Read the tradeoff spelled out at the top of that script's own comments first: because the per-competition secrets get passed to `go build` as command-line flags, they're briefly visible in this box's own process list (`ps`) while the build runs — a real, if narrow, exposure the normal path doesn't have, since a machine red team has never touched never sees them at all. Doing this as early as possible in the box's clean-first window (the script still asks you to confirm that, same as `install.sh`) is the mitigation.
+Read the tradeoff at the top of that script's own comments first: per-competition secrets get passed to `go build` as command-line flags, so they're briefly visible in this box's own process list (`ps`) while the build runs. Do this as early as possible in the box's clean-first window (the script asks you to confirm that, same as `install.sh`).
 
 ### Step 1: get the source code onto the box
 
-Unlike the normal path (which only ever needs the one finished binary), this needs the whole repository on the target box. A few ways to get it there, in order of preference:
+This needs the whole repository on the target box, not just the finished binary.
+
+**Name the destination something inconspicuous, not literally `warden`** — it's deleted automatically once install succeeds (see step 2 below), but it exists on disk for the whole build+install window until then. The examples below use `~/build`.
 
 **A. Copy it from a machine that already has it checked out (recommended)**
 
-If you or a teammate already have this repo cloned somewhere, `scp` it straight to the box — this needs nothing beyond the SSH access you're about to use anyway, and no internet access on the target box at all:
+Needs nothing beyond the SSH access you're about to use anyway (log in as whatever account the competition gave you, not root), and no internet access on the target box:
 
 ```bash
 # from the machine that has this repo, at ./warden:
-scp -r ./warden root@<box>:~/warden
+scp -r ./warden <user>@<box>:~/build
 ```
 
-For a build that needs **zero internet access** on the target box (the safer default — see `docs/DESIGN.md`'s threat model), do this once first, on whatever machine you're copying *from*, before the `scp` above:
+For zero internet access on the target box, run this once first, on whatever machine you're copying *from*:
 
 ```bash
 make vendor   # downloads every dependency into ./vendor, once, on a machine with internet
@@ -150,12 +152,12 @@ make vendor   # downloads every dependency into ./vendor, once, on a machine wit
 
 **B. Clone it directly on the box**
 
-Only if the box itself already has outbound access to wherever this repo is hosted, and you're comfortable with that — `docs/DESIGN.md`'s original "Delivery Mechanism" section steers away from `git clone` on a target box for the plain-binary path specifically because of this egress dependency; here, needing the source there at all means that tradeoff is at least a deliberate one:
+Needs `git` already present on the box (`command -v git`) and outbound access to wherever this repo is hosted. If either isn't true, use option A or C instead:
 
 ```bash
-ssh root@<box>
-git clone https://github.com/cofcsecurity/warden.git ~/warden
-cd ~/warden
+ssh <user>@<box>
+git clone https://github.com/cofcsecurity/warden.git ~/build
+cd ~/build
 ```
 
 If the repo is private, cloning needs credentials (a deploy key or access token) on the box temporarily — treat those like any other secret. `build-and-install.sh`'s cleanup step removes the whole checkout, credentials included, once installation succeeds.
@@ -164,51 +166,51 @@ If the repo is private, cloning needs credentials (a deploy key or access token)
 
 ```bash
 # on your own machine, with this repo at ./warden:
-tar czf warden.tar.gz --exclude=.git -C . warden
-# copy warden.tar.gz to a USB drive, plug it into the box's console, then on the box:
-tar xzf warden.tar.gz -C ~/
+tar czf build.tar.gz --exclude=.git -C . warden
+# copy build.tar.gz to a USB drive, plug it into the box's console, then on the box:
+mkdir ~/build && tar xzf build.tar.gz -C ~/build --strip-components=1
 ```
 
 ### Step 2: run it
 
 ```bash
-cd ~/warden   # wherever it landed
+cd ~/build   # wherever it landed
 sudo ./scripts/build-and-install.sh
 ```
 
-It asks for the same things `install.sh` normally needs (team pubkey, team IP, install path), plus offers to generate a TOTP seed — and, if you want replication, a replication keypair — right there on the spot. Set any of `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED` as environment variables beforehand to skip that particular prompt.
+Asks for the same things `install.sh` normally needs (team pubkey, team IP, install path), plus offers to generate a TOTP seed and, if wanted, a replication keypair. Set any of `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED` as environment variables beforehand to skip that prompt.
 
-It builds, self-verifies with `debug-config`, hands off to the normal `install.sh` (so you still get its own "confirm access works" prompt and next-steps summary), and — once that succeeds — **deletes the entire source tree it just ran from**, converging back to the same minimal footprint the off-box path leaves behind. Set `KEEP_SOURCE=1` beforehand if you have a real reason to keep the checkout around instead.
+Builds, self-verifies with `debug-config`, hands off to the normal `install.sh`, and — once that succeeds — deletes the entire source tree it ran from. Set `KEEP_SOURCE=1` beforehand to keep the checkout instead.
 
 From here, pick back up at step 6 (Verify) below.
 
 ## 4. Confirm `install.sh`'s per-box values
 
-Open `deploy/install.sh` and fill in the `CHANGE-ME` block: `INSTALL_PATH` (matching this box's naming conventions — check what's already there first), `TEAM_PUBKEY`, `TEAM_FROM_IP`. The script now refuses to run (`require_filled_in`) if either `TEAM_*` value is still a `CHANGE-ME` placeholder or the binary hasn't been built yet, but it can't know whether `INSTALL_PATH` genuinely blends in — that's a judgment call about the specific box.
+Open `deploy/install.sh` and fill in `TEAM_PUBKEY`/`TEAM_FROM_IP`. Leave `INSTALL_PATH` empty (its default) — `install.sh` auto-selects a name from a large combination of plausible service-sounding words, checks it against what's actually on the box (existing binaries, accounts, units, sudoers files) in random order, and uses the first one with no collision. Set `INSTALL_PATH` explicitly only if a specific name is wanted. The access layer's dedicated account (`OPMENU_USER`) and its `sudoers.d` rule both derive from whatever name is chosen. The script refuses to run (`require_filled_in`) if either `TEAM_*` value is still a `CHANGE-ME` placeholder or the binary hasn't been built yet.
 
 Also set `REPLICATE_TARGETS` to any non-empty value (e.g. `"1"`) if this box's binary was actually built with real replication targets — that's just the switch this script uses to decide whether to schedule the replication timer; the real target list lives in the binary, not here.
 
 ## 5. Deploy to each box
 
-Once the box has been swept clean of any existing compromise (see `docs/DESIGN.md`'s "No Clean Window: Assume Compromise"):
+Once the box has been swept clean of any existing compromise (see `docs/DESIGN.md`'s "No Clean Window: Assume Compromise"). Log in as whatever account the competition gave you, not root:
 
 ```
-scp bin/warden deploy/install.sh -r deploy/systemd <box>:~/
-ssh <box> 'sudo ./install.sh'
+scp bin/warden deploy/install.sh -r deploy/systemd <user>@<box>:~/
+ssh <user>@<box> 'sudo ./install.sh'
 ```
 
-Once the access-layer verification prompt near the end passes, `install.sh` cleans up after itself and deletes itself: the leftover `~/warden` source binary (its literal, un-disguised filename would otherwise sit right next to the disguised one at `$INSTALL_PATH`, giving the game away to anyone who runs `ls ~`), the `~/systemd/` template directory (same problem — its filenames spell out exactly what each unit is for), and finally the script itself. Nothing manual needed here anymore; if verification fails, none of this cleanup runs, so the templates and source binary stay in place for debugging.
+Once the access-layer verification prompt near the end passes, `install.sh` deletes the leftover `~/warden` source binary, the `~/systemd/` template directory, and finally itself. If verification fails, none of that cleanup runs, so those stay in place for debugging.
 
-`install.sh` also prints a "what's next" summary before it deletes itself — the same detect → harden → arm sequence from step 6.5 below — so it doesn't rely on whoever's running it remembering to come back to this doc.
+`install.sh` also prints a "what's next" summary before it deletes itself — the same detect → harden → arm sequence as step 6.5 below.
 
 ## 6. Verify
 
-- `ssh -i <team's own login private key> <box> status` (over the opmenu forced command) reports a manifest generation and recent watch/sentinel passes. This is the team's own key from step 3/`TEAM_PUBKEY` — not a `secrets/<box>/replicate_key`, which authenticates the *box* to its replication peers, not an operator to the box.
+- `ssh -i <team's own login private key> <opmenu-user>@<box> status` (over the opmenu forced command) reports a manifest generation and recent watch/sentinel passes. `<opmenu-user>` is `INSTALL_PATH`'s basename (`docs/DESIGN.md`'s opmenu section). This is the team's own key from step 3/`TEAM_PUBKEY` — not a `secrets/<box>/replicate_key`, which authenticates the *box* to its replication peers, not an operator to the box.
 - Run `warden replicate` by hand once (don't wait for the timer) and confirm objects landed on **both** neighbors: `ssh <neighbor> 'find /home/warden-backup/from-<box> -type f'` should show `manifests-config/`, `manifests-data/`, and `objects/`.
 
 ## 6.5. Harden, then arm
 
-The box comes up **disarmed**: `watch` runs on schedule and flags sensitive drift, but won't auto-revert anything yet. That's the window for the team's actual hardening work — get a shell (`ssh <box> "shell <code>"` over opmenu, TOTP required) and:
+The box comes up **disarmed**: `watch` runs on schedule and flags sensitive drift, but won't auto-revert anything yet. That's the window for the team's actual hardening work — get a shell (`ssh <opmenu-user>@<box> "shell <code>"` over opmenu, TOTP required) and:
 
 1. Run `warden detect` to see what's actually running on this box and which of its config files aren't yet in `configTierPaths` — add the ones that matter for this competition's scoring to `cmd/warden/config.go` and rebuild/redeploy if anything's missing (steps 3–5 again for just this box).
 2. Do the actual hardening: lock down `sshd_config`, tighten service configs, rotate anything default, whatever this box needs.
@@ -216,13 +218,13 @@ The box comes up **disarmed**: `watch` runs on schedule and flags sensitive drif
 
 Don't skip straight to step 3 before steps 1–2: arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done. If a specific hardening edit needs to land on a `ConfirmFirst` path (which is never auto-reverted anyway, armed or not) without perpetually flagging, `warden accept <path> <totp-code>` marks just that one file's current state as known-good.
 
-If this build has `AUTOBAN_ENABLED` set, open a second SSH session now (`ssh <box> "shell <code>"`) and leave `warden alerts` running in it — that's the only way anyone sees a guarded-path alert as it happens, by design (see `docs/DESIGN.md`'s "Active Response" section on why it's pull-based instead of a broadcast).
+If this build has `AUTOBAN_ENABLED` set, open a second SSH session now (`ssh <opmenu-user>@<box> "shell <code>"`) and leave `warden alerts` running in it — see `docs/DESIGN.md`'s "Active Response" section.
 
 ### A note on shell history
 
-`opmenu`'s `shell` command execs bash over a `no-pty` SSH channel, which bash treats as non-interactive — verified directly: a non-interactive bash never writes a history file at all, so commands typed there (`arm`, `disarm`, `ban`, `accept`, ...) leave nothing in `~/.bash_history` regardless of any setting. That's not something Warden arranges deliberately, just a side effect of `no-pty` already being there for other reasons (see `docs/DESIGN.md`'s opmenu section) — don't rely on it if that restriction ever changes.
+`opmenu`'s `shell` command execs bash over a `no-pty` SSH channel, which bash treats as non-interactive. A non-interactive bash never writes a history file, so commands typed there (`arm`, `disarm`, `ban`, `accept`, ...) leave nothing in `~/.bash_history` regardless of any setting. Don't rely on this holding if `no-pty` is ever dropped from the authorized_keys entry.
 
-The real exposure is any *other* interactive root shell on the box — physical console access, or any admin path outside opmenu — where history is recorded normally, and a line like `svchelper disarm` hands anyone who later reads that file both the disguised binary's real path and how to turn off its protection. If your team has that kind of access to a box, set `HISTCONTROL=ignorespace` for root there (most distros support it; check `root`'s `.bashrc`, since it isn't always on by default) and prefix sensitive commands with a leading space — a normal, unremarkable sysadmin habit, not something that needs explaining to a judge, unlike editing a history file after the fact would be.
+Any *other* interactive root shell on the box — physical console, or an admin path outside opmenu — records history normally, and a line like `svchelper disarm` reveals both the disguised binary's path and how to turn off its protection. Set `HISTCONTROL=ignorespace` for root there (check `root`'s `.bashrc`) and prefix sensitive commands with a leading space.
 
 ## 7. Recovery: pulling a box's own backups back
 
