@@ -241,7 +241,17 @@ collect_config() {
 				exit 1
 			fi
 			TOTP_SECRET="$(python3 -c 'import secrets, base64; print(base64.b32encode(secrets.token_bytes(20)).decode())')"
-			echo "    Generated. Distribute it to teammates out-of-band (e.g. a QR code) so they can generate opmenu codes — it will not be printed again."
+			local otpauth_uri="otpauth://totp/Warden?secret=${TOTP_SECRET}&issuer=Warden&digits=6&period=30"
+			echo "==> Generated — scan this in an authenticator app (Google Authenticator, Authy, 1Password, ...)"
+			if command -v qrencode >/dev/null 2>&1; then
+				qrencode -t ANSIUTF8 "$otpauth_uri"
+			else
+				echo "    (install 'qrencode' to render this as a scannable QR code here instead of typing it in)"
+			fi
+			echo "    Or add it manually — most apps have an 'enter setup key' option:"
+			echo "      secret: $TOTP_SECRET"
+			echo "    Distribute this to every teammate who needs to generate opmenu codes,"
+			echo "    out-of-band (not Slack/Discord) — it will not be printed again."
 		else
 			prompt_if_unset TOTP_SECRET "TOTP seed (base32)"
 		fi

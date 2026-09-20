@@ -110,6 +110,17 @@ Public key — this is TEAM_PUBKEY. Use this exact value for every box you
 set up this competition, not a new one per box:
   ${PUBLIC_KEY}
 
+Each teammate who receives the private key needs it saved on their OWN
+laptop before they can connect with it — it's already there for you
+(${KEY_PATH}). Everyone else runs this exact block on their own laptop
+(it's the same team key, so the text below is already correct for all of
+them, not just you):
+  mkdir -p ~/.ssh && chmod 700 ~/.ssh
+  cat > ~/.ssh/warden_team_key <<'KEY'
+  ${PRIVATE_KEY}
+  KEY
+  chmod 600 ~/.ssh/warden_team_key
+
 To connect once a box is set up (see docs/USAGE.md's "Operating over SSH"):
   ssh -i ${KEY_PATH} <opmenu-user>@<box> status
 EOF
@@ -129,6 +140,17 @@ Private key — every teammate who'll operate a box needs their OWN copy of
 this, saved on their own device, before it's deleted from this box:
 
 ${PRIVATE_KEY}
+
+On your own laptop (or whichever machine you'll actually run \`ssh\` from),
+save it and lock down its permissions before connecting with it:
+  mkdir -p ~/.ssh && chmod 700 ~/.ssh
+  cat > ~/.ssh/warden_team_key <<'KEY'
+  ${PRIVATE_KEY}
+  KEY
+  chmod 600 ~/.ssh/warden_team_key
+
+Repeat that (pasting the same private key text above) on every other
+teammate's laptop too, after getting it to them out-of-band.
 
 EOF
 

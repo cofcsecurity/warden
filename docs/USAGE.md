@@ -113,6 +113,17 @@ warden disarm   # turn auto-restore back off, e.g. ahead of a planned maintenanc
 
 `arm` takes a fresh config-tier snapshot immediately before flipping the switch, so whatever's on disk at that moment — not a stale pre-hardening snapshot — becomes the enforced baseline. Both log to `audit.log`; `status` (below) reports the current armed state.
 
+### `warden uninstall [--force]`
+
+Reverses `install.sh`: stops and deletes every systemd timer it created, the cron fallback entry, the sudoers rule, the dedicated access-layer account, the installed binary and its hidden spare, and all local state under `/var/lib/<name>` (manifests, the backup store, the audit log, the static secret). Off-box replicas already pushed to a peer box are untouched.
+
+```
+warden uninstall            # refuses if the box is armed
+warden uninstall --force    # removes it anyway
+```
+
+There's no fully transactional install that rolls back automatically on any mid-setup failure — that would need every step of `install.sh` kept in exact lockstep with a reverse for it forever. This is the more honest version: one explicit command that undoes everything, for when setup went wrong and the cleanest fix is starting over. It refuses on an armed box without `--force`, since arming means the team's actual hardening is presumably riding on this box staying defended — before that point, nothing here is load-bearing yet, so it's a plain "start over" button. Deletes its own binary last; safe on Linux (the running process keeps executing from the file it already has open), but leaves nothing named `warden` on the box afterward.
+
 ### `warden rotate-secret [value]`
 
 Sets (or replaces) a static, non-TOTP passphrase opmenu accepts as an alternative second factor — for competitions where phones/authenticator apps aren't available at all (PCDC-style events), where TOTP simply isn't usable. Generates a random value if none is given. `install.sh` already runs this once, by default, during setup — this is for rotating it later (e.g. after a leak), not first-time setup.

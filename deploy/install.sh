@@ -411,6 +411,11 @@ step_next_steps() {
 	echo "         auto-restore. Arming before hardening just locks in the pre-hardening"
 	echo "         state instead, so don't skip 1-2."
 	echo ""
+	echo "    Something about this setup wrong? '${INSTALL_PATH} uninstall' removes"
+	echo "    everything above (timers, cron entry, sudoers rule, the ${OPMENU_USER}"
+	echo "    account, the binary itself) and starts clean. It refuses once armed"
+	echo "    (--force overrides) — before that, nothing here is load-bearing yet."
+	echo ""
 	if "$INSTALL_PATH" debug-config 2>/dev/null | grep -Eq "^autoban_enabled:\s+true$"; then
 		echo "    This build has AUTOBAN_ENABLED set. Open a second session now and leave"
 		echo "    running: ${INSTALL_PATH} alerts"
