@@ -43,10 +43,11 @@ The most sensitive component; landed after Phases 1–2 so `status` and `restore
 - Verified the whole chain (manifest → audit log → status string; drift → plan → apply → restored content) against a temp directory standing in for `/var/lib/warden`, since `cmd/warden`'s data paths are fixed consts by design and not something a unit test can override.
 - **Not done here, moved to Phase 6**: an end-to-end test of the SSH forced-command layer itself (`authorized_keys`' `from=`/`command=` actually blocking what they should). That's enforced by sshd against the installed `authorized_keys` line, not by anything in the `opmenu` package, so it belongs in the VM integration test where `install.sh` actually runs, not a Go unit test. `Handle`'s own dispatch/TOTP logic is already unit tested independent of that layer.
 
-## Phase 4 — sentinel's real registrations
+## Phase 4 — sentinel's real registrations (done)
 
-- Build the actual `[]sentinel.Registration` list in `cmd/warden/sentinel.go`: authorized_keys entry (delegate the check to manifest/watch rather than duplicating it), systemd timer unit file, cron entry.
-- Every check/recreate reads the relevant file directly — no `systemctl`/`crontab` shell-outs, per the design's threat model.
+- `cmd/warden/units.go`: unit/cron/authorized_keys names and content are all derived from the running binary's own install path (`os.Executable()`), not a second baked-in name — `deploy/install.sh`'s unit names are now derived from `INSTALL_PATH`'s basename too (`BINARY_NAME="$(basename "$INSTALL_PATH")"`), so both sides agree without a shared config file.
+- `cmd/warden/registrations.go`: `buildRegistrations` wires three checks into `sentinel.Run` — `authorized_keys` entry, the sentinel's own systemd timer (service file + timer file + the `timers.target.wants` enabled symlink, since a timer file without the symlink never fires), and its own cron entry. Every `Check` reads the relevant file directly (`os.ReadFile`/`os.Lstat`), never `systemctl status`/`crontab -l`, per the design's threat model. Every `Recreate` is additive: the authorized_keys and cron writers only ever append/dedup their own line, never touching another key or job already on the box (unit tested explicitly for this). `systemctl daemon-reload`/`enable --now` remains the one shell-out, needed to actually activate a timer — the same exception already accepted for `restore.Apply`'s service restarts, and just as untestable without a real systemd, so it's unverified below the VM-integration level.
+- All the file-manipulation logic (not the final `systemctl` call) took explicit paths as parameters rather than closing over the real `/etc`, `/root`, `/var/spool` consts directly, so it's unit tested against temp directories the normal way.
 
 ## Phase 5 — Deployment prep
 

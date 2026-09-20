@@ -26,14 +26,10 @@ func runSentinelCheck() error {
 	}
 	defer log.Close()
 
-	// TODO: build the real registrations list:
-	//   - authorized_keys entry present (delegate to manifest/watch logic
-	//     rather than duplicating the check here)
-	//   - systemd timer unit file present
-	//   - crontab entry present
-	// Read the unit/crontab files directly rather than shelling out to
-	// systemctl/crontab, per docs/DESIGN.md.
-	regs := []sentinel.Registration{}
+	regs, err := buildRegistrations()
+	if err != nil {
+		return err
+	}
 
 	s := sentinel.New(regs, log)
 	res, err := s.Run()

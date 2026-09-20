@@ -17,10 +17,15 @@ AUTHORIZED_KEYS="/root/.ssh/authorized_keys"
 TEAM_PUBKEY="CHANGE-ME ssh-ed25519 AAAA... team@ccdc"
 TEAM_FROM_IP="CHANGE-ME 203.0.113.10"
 
-WATCH_UNIT_NAME="svchelper-watch"
-SENTINEL_UNIT_NAME="svchelper-sentinel"
-SNAPSHOT_CONFIG_UNIT_NAME="svchelper-snap-cfg"
-SNAPSHOT_DATA_UNIT_NAME="svchelper-snap-data"
+# Unit names are derived from INSTALL_PATH's basename, not chosen
+# separately: sentinel-check re-derives these same names at runtime from
+# its own binary path (see cmd/warden/units.go), so there's exactly one
+# place that decides what this box's units are called.
+BINARY_NAME="$(basename "$INSTALL_PATH")"
+WATCH_UNIT_NAME="${BINARY_NAME}-watch"
+SENTINEL_UNIT_NAME="${BINARY_NAME}-sentinel"
+SNAPSHOT_CONFIG_UNIT_NAME="${BINARY_NAME}-snap-cfg"
+SNAPSHOT_DATA_UNIT_NAME="${BINARY_NAME}-snap-data"
 
 WATCH_INTERVAL="5min"
 WATCH_JITTER="90"

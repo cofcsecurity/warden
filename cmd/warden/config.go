@@ -20,6 +20,21 @@ const (
 	// retainGenerations bounds store.Prune's mark-and-sweep: objects
 	// referenced only by generations older than the last N are dropped.
 	retainGenerations = 10
+
+	// authorizedKeysPath, systemdUnitDir, and cronSpoolPath are what
+	// sentinel-check verifies and repairs. They match deploy/install.sh's
+	// defaults, not something baked in at build time, since they're paths
+	// on the box rather than per-competition secrets.
+	authorizedKeysPath    = "/root/.ssh/authorized_keys"
+	systemdUnitDir        = "/etc/systemd/system"
+	systemdTimersWantsDir = systemdUnitDir + "/timers.target.wants"
+	// cronSpoolPath is Debian/Ubuntu's root crontab location. RHEL-family
+	// distros use /var/spool/cron/root instead — adjust for the target
+	// distro (see docs/PLAN.md Phase 1's config.go note).
+	cronSpoolPath = "/var/spool/cron/crontabs/root"
+
+	sentinelInterval = "10min"
+	sentinelJitter   = "120"
 )
 
 // EXAMPLE VALUES — everything below this line is a starting template, not
