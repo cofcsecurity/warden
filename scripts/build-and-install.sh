@@ -111,8 +111,8 @@ detect_pkg_manager() {
 
 # pkg_name_for translates a logical dependency name to the package name
 # this distro family actually calls it, for the handful where it differs.
-# Everything else passes through unchanged (git, curl, python3, qrencode,
-# sudo are all named the same across apt/dnf/yum).
+# Everything else passes through unchanged (git, curl, qrencode, sudo are
+# all named the same across apt/dnf/yum).
 pkg_name_for() {
 	case "$1" in
 	cron)
@@ -176,6 +176,14 @@ pkg_install() {
 # ones; no qrencode just means the TOTP secret prints as text instead of
 # a QR code). ensure_go's own requirement is checked separately, right
 # after this, since Go genuinely has no fallback.
+#
+# Deliberately never installs python3, even though the TOTP-seed
+# generation below can use it if it's already there: python3 is also
+# what tools like Ansible run on, and installing it as a side effect of
+# setting up Warden would hand a defended box a capability it might not
+# have had otherwise — one red team's own tooling could take advantage
+# of just as easily. If it's missing, the TOTP prompt below just steps
+# aside instead of trying to fix that.
 ensure_deps() {
 	detect_pkg_manager
 	if [[ -z "$PKG_MANAGER" ]]; then
@@ -183,10 +191,9 @@ ensure_deps() {
 		echo "    If a step below fails over a missing command, install it yourself first."
 		return
 	fi
-	echo "==> Checking for git, curl, python3, cron, sudo, qrencode, ssh-keygen"
+	echo "==> Checking for git, curl, cron, sudo, qrencode, ssh-keygen"
 	pkg_install git git || true
 	pkg_install curl curl || true
-	pkg_install python3 python3 || true
 	pkg_install crontab cron || true
 	pkg_install visudo sudo || true
 	pkg_install qrencode qrencode || true
@@ -332,26 +339,32 @@ collect_config() {
 
 	TOTP_SECRET="${TOTP_SECRET:-}"
 	if [[ -z "$TOTP_SECRET" ]]; then
-		ask "Generate a fresh TOTP seed right here now? [Y/n] " ans
-		if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
-			if ! command -v python3 >/dev/null; then
-				echo "build-and-install.sh: needs python3 to generate a TOTP seed (or set TOTP_SECRET yourself)" >&2
-				exit 1
-			fi
-			TOTP_SECRET="$(python3 -c 'import secrets, base64; print(base64.b32encode(secrets.token_bytes(20)).decode())')"
-			local otpauth_uri="otpauth://totp/Warden?secret=${TOTP_SECRET}&issuer=Warden&digits=6&period=30"
-			echo "==> Generated — scan this in an authenticator app (Google Authenticator, Authy, 1Password, ...)"
-			if command -v qrencode >/dev/null 2>&1; then
-				qrencode -t ANSIUTF8 "$otpauth_uri"
-			else
-				echo "    (install 'qrencode' to render this as a scannable QR code here instead of typing it in)"
-			fi
-			echo "    Or add it manually — most apps have an 'enter setup key' option:"
-			echo "      secret: $TOTP_SECRET"
-			echo "    Distribute this to every teammate who needs to generate opmenu codes,"
-			echo "    out-of-band (not Slack/Discord) — it will not be printed again."
+		if ! command -v python3 >/dev/null 2>&1; then
+			echo "    No python3 on this box, and it's deliberately not auto-installed (see"
+			echo "    ensure_deps above) — it's also what tools like Ansible run on, not"
+			echo "    something worth handing a defended box just to generate a TOTP seed."
+			echo "    Paste an existing seed below, or leave this blank to skip TOTP entirely"
+			echo "    and rely on the static secret alone (generated next either way — it's"
+			echo "    part of this binary, not python3)."
+			ask "TOTP seed (base32, or blank to skip): " TOTP_SECRET
 		else
-			prompt_if_unset TOTP_SECRET "TOTP seed (base32)"
+			ask "Generate a fresh TOTP seed right here now? [Y/n] " ans
+			if [[ -z "$ans" || "$ans" == "y" || "$ans" == "Y" ]]; then
+				TOTP_SECRET="$(python3 -c 'import secrets, base64; print(base64.b32encode(secrets.token_bytes(20)).decode())')"
+				local otpauth_uri="otpauth://totp/Warden?secret=${TOTP_SECRET}&issuer=Warden&digits=6&period=30"
+				echo "==> Generated — scan this in an authenticator app (Google Authenticator, Authy, 1Password, ...)"
+				if command -v qrencode >/dev/null 2>&1; then
+					qrencode -t ANSIUTF8 "$otpauth_uri"
+				else
+					echo "    (install 'qrencode' to render this as a scannable QR code here instead of typing it in)"
+				fi
+				echo "    Or add it manually — most apps have an 'enter setup key' option:"
+				echo "      secret: $TOTP_SECRET"
+				echo "    Distribute this to every teammate who needs to generate opmenu codes,"
+				echo "    out-of-band (not Slack/Discord) — it will not be printed again."
+			else
+				prompt_if_unset TOTP_SECRET "TOTP seed (base32, or blank to skip)"
+			fi
 		fi
 	fi
 
