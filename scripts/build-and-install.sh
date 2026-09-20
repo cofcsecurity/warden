@@ -165,10 +165,23 @@ collect_config() {
 	echo "==> Per-box configuration (set as env vars beforehand to skip these prompts)"
 	if [[ -z "${TEAM_PUBKEY:-}" ]]; then
 		echo "    TEAM_PUBKEY is the team's own login key — the SAME one across every box"
-		echo "    this competition, not a new one per box. If this is the first box and you"
-		echo "    don't have one yet, generate it on YOUR OWN machine (never here — this is"
-		echo "    the box being defended) with: scripts/generate-team-key.sh"
-		echo "    Then paste the public key it prints below."
+		echo "    this competition, not a new one per box."
+		if [[ -f "$HOME/.ssh/warden_team_key.pub" ]]; then
+			echo "    Found an existing one at ~/.ssh/warden_team_key.pub — reusing it."
+			TEAM_PUBKEY="$(cat "$HOME/.ssh/warden_team_key.pub")"
+		else
+			echo "    Have a machine outside the competition network? Generate it THERE,"
+			echo "    never here, with scripts/generate-team-key.sh, then paste the public"
+			echo "    key it prints below."
+			echo "    No such machine exists (e.g. PCDC, every box provided is in scope)?"
+			echo "    Then there's no separate machine to gain by using — generating it"
+			echo "    right here, on this same box, is next:"
+			ask "    Generate the team login keypair on this box now? [y/N] " ans
+			if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+				./scripts/generate-team-key.sh --on-box
+				TEAM_PUBKEY="$(cat "$HOME/.ssh/warden_team_key.pub")"
+			fi
+		fi
 	fi
 	prompt_if_unset TEAM_PUBKEY "Team's login public key (e.g. 'ssh-ed25519 AAAA... team@ccdc')"
 	prompt_if_unset TEAM_FROM_IP "Team's source IP or CIDR opmenu will accept connections from"

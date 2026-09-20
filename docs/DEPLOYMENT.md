@@ -47,6 +47,14 @@ This does **not** generate the team's own login keypair (`TEAM_PUBKEY`) — use 
 
 Prints the public key to use as `TEAM_PUBKEY`. Generate this once per competition, not once per box — every box uses the same value, and every teammate who'll operate a box needs a copy of the private half, shared out-of-band.
 
+**No machine outside the competition network exists at all** (e.g. some PCDC-style events — every device you've been handed is itself in scope, not just the boxes you're defending)? There's no way around the key briefly existing on a machine you're defending in that case, so the goal shifts to minimizing the window instead of avoiding it:
+
+```
+./scripts/generate-team-key.sh --on-box
+```
+
+Generates the same keypair, but on this box, and walks through getting the private half onto every teammate's own device (however you actually have to do that — read aloud, handwritten, a competition channel red team can't see) before shredding it from disk here. No box is any safer than another in this situation, so there's no reason to single one out just for this — do it as part of installing to whichever box you're setting up first (`scripts/build-and-install.sh`'s own wizard offers to run it inline, see below). The same key gets reused for every other box after that, so this exposure only has to happen once, not once per box.
+
 ## 2. Replication topology
 
 With 6–8 boxes to defend, don't just pick one box as everyone's backup destination — that box becomes a single point of failure for every other box's recovery path, and it's one more thing red team can go after. Instead, arrange the boxes in a **bidirectional ring**: each box replicates to both of its neighbors, and receives from both of them in turn. For 6 boxes (`box1`…`box6`) in a ring:
