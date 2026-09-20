@@ -193,10 +193,10 @@ func TestSSHTargetManifestRoundTrip(t *testing.T) {
 	}
 	defer target.Close()
 
-	if err := target.PutManifest(1, []byte(`{"generation":1}`)); err != nil {
+	if err := target.PutManifest("config", 1, []byte(`{"generation":1}`)); err != nil {
 		t.Fatal(err)
 	}
-	has, err := target.HasManifest(1)
+	has, err := target.HasManifest("config", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,12 +204,38 @@ func TestSSHTargetManifestRoundTrip(t *testing.T) {
 		t.Fatalf("expected generation 1 to be present after PutManifest")
 	}
 
-	has, err = target.HasManifest(2)
+	has, err = target.HasManifest("config", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if has {
 		t.Fatalf("expected generation 2 to be absent")
+	}
+
+	got, err := target.GetManifest("config", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"generation":1}` {
+		t.Fatalf("got %q", got)
+	}
+
+	// A different namespace (the data tier) must not see config's
+	// generation 1 — separate lineages, same remote root.
+	has, err = target.HasManifest("data", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has {
+		t.Fatalf("expected data tier generation 1 to be absent; namespaces collided")
+	}
+
+	gens, err := target.ManifestGenerations("config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gens) != 1 || gens[0] != 1 {
+		t.Fatalf("got %v, want [1]", gens)
 	}
 }
 

@@ -45,18 +45,20 @@ Done. Wrote to $OUT_DIR/ (gitignored, do not commit):
                         (e.g. as a QR code) so they can generate opmenu codes
 
 Still needed before building, that this script can't generate for you:
-  - TEAM_PUBKEY:        the team's own login public key (not this script's output)
-  - TEAM_FROM_IP:       the IP(s) opmenu will accept connections from
-  - REPLICATE_URL:      ssh://user@backup-box/warden, or file:///path if no second box
-  - REPLICATE_HOST_KEY: the backup box's host key, e.g. from:
-                          ssh-keyscan -t ed25519 backup-box
+  - TEAM_PUBKEY:         the team's own login public key (not this script's output)
+  - TEAM_FROM_IP:        the IP(s) opmenu will accept connections from
+  - REPLICATE_TARGETS:   "<url>||<hostkey>" pairs separated by ";;", one per
+                         replication peer (see docs/DEPLOYMENT.md's
+                         "Replication topology" for a multi-box mesh).
+                         <hostkey> is empty for a file:// target. Get a
+                         peer's host key with, e.g.:
+                           ssh-keyscan -t ed25519 <peer>
 
-Example build once all of the above are known:
+Example build against a single peer, once the above is known:
   make build \\
     TEAM_PUBKEY="<team login pubkey>" \\
     TEAM_FROM_IP="<team IP>" \\
     TOTP_SECRET="$TOTP_SECRET" \\
-    REPLICATE_URL="ssh://warden@backup-box/warden" \\
     REPLICATE_KEY="\$(base64 < $OUT_DIR/replicate_key | tr -d '\\n')" \\
-    REPLICATE_HOST_KEY="<backup box host key>"
+    REPLICATE_TARGETS="ssh://warden-backup@peer/from-thisbox||<peer's host key>"
 EOF

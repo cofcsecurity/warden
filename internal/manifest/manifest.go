@@ -64,6 +64,17 @@ func New(path string) (*Manifest, error) {
 	return m, nil
 }
 
+// Parse decodes manifest JSON bytes with no backing file — e.g. a
+// generation just fetched from a replication peer. The result has no
+// path; call SaveAs before Save-ing it.
+func Parse(data []byte) (*Manifest, error) {
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("manifest: parse: %w", err)
+	}
+	return &m, nil
+}
+
 // Save writes the manifest back to its backing path as indented JSON.
 func (m *Manifest) Save() error {
 	if m.path == "" {

@@ -14,19 +14,23 @@ import (
 // These stay empty in a dev build; a real deploy build supplies all of
 // them.
 var (
-	buildTeamPubKey   string
-	buildTeamFromIP   string
-	buildTOTPSecret   string
-	buildReplicateURL string // ssh://user@host:port/remote/root or file:///local/path
+	buildTeamPubKey string
+	buildTeamFromIP string
+	buildTOTPSecret string
+
+	// buildReplicateTargets encodes one or more replication peers, e.g. for
+	// a mesh across several defended boxes rather than a single backup
+	// destination — see docs/DEPLOYMENT.md's "Replication topology"
+	// section. Format: "<url>||<hostkey>;;<url>||<hostkey>...", where
+	// <hostkey> is empty for a file:// target. Parsed by
+	// parseReplicateTargets in cmd/warden/replicate.go.
+	buildReplicateTargets string
 
 	// buildReplicateKey is a base64-encoded PEM private key, generated only
 	// for replication (see docs/DESIGN.md's replicate section) — never a
-	// personal or team login key. Only used for an ssh:// buildReplicateURL.
+	// personal or team login key. One key authenticates to every
+	// configured ssh:// target; they're all team-controlled boxes.
 	buildReplicateKey string
-	// buildReplicateHostKey is the destination's public key in
-	// authorized_keys format, pinned at build time rather than learned on
-	// first connect.
-	buildReplicateHostKey string
 )
 
 func main() {
@@ -49,6 +53,7 @@ func main() {
 
 	root.AddCommand(snapshotCmd())
 	root.AddCommand(replicateCmd())
+	root.AddCommand(retrieveCmd())
 	root.AddCommand(watchCmd())
 	root.AddCommand(restoreCmd())
 	root.AddCommand(sentinelCheckCmd())

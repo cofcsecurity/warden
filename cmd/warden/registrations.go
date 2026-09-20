@@ -63,7 +63,7 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 		},
 	}
 
-	if buildReplicateURL != "" {
+	if buildReplicateTargets != "" {
 		repUnitName, err := replicateUnitName()
 		if err != nil {
 			return nil, err

@@ -5,25 +5,26 @@ GOARCH ?= amd64
 # Per-competition values, baked in at build time rather than shipped as a
 # config file. Override on the make invocation, e.g.:
 #   make build TEAM_PUBKEY="ssh-ed25519 AAAA..." TEAM_FROM_IP=10.0.0.5 \
-#              TOTP_SECRET=... REPLICATE_URL=ssh://warden@backup-box/warden \
-#              REPLICATE_KEY=$$(base64 -i replicate_key) \
-#              REPLICATE_HOST_KEY="$$(cat backup_box_host_key.pub)"
-# REPLICATE_KEY/REPLICATE_HOST_KEY are only needed for an ssh:// target; a
-# file:// target (removable media) needs neither.
+#              TOTP_SECRET=... REPLICATE_KEY=$$(base64 -i replicate_key) \
+#              REPLICATE_TARGETS='ssh://warden@boxB/from-A||ssh-ed25519 AAAA hostB;;ssh://warden@boxF/from-A||ssh-ed25519 AAAA hostF'
+#
+# REPLICATE_TARGETS is one or more "<url>||<hostkey>" pairs separated by
+# ";;" — one entry per replication peer (see docs/DEPLOYMENT.md's
+# "Replication topology" for setting up a multi-box mesh). <hostkey> is
+# empty for a file:// target (removable media), which also needs no
+# REPLICATE_KEY. Every ssh:// target shares the one REPLICATE_KEY.
 TEAM_PUBKEY ?=
 TEAM_FROM_IP ?=
 TOTP_SECRET ?=
-REPLICATE_URL ?=
+REPLICATE_TARGETS ?=
 REPLICATE_KEY ?=
-REPLICATE_HOST_KEY ?=
 
 LDFLAGS := -s -w \
 	-X 'main.buildTeamPubKey=$(TEAM_PUBKEY)' \
 	-X 'main.buildTeamFromIP=$(TEAM_FROM_IP)' \
 	-X 'main.buildTOTPSecret=$(TOTP_SECRET)' \
-	-X 'main.buildReplicateURL=$(REPLICATE_URL)' \
-	-X 'main.buildReplicateKey=$(REPLICATE_KEY)' \
-	-X 'main.buildReplicateHostKey=$(REPLICATE_HOST_KEY)'
+	-X 'main.buildReplicateTargets=$(REPLICATE_TARGETS)' \
+	-X 'main.buildReplicateKey=$(REPLICATE_KEY)'
 
 .PHONY: build test vet fmt vendor clean
 

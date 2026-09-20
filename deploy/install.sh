@@ -18,10 +18,12 @@ TEAM_PUBKEY="CHANGE-ME ssh-ed25519 AAAA... team@ccdc"
 TEAM_FROM_IP="CHANGE-ME 203.0.113.10"
 
 # Leave empty to skip scheduling replication (e.g. still deciding on a
-# second box — see docs/PLAN.md Phase 2/5). Must match whatever
-# REPLICATE_URL was baked into the binary at build time, or `warden
-# replicate` will just fail every time this timer fires.
-REPLICATE_URL=""
+# replication peer — see docs/DEPLOYMENT.md's "Replication topology").
+# Set to anything non-empty only if REPLICATE_TARGETS was actually baked
+# into the binary at build time, or `warden replicate` will just fail
+# every time this timer fires. This script never needs the real value —
+# it's baked into the binary — just whether replication is configured.
+REPLICATE_TARGETS=""
 
 # Unit names are derived from INSTALL_PATH's basename, not chosen
 # separately: sentinel-check re-derives these same names at runtime from
@@ -126,8 +128,8 @@ step_install_systemd_units() {
 		"${SNAPSHOT_CONFIG_UNIT_NAME}.timer" \
 		"${SNAPSHOT_DATA_UNIT_NAME}.timer"
 
-	if [[ -n "$REPLICATE_URL" ]]; then
-		echo "==> Installing the replication timer (REPLICATE_URL is set)"
+	if [[ -n "$REPLICATE_TARGETS" ]]; then
+		echo "==> Installing the replication timer (REPLICATE_TARGETS is set)"
 		sed -e "s#%REPLICATE_NAME_ON_BOX%#${REPLICATE_UNIT_NAME}#g" \
 		    -e "s#%INSTALL_PATH%#${INSTALL_PATH}#g" \
 		    systemd/warden-replicate.service.template > "${unit_dir}/${REPLICATE_UNIT_NAME}.service"
@@ -139,7 +141,7 @@ step_install_systemd_units() {
 		systemctl daemon-reload
 		systemctl enable --now "${REPLICATE_UNIT_NAME}.timer"
 	else
-		echo "==> Skipping the replication timer (REPLICATE_URL is empty)"
+		echo "==> Skipping the replication timer (REPLICATE_TARGETS is empty)"
 		echo "    Backups only exist on this box until that's configured — see docs/PLAN.md Phase 2."
 	fi
 }

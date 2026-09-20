@@ -2,23 +2,27 @@
 
 What Warden does, command by command, once it's installed on a box. For *getting* it installed, see [DEPLOYMENT.md](DEPLOYMENT.md); for *why* it's built this way, see [DESIGN.md](DESIGN.md).
 
-Every command below reads and writes fixed paths under `/var/lib/warden` and a handful of other fixed system paths — there is no config file and no flag to point them elsewhere. See "On-disk layout" below and DESIGN.md's "Configuration" section for why.
+Every command below reads and writes fixed paths under `/var/lib/<binary-name>` (e.g. `/var/lib/svchelper` if that's what `install.sh`'s `INSTALL_PATH` named it — see below) and a handful of other fixed system paths — there is no config file and no flag to point them elsewhere. See "On-disk layout" below and DESIGN.md's "Configuration" section for why.
 
 ## On-disk layout
 
 ```
-/var/lib/warden/
-  manifest-config.json       live pointer to the config tier's last snapshot
-  manifests-config/          archived config-tier generations: manifest-<n>.json
-  manifest-data.json         live pointer to the data tier's last snapshot
-  manifests-data/            archived data-tier generations
-  objects/                   content-addressed, gzip-compressed file contents
-                              (objects/<hash prefix>/<hash>), shared by both tiers
-  audit.log                  append-only JSON-lines log of every action taken
+/var/lib/<binary-name>/       named after the installed binary, not "warden" —
+                               a literal /var/lib/warden would give away exactly
+                               what it is to anyone browsing /var/lib
+  manifest-config.json        live pointer to the config tier's last snapshot
+  manifests-config/           archived config-tier generations: manifest-<n>.json
+  manifest-data.json          live pointer to the data tier's last snapshot
+  manifests-data/             archived data-tier generations
+  objects/                    content-addressed, gzip-compressed file contents
+                               (objects/<hash prefix>/<hash>), shared by both tiers
+  audit.log                   append-only JSON-lines log of every action taken
 
 /root/.ssh/authorized_keys   the team's forced-command entry (sentinel-checked)
-/etc/systemd/system/         watch/sentinel/snapshot timer + service units
+/etc/systemd/system/         watch/sentinel/snapshot/replicate timer + service units
 ```
+
+All of the above is derived at runtime from the binary's own install path (`cmd/warden/config.go`'s `loadPaths`/`units.go`'s `binaryName`), the same way the systemd unit names and cron entry are — so the one naming decision made in `install.sh` (`INSTALL_PATH`) is the only one anyone has to make.
 
 The config and data tiers are kept completely separate on disk — each has its own manifest lineage — specifically so that snapshotting one tier can never clobber the other's baseline. `watch` only ever reads the config tier; it never writes either manifest.
 
@@ -66,13 +70,24 @@ Dry run (the default) prints current vs. target hash for the path and does nothi
 
 ### `warden replicate`
 
-Pushes anything new since the last replication to the off-host target baked in at build time (`REPLICATE_URL` — `ssh://` or `file://`). Additive-only on the destination: existing objects and manifest generations there are never touched, so a compromised source box can add junk but can't destroy prior backups.
+Pushes both tiers, anything new since the last replication, to **every** peer baked in at build time (`REPLICATE_TARGETS` — one or more `ssh://` or `file://` targets; see DEPLOYMENT.md's "Replication topology" for running a mesh across several boxes). Additive-only on every destination: existing objects and manifest generations there are never touched, so a compromised source box can add junk but can't destroy prior backups. One peer being unreachable doesn't stop the push to the others — errors are collected and reported together.
 
 ```
 warden replicate
 ```
 
-Fails immediately if no `REPLICATE_URL` was baked in, or (for `ssh://`) if `REPLICATE_KEY`/`REPLICATE_HOST_KEY` weren't. Not scheduled by `install.sh` — the design doc leaves the cadence to the team; add a systemd timer for it the same way as the others if you want it automatic.
+Fails immediately if no `REPLICATE_TARGETS` were baked in, or (for an `ssh://` target) if `REPLICATE_KEY` wasn't or that target has no pinned host key. Scheduled by `install.sh` as a systemd timer (`*-replicate`, every 15 min ± 3 min) whenever `REPLICATE_TARGETS` is configured — and, in that case, `sentinel-check` also verifies and respawns that timer's registration, the same way it protects its own.
+
+### `warden retrieve <peer-url> [--tier config|data] [--generation N] [--apply]`
+
+The reverse of `replicate`: pulls a box's own backups back from a peer that holds a copy, for recovering a box that's been wiped and rebuilt. `<peer-url>` must be one of the URLs already baked into this build's `REPLICATE_TARGETS` — its pinned host key comes from there, not a flag, so recovery can't be tricked into trusting an unpinned location.
+
+```
+warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1                    # dry run, latest generation
+warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1 --tier data --apply # actually recover the data tier
+```
+
+Dry run (the default) fetches the manifest and reports what's available without touching local state. `--apply` also fetches every object the manifest references into the local store and adopts the manifest as the local live baseline for that tier — after which `warden watch`/`warden restore` work normally again. See DEPLOYMENT.md's "Recovery" section for the full rebuild-and-recover workflow.
 
 ### `warden sentinel-check`
 
@@ -126,8 +141,7 @@ ssh -i <team private key> root@<box>
 
 ## Known limitations
 
-- `restore` only operates on the config tier — there's no CLI path to restore an individual data-tier file today.
-- `replicate` isn't scheduled by `install.sh`; it's a manual/cron-it-yourself step.
+- `restore` only operates on the config tier — there's no CLI path to restore an individual data-tier file today. `retrieve` does cover both tiers.
 - `configTierPaths`/`dataTierPaths`/`classifyPath`/`serviceForPath` in `cmd/warden/config.go` are a worked example (common CCDC services), not this season's actual scored image — see `docs/PLAN.md` Phase 1.
 
 See `docs/PLAN.md` for the full phased build history and what's still open.

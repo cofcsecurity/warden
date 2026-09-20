@@ -96,6 +96,16 @@ func loadPaths() (paths, error) {
 // and serviceForPath with the actual paths and services for whatever this
 // season's target distro and scoring services are before building for a
 // competition (docs/PLAN.md Phase 1).
+//
+// WARNING when doing that: never add a scoring engine's own credentials
+// (a scoring account's authorized_keys, an app login the scoring checks
+// authenticate with, anything the scoring engine itself rotates) as
+// SafeAutoRestore. If the scoring engine legitimately changes it and
+// watch reverts it back to a stale snapshot, that's Warden silently
+// breaking the box's own score, indistinguishable from red team having
+// done it. If such a path needs watching at all, classify it
+// ConfirmFirst — flagged for a human, never auto-reverted — the same
+// way passwd/shadow/sudoers already are below.
 
 // configTierPaths is the fast snapshot/watch tier: small, frequently
 // checked files whose drift usually means tampering rather than normal

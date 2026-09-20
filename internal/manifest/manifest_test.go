@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -147,5 +148,34 @@ func TestClassifyDefaultsToSafeAutoRestore(t *testing.T) {
 	}
 	if m.Records[0].Class != SafeAutoRestore {
 		t.Errorf("got class %s, want %s", m.Records[0].Class, SafeAutoRestore)
+	}
+}
+
+func TestParseDecodesBytesWithNoBackingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.conf")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	original, err := Generate([]string{path}, nil, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Generation != 7 || len(parsed.Records) != 1 || parsed.Records[0].Hash != original.Records[0].Hash {
+		t.Fatalf("parsed manifest doesn't match original: %+v", parsed)
+	}
+
+	if err := parsed.Save(); err == nil {
+		t.Fatal("expected Save to fail on a manifest with no backing path")
 	}
 }

@@ -19,12 +19,19 @@ func debugConfigCmd() *cobra.Command {
 		Short:  "Print the per-competition values baked in at build time",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("team_pubkey:         %s\n", orNotSet(buildTeamPubKey))
-			fmt.Printf("team_from_ip:        %s\n", orNotSet(buildTeamFromIP))
-			fmt.Printf("totp_secret_set:     %v\n", buildTOTPSecret != "")
-			fmt.Printf("replicate_url:       %s\n", orNotSet(buildReplicateURL))
-			fmt.Printf("replicate_key_set:   %v\n", buildReplicateKey != "")
-			fmt.Printf("replicate_host_key:  %s\n", orNotSet(buildReplicateHostKey))
+			fmt.Printf("team_pubkey:          %s\n", orNotSet(buildTeamPubKey))
+			fmt.Printf("team_from_ip:         %s\n", orNotSet(buildTeamFromIP))
+			fmt.Printf("totp_secret_set:      %v\n", buildTOTPSecret != "")
+			fmt.Printf("replicate_key_set:    %v\n", buildReplicateKey != "")
+			fmt.Println("replicate_targets:")
+			targets := parseReplicateTargets(buildReplicateTargets)
+			if len(targets) == 0 {
+				fmt.Println("  (none configured)")
+			}
+			for _, t := range targets {
+				fmt.Printf("  - url:       %s\n", t.url)
+				fmt.Printf("    host_key:  %s\n", orNotSet(t.hostKey))
+			}
 			return nil
 		},
 	}

@@ -2,7 +2,7 @@
 
 Design notes for the persistence and backup/restoration system.
 
-Sep 20, 2026 · @Tyler
+Sep 20, 2026
 
 ## Project Description
 
@@ -201,7 +201,7 @@ One script, run once, does the entire setup:
 5. Append the restricted authorized_keys line.
 6. Generate the initial manifest and take the first snapshot.
 7. Verify by calling `warden opmenu status` once over loopback, confirming the access layer works before walking away from the box.
-8. Delete the install script itself. It's a one-time-use file, and leaving it behind is the single most obvious piece of evidence that anything was installed.
+8. Delete the install script itself. It's a one-time-use file, and leaving it behind leaves a trace for red to find.
 
 ### Footprint and Evidence Policy
 
