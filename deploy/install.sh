@@ -14,6 +14,12 @@
 
 set -euo pipefail
 
+# Reattach stdin to the real terminal — see scripts/build-and-install.sh's
+# identical line for why (`|| true` included, same reasoning). Matters
+# here too: this script runs as a subprocess of that one (`bash
+# ./install.sh`) on the single-box path, inheriting whatever stdin it had.
+exec < /dev/tty 2>/dev/null || true
+
 # --- CHANGE-ME: per-box values -----------------------------------------
 WARDEN_BIN_SRC="${WARDEN_BIN_SRC:-./warden}" # binary built by `make build`
 INSTALL_PATH="${INSTALL_PATH:-}" # leave empty to auto-select an unused, inconspicuous name

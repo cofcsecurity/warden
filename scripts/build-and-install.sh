@@ -46,6 +46,17 @@
 
 set -euo pipefail
 
+# Reattach stdin to the real terminal. When this script (or bootstrap.sh,
+# which execs into it) is run as `curl ... | sudo bash`, stdin is the pipe
+# carrying the script's own source, not the terminal — every `read` below
+# would otherwise hit EOF immediately, which combined with `set -e` kills
+# the script silently on the very first prompt, before anything visibly
+# wrong is printed. `|| true`: if there's genuinely no controlling
+# terminal (e.g. `ssh box 'cmd'` without -t, which forwards a live stdin
+# stream instead and already works fine as-is), leave stdin alone rather
+# than hard-failing a path that wasn't broken.
+exec < /dev/tty 2>/dev/null || true
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
