@@ -112,14 +112,15 @@ set up this competition, not a new one per box:
 
 Each teammate who receives the private key needs it saved on their OWN
 laptop before they can connect with it — it's already there for you
-(${KEY_PATH}). Everyone else runs this exact block on their own laptop
-(it's the same team key, so the text below is already correct for all of
-them, not just you):
+(${KEY_PATH}). For anyone else, on their own laptop:
   mkdir -p ~/.ssh && chmod 700 ~/.ssh
-  cat > ~/.ssh/warden_team_key <<'KEY'
-  ${PRIVATE_KEY}
-  KEY
+  nano ~/.ssh/warden_team_key
+Paste the private key block above (everything from "-----BEGIN" to
+"-----END", both lines included) into the editor, save, exit, then:
   chmod 600 ~/.ssh/warden_team_key
+(any editor works — nano, vim, whatever's there; a text editor is safer
+to paste multi-line key material into by hand than a shell heredoc,
+which breaks if the paste doesn't land exactly as typed)
 
 To connect once a box is set up (see docs/USAGE.md's "Operating over SSH"):
   ssh -i ${KEY_PATH} <opmenu-user>@<box> status
@@ -137,20 +138,22 @@ set up this competition, not a new one per box:
 ${PUBLIC_KEY}
 
 Private key — every teammate who'll operate a box needs their OWN copy of
-this, saved on their own device, before it's deleted from this box:
+this, saved on their own device, before it's deleted from this box. Copy
+everything from "-----BEGIN" to "-----END" below, both lines included:
 
 ${PRIVATE_KEY}
 
-On your own laptop (or whichever machine you'll actually run \`ssh\` from),
-save it and lock down its permissions before connecting with it:
+On your own laptop (or whichever machine you'll actually run \`ssh\` from):
   mkdir -p ~/.ssh && chmod 700 ~/.ssh
-  cat > ~/.ssh/warden_team_key <<'KEY'
-  ${PRIVATE_KEY}
-  KEY
+  nano ~/.ssh/warden_team_key
+Paste the block above into the editor, save, exit, then:
   chmod 600 ~/.ssh/warden_team_key
+(any editor works; a text editor is safer to paste multi-line key
+material into by hand than a shell heredoc, which breaks if the paste
+doesn't land exactly as typed)
 
-Repeat that (pasting the same private key text above) on every other
-teammate's laptop too, after getting it to them out-of-band.
+Get the same block to every other teammate who needs it, out-of-band,
+and have them do the same on their own laptop.
 
 EOF
 
