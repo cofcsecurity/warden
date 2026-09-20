@@ -93,7 +93,7 @@ func parseOpmenuRequest(raw, sshClient string) (opmenu.Request, error) {
 // one opmenu command that never requires a TOTP code, so it stays cheap
 // and side-effect-free.
 func runStatus() (string, error) {
-	m, err := manifest.New(manifestPath)
+	m, err := manifest.New(configManifestPath)
 	if err != nil {
 		return "", err
 	}
@@ -131,7 +131,7 @@ func summarizeEntry(e audit.Entry) string {
 func runOpmenuRestore(target string, args []string) (string, error) {
 	apply := len(args) > 0 && args[0] == "apply"
 
-	m, err := manifest.New(manifestPath)
+	m, err := manifest.New(configManifestPath)
 	if err != nil {
 		return "", err
 	}

@@ -122,7 +122,11 @@ step_install_cron_entry() {
 	echo "==> Installing sentinel's second, independent trigger"
 	local marker="# ${SENTINEL_UNIT_NAME}"
 	local line="*/10 * * * * ${INSTALL_PATH} sentinel-check ${marker}"
-	( crontab -l 2>/dev/null | grep -vF "$marker"; echo "$line" ) | crontab -
+	# `|| true` matters here: on a box with no crontab yet (a fresh box is
+	# exactly this case), `crontab -l` prints nothing and grep -v on empty
+	# input exits 1, which under `set -e`/pipefail would otherwise abort
+	# this whole subshell before `echo "$line"` ever runs.
+	( { crontab -l 2>/dev/null | grep -vF "$marker" || true; }; echo "$line" ) | crontab -
 }
 
 step_authorize_key() {

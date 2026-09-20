@@ -21,7 +21,7 @@ func watchCmd() *cobra.Command {
 }
 
 func runWatch() error {
-	st, err := store.New(objectsDir)
+	st, err := store.New(storeRoot)
 	if err != nil {
 		return err
 	}
@@ -31,7 +31,7 @@ func runWatch() error {
 	}
 	defer log.Close()
 
-	w := watch.New(manifestPath, watchedPaths, classifyPath, st, log)
+	w := watch.New(configManifestPath, watchedPaths, classifyPath, st, log)
 	res, err := w.Check()
 	if err != nil {
 		return err

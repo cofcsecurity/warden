@@ -30,7 +30,7 @@ func snapshotCmd() *cobra.Command {
 }
 
 func runSnapshot(tier snapshotTier) error {
-	st, err := store.New(objectsDir)
+	st, err := store.New(storeRoot)
 	if err != nil {
 		return err
 	}
@@ -39,6 +39,9 @@ func runSnapshot(tier snapshotTier) error {
 		return err
 	}
 	defer log.Close()
+
+	manifestPath := manifestPathForTier(tier)
+	manifestsDir := manifestsDirForTier(tier)
 
 	last, err := manifest.New(manifestPath)
 	if err != nil {
@@ -79,24 +82,28 @@ func runSnapshot(tier snapshotTier) error {
 }
 
 // pruneOldObjects keeps every object referenced by the last
-// retainGenerations archived manifests and drops the rest.
+// retainGenerations archived manifests of *either* tier and drops the
+// rest — both tiers share one object store, so retention has to consider
+// both lineages or it'll prune objects the other tier still needs.
 func pruneOldObjects(st *store.Store) error {
-	gens, err := manifest.Generations(manifestsDir)
-	if err != nil {
-		return err
-	}
-	if len(gens) > retainGenerations {
-		gens = gens[len(gens)-retainGenerations:]
-	}
-
 	keep := map[string]bool{}
-	for _, g := range gens {
-		m, err := manifest.LoadGeneration(manifestsDir, g)
+
+	for _, dir := range []string{configManifestsDir, dataManifestsDir} {
+		gens, err := manifest.Generations(dir)
 		if err != nil {
 			return err
 		}
-		for _, r := range m.Records {
-			keep[r.Hash] = true
+		if len(gens) > retainGenerations {
+			gens = gens[len(gens)-retainGenerations:]
+		}
+		for _, g := range gens {
+			m, err := manifest.LoadGeneration(dir, g)
+			if err != nil {
+				return err
+			}
+			for _, r := range m.Records {
+				keep[r.Hash] = true
+			}
 		}
 	}
 

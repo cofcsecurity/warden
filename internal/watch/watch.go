@@ -2,6 +2,15 @@
 // manifest, diff it against the last known-good generation, act on the
 // differences, exit. It's meant to be invoked by a jittered systemd timer,
 // not run as a long-lived daemon.
+//
+// Watch never writes the manifest it reads: the "last known-good"
+// generation is whatever snapshot last produced (snapshot is also what
+// populates the object store, via store.Put — watch only ever reads from
+// it). If watch tried to maintain its own evolving baseline instead, it
+// would have to introduce new generations of its own, and any hash it
+// recorded for content it never called store.Put on would be
+// unrestorable the next time that path drifted. Keeping watch read-only
+// with respect to the manifest avoids that class of bug entirely.
 package watch
 
 import (
@@ -43,14 +52,17 @@ type Result struct {
 	Flagged      []string
 }
 
-// Check runs one integrity check pass: generate, diff, act, save.
+// Check runs one integrity check pass: generate, diff, act. It does not
+// write the manifest back — see the package doc for why.
 func (w *Watcher) Check() (*Result, error) {
 	last, err := manifest.New(w.manifestPath)
 	if err != nil {
 		return nil, fmt.Errorf("watch: load last-known-good manifest: %w", err)
 	}
 
-	next, err := manifest.Generate(w.paths, w.classify, last.Generation+1)
+	// The generation number here is never persisted, so it's not
+	// meaningful — Diff only compares records, not generations.
+	next, err := manifest.Generate(w.paths, w.classify, last.Generation)
 	if err != nil {
 		return nil, fmt.Errorf("watch: generate manifest: %w", err)
 	}
@@ -78,11 +90,6 @@ func (w *Watcher) Check() (*Result, error) {
 		}
 	}
 
-	next.Generation = last.Generation + 1
-	if err := w.saveManifest(next); err != nil {
-		return res, err
-	}
-
 	return res, nil
 }
 
@@ -105,10 +112,6 @@ func (w *Watcher) logChange(action string, change manifest.Change) {
 		"path": change.Path,
 		"kind": change.Kind,
 	})
-}
-
-func (w *Watcher) saveManifest(m *manifest.Manifest) error {
-	return m.SaveAs(w.manifestPath)
 }
 
 func writeFile(path string, content []byte, mode fs.FileMode) error {

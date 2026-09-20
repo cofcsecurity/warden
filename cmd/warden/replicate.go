@@ -36,7 +36,7 @@ func runReplicate() error {
 	}
 	defer closeTarget()
 
-	m, err := manifest.New(manifestPath)
+	m, err := manifest.New(configManifestPath)
 	if err != nil {
 		return err
 	}
@@ -49,7 +49,7 @@ func runReplicate() error {
 		return err
 	}
 
-	st, err := store.New(objectsDir)
+	st, err := store.New(storeRoot)
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func dialSSHReplicateTarget(u *url.URL) (replicate.Target, func() error, error) 
 }
 
 func readArchivedManifest(generation int) ([]byte, error) {
-	path := manifest.ArchivePath(manifestsDir, generation)
+	path := manifest.ArchivePath(configManifestsDir, generation)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("replicate: read archived manifest %s: %w", path, err)

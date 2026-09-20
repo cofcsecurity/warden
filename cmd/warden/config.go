@@ -11,10 +11,30 @@ import (
 // see docs/DESIGN.md's "Configuration" section for why these stay fixed
 // rather than becoming a discoverable config file.
 const (
-	dataDir      = "/var/lib/warden"
-	manifestPath = dataDir + "/manifest.json"
-	manifestsDir = dataDir + "/manifests" // archived generations, one file each
-	objectsDir   = dataDir + "/objects"
+	dataDir = "/var/lib/warden"
+
+	// configManifestPath/configManifestsDir track the config tier's own
+	// lineage — this is what `watch`, `restore`, `status`, and `replicate`
+	// all mean by "the" manifest, since the config tier is what's actually
+	// watched. The data tier gets its own separate lineage below: sharing
+	// one manifest.json between tiers would mean the tier snapshotted last
+	// clobbers the other's "last known good" pointer, which is exactly the
+	// bug an earlier version of this file had (caught by the Phase 6 VM
+	// test — install.sh runs `snapshot --tier config` then `--tier data`,
+	// and the data snapshot silently erased watch's baseline immediately
+	// after installation).
+	configManifestPath = dataDir + "/manifest-config.json"
+	configManifestsDir = dataDir + "/manifests-config"
+	dataManifestPath   = dataDir + "/manifest-data.json"
+	dataManifestsDir   = dataDir + "/manifests-data"
+
+	// storeRoot is passed straight to store.New, which creates its own
+	// "objects" subdirectory under whatever root it's given — it is NOT
+	// dataDir+"/objects" itself, or store.New would nest it twice
+	// (a real bug the Phase 6 VM test caught: watch's own repair write
+	// failed with ".../objects/objects/<hash prefix>/<hash>: no such
+	// file or directory").
+	storeRoot    = dataDir
 	auditLogPath = dataDir + "/audit.log"
 
 	// retainGenerations bounds store.Prune's mark-and-sweep: objects
@@ -110,6 +130,20 @@ func pathsForTier(tier snapshotTier) []string {
 	default:
 		return configTierPaths
 	}
+}
+
+func manifestPathForTier(tier snapshotTier) string {
+	if tier == tierData {
+		return dataManifestPath
+	}
+	return configManifestPath
+}
+
+func manifestsDirForTier(tier snapshotTier) string {
+	if tier == tierData {
+		return dataManifestsDir
+	}
+	return configManifestsDir
 }
 
 func parseTier(s string) (snapshotTier, error) {

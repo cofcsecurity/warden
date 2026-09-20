@@ -66,13 +66,13 @@ func runRestore(target, snapshotID string, apply bool) error {
 // when snapshotID is empty.
 func loadSnapshot(snapshotID string) (*manifest.Manifest, error) {
 	if snapshotID == "" {
-		return manifest.New(manifestPath)
+		return manifest.New(configManifestPath)
 	}
 	gen, err := strconv.Atoi(snapshotID)
 	if err != nil {
 		return nil, fmt.Errorf("restore: --snapshot must be a generation number: %w", err)
 	}
-	return manifest.LoadGeneration(manifestsDir, gen)
+	return manifest.LoadGeneration(configManifestsDir, gen)
 }
 
 // planLines renders a restore plan the same way for both `warden restore`
@@ -92,7 +92,7 @@ func planLines(entries []restore.PlanEntry) []string {
 // applyPlan applies entries and logs each step, shared by `restore --apply`
 // and opmenu's restore command so both go through the identical sequence.
 func applyPlan(entries []restore.PlanEntry, log *audit.Logger) ([]string, error) {
-	st, err := store.New(objectsDir)
+	st, err := store.New(storeRoot)
 	if err != nil {
 		return nil, err
 	}
