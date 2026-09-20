@@ -1,0 +1,11 @@
+[Unit]
+Description=%SENTINEL_NAME_ON_BOX% timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=%SENTINEL_INTERVAL%
+RandomizedDelaySec=%SENTINEL_JITTER%
+Unit=%SENTINEL_NAME_ON_BOX%.service
+
+[Install]
+WantedBy=timers.target

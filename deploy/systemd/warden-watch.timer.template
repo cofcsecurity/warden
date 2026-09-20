@@ -1,0 +1,11 @@
+[Unit]
+Description=%NAME_ON_BOX% timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=%WATCH_INTERVAL%
+RandomizedDelaySec=%WATCH_JITTER%
+Unit=%NAME_ON_BOX%.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,6 @@
+[Unit]
+Description=%NAME_ON_BOX%
+
+[Service]
+Type=oneshot
+ExecStart=%INSTALL_PATH% watch
