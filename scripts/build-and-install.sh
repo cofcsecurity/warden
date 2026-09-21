@@ -534,6 +534,28 @@ main() {
 	(cd deploy && bash ./install.sh)
 
 	step_cleanup_repo
+	step_final_reminder
+}
+
+# step_final_reminder runs after the source tree is gone, so the last
+# thing on screen is what to do next rather than a cleanup line. The
+# detail is all in install.sh's own next-steps output above; this exists
+# because that output has scrolled by the time this finishes, and the one
+# thing nobody should walk away without knowing is that the box isn't
+# armed yet.
+step_final_reminder() {
+	echo ""
+	echo "==> Done — and this box is NOT armed yet."
+	echo ""
+	echo "    Harden it first, then:"
+	echo "      ${INSTALL_PATH} detect        # what's protected, and what's running that isn't"
+	echo "      ${INSTALL_PATH} status        # armed state and the last run of every timer"
+	echo "      ${INSTALL_PATH} scan          # bootstrap anomaly baselines, AFTER hardening"
+	echo "      ${INSTALL_PATH} arm           # turn auto-restore on"
+	echo ""
+	echo "    Scroll up for the full checklist, or see docs/DEPLOYMENT.md's"
+	echo "    'Harden, then arm' section."
+	echo ""
 }
 
 main "$@"

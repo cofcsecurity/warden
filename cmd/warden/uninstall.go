@@ -175,6 +175,13 @@ func runUninstall(code string, force, assumeYes bool) error {
 	}
 
 	fmt.Println("==> Done. Off-box replicas on any peer boxes are untouched.")
+	// Worth saying plainly: the peers are about to start reporting this
+	// box as silent, and someone reading `warden fleet` there shouldn't
+	// spend time investigating a box the team took down on purpose.
+	if buildReplicateTargets != "" {
+		fmt.Println("    Peers will report this box as silent within the hour — that's the")
+		fmt.Println("    heartbeat noticing an uninstall, not a separate problem.")
+	}
 	return nil
 }
 
