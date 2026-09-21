@@ -141,15 +141,10 @@ warden disarm     # turn auto-restore back off, e.g. ahead of a planned maintena
   modified  auto-restore  /etc/nginx/nginx.conf
   added     auto-restore  /etc/redis/redis.conf
 
-    Arming makes all of the above the enforced known-good state.
-    1 of them is a confirm-first path — accounts, sudo, SSH, PAM, firewall
-    rules. Those are what an attacker changes. Check each one was your team.
-    Anything here you didn't do, fix it first — arming would bless it.
-
     Arm with these 3 change(s) as the new known-good state? [y/N]
 ```
 
-Everything between installing and arming happens with auto-restore off, so that diff is the team's own hardening *and* anything else that landed in the same window. Arming blesses all of it. Confirm-first paths sort first because those are the ones worth reading carefully.
+Everything between installing and arming happens with auto-restore off, so that diff is the team's own hardening *and* anything else that landed in the same window. Arming makes all of it the enforced known-good state, so anything on the list you didn't do is worth fixing before answering. Confirm-first paths (accounts, sudo, SSH, PAM, firewall rules — what an attacker changes) sort to the top for that reason.
 
 Over `opmenu`'s `shell` there's no terminal to answer the prompt, so `arm` refuses and tells you to re-run with `--yes` once you've read the list — `--yes` skips the question, not the review, and the full list goes to `audit.log` as an `arm`/`pre-arm-review` entry either way.
 

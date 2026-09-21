@@ -171,7 +171,7 @@ func TestReviewWithNoBaselineDoesNotReportEveryPathAsNew(t *testing.T) {
 	}
 }
 
-func TestPrintArmReviewNamesEveryChangeAndWarnsAboutSensitiveOnes(t *testing.T) {
+func TestPrintArmReviewNamesEveryChangeWithItsClass(t *testing.T) {
 	baselineAt := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	now := baselineAt.Add(45 * time.Minute)
 
@@ -196,13 +196,17 @@ func TestPrintArmReviewNamesEveryChangeAndWarnsAboutSensitiveOnes(t *testing.T) 
 		"confirm-first",
 		"/etc/nginx/nginx.conf",
 		"auto-restore",
-		"enforced known-good state",
-		"is a confirm-first path",
-		"Check each one was your team",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected the review to mention %q, got:\n%s", want, got)
 		}
+	}
+
+	// The list and nothing after it: the prompt asks the question, and
+	// standing commentary under every run is what stops people reading
+	// the part that matters.
+	if lines := strings.Split(strings.TrimRight(got, "\n"), "\n"); len(lines) != 4 {
+		t.Errorf("expected a header, a blank line and one line per change, got:\n%s", got)
 	}
 }
 

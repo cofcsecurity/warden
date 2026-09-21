@@ -211,7 +211,10 @@ func (r armReview) auditFields() map[string]any {
 }
 
 // printArmReview renders the review for a human about to decide whether
-// this is the state to enforce.
+// this is the state to enforce: the list, and nothing else. The class
+// column and the confirm-first-first ordering carry the emphasis —
+// standing commentary underneath every run is the kind of text people
+// stop reading, which would cost the list itself their attention.
 func printArmReview(w io.Writer, r armReview, now time.Time) {
 	if r.NoBaseline {
 		fmt.Fprintln(w, "==> No previous baseline to compare against — this box has never been snapshotted.")
@@ -250,17 +253,6 @@ func printArmReview(w io.Writer, r armReview, now time.Time) {
 		}
 		fmt.Fprintf(w, "  %-9s %-13s %s\n", c.Kind, class, c.Path)
 	}
-
-	fmt.Fprintln(w, "\n    Arming makes all of the above the enforced known-good state.")
-	if cf := r.confirmFirstPaths(); len(cf) > 0 {
-		verb := "are"
-		if len(cf) == 1 {
-			verb = "is"
-		}
-		fmt.Fprintf(w, "    %d of them %s a confirm-first path — accounts, sudo, SSH, PAM, firewall\n", len(cf), verb)
-		fmt.Fprintln(w, "    rules. Those are what an attacker changes. Check each one was your team.")
-	}
-	fmt.Fprintln(w, "    Anything here you didn't do, fix it first — arming would bless it.")
 }
 
 // confirmArm requires an explicit acknowledgement of the listed changes.
