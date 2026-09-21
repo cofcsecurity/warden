@@ -86,7 +86,7 @@ func runScan() error {
 		if eventTime.IsZero() {
 			eventTime = now
 		}
-		suspect, account, evidence := attributeChange(eventTime, now)
+		suspect, account, evidence, candidates := attributeChange(eventTime, now)
 		autobanned := false
 		if suspect != "" && buildAutobanEnabled != "" && armed {
 			store := autoban.NewStore(p.bannedIPsPath)
@@ -118,9 +118,27 @@ func runScan() error {
 		if suspect != "" {
 			fields["suspect_ip"] = suspect
 		}
+		if suspect == "" && len(candidates) > 1 {
+			fields["candidate_ips"] = candidates
+		}
 		if err := log.Log("react", "alert", fields); err != nil {
 			return err
 		}
+	}
+
+	// A "pass" entry every run, clean or not — the same unconditional
+	// heartbeat watch and sentinel-check log. Without it, a run with
+	// zero findings wrote nothing at all, so neither the audit log nor
+	// `status` could tell "scan ran and the box is clean" apart from
+	// "scan's timer has been dead for three days": both look like
+	// silence.
+	if err := log.Log("scan", "pass", map[string]any{
+		"armed":    armed,
+		"findings": len(findings),
+		"locked":   lockedCount,
+		"banned":   bannedCount,
+	}); err != nil {
+		return err
 	}
 
 	if len(findings) == 0 {

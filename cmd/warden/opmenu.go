@@ -50,6 +50,7 @@ func runOpmenu() error {
 	h := opmenu.New(
 		buildTOTPSecret,
 		p.staticSecretPath,
+		p.spentTOTPPath,
 		func() (string, error) { return runStatus(p) },
 		func(target string, args []string) (string, error) { return runOpmenuRestore(p, target, args) },
 		"/bin/bash",
@@ -132,8 +133,19 @@ func runStatus(p paths) (string, error) {
 	} else {
 		fmt.Fprintf(&b, "last snapshot: %s\n", m.CreatedAt.Format(time.RFC3339))
 	}
+	// Every periodic component reports here, not just watch and
+	// sentinel: each one is a whole capability (drift response, anomaly
+	// detection, off-box evidence), and a timer that silently stopped
+	// firing looks exactly like a quiet box unless status says when that
+	// component last ran.
 	fmt.Fprintf(&b, "last watch pass: %s\n", summarizeEntry(last["watch"]))
 	fmt.Fprintf(&b, "last sentinel check: %s\n", summarizeEntry(last["sentinel"]))
+	fmt.Fprintf(&b, "last anomaly scan: %s\n", summarizeEntry(last["scan"]))
+	if buildReplicateTargets == "" {
+		fmt.Fprintf(&b, "last replication: not configured on this build\n")
+	} else {
+		fmt.Fprintf(&b, "last replication: %s\n", summarizeEntry(last["replicate"]))
+	}
 
 	return strings.TrimRight(b.String(), "\n"), nil
 }
