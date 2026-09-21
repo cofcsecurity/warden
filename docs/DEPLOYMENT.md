@@ -271,6 +271,14 @@ warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1 --tier dat
 
 The peer URL must be one of the box's own configured `REPLICATE_TARGETS` entries — `retrieve` looks up its pinned host key from there rather than taking one on trust from a flag, so recovery can't be tricked into pulling from (and trusting the host key of) an unpinned location. Run without `--apply` first to see what generation and record count is available before committing to it. Once applied, `warden watch`/`warden restore` pick the recovered baseline straight back up — verified end-to-end in a test rig: wipe `/var/lib/<box>`'s warden data entirely, `retrieve --apply` both tiers from a peer, then tamper a file and confirm `watch` auto-restores it again.
 
+The audit trail comes back separately, and is worth pulling whether or not the box itself needs rebuilding — it's the evidence of what happened, and the local copy is the one thing an attacker with root can delete:
+
+```
+warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1 --audit ./recovered-audit.log
+```
+
+That writes where you tell it, never over the live local log. If several boxes replicate into the same peer root, the result is all of their logs together — each line carries its own `host` field, so they stay tellable apart, and the format (JSON lines) drops straight into a SIEM or `jq` if you have one.
+
 ## 8. Repeat per box
 
 Each box gets its own install, its own replication keypair, and (per the ring topology above) its own pair of `REPLICATE_TARGETS` entries; only the team's login key is shared across all of them.

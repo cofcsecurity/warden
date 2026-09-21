@@ -71,15 +71,17 @@ Dry run (the default) prints current vs. target hash for the path and does nothi
 
 ### `warden replicate`
 
-Pushes both tiers, anything new since the last replication, to **every** peer baked in at build time (`REPLICATE_TARGETS` — one or more `ssh://` or `file://` targets; see DEPLOYMENT.md's "Replication topology" for running a mesh across several boxes). Additive-only on every destination: existing objects and manifest generations there are never touched, so a compromised source box can add junk but can't destroy prior backups. One peer being unreachable doesn't stop the push to the others — errors are collected and reported together.
+Pushes both tiers and the audit log, anything new since the last replication, to **every** peer baked in at build time (`REPLICATE_TARGETS` — one or more `ssh://` or `file://` targets; see DEPLOYMENT.md's "Replication topology" for running a mesh across several boxes). Additive-only on every destination: existing objects and manifest generations there are never touched, so a compromised source box can add junk but can't destroy prior backups. One peer being unreachable doesn't stop the push to the others — errors are collected and reported together.
 
 ```
 warden replicate
 ```
 
-Fails immediately if no `REPLICATE_TARGETS` were baked in, or (for an `ssh://` target) if `REPLICATE_KEY` wasn't or that target has no pinned host key. Scheduled by `install.sh` as a systemd timer (`*-replicate`, every 15 min ± 3 min) whenever `REPLICATE_TARGETS` is configured — and, in that case, `sentinel-check` also verifies and respawns that timer's registration, the same way it protects its own.
+The audit log travels the same way as everything else — additive-only, as one immutable segment per push holding whatever was appended since that peer last heard from this box. That's what makes the evidence trail survive a box being wiped or someone with root deleting `audit.log` outright; `warden retrieve <peer> --audit` brings it back. Each entry carries its own `host` field, so several boxes replicating into one root give you a single combined, SIEM-ingestible JSON-lines log with no extra agent running anywhere.
 
-### `warden retrieve <peer-url> [--tier config|data] [--generation N] [--apply]`
+Fails immediately if no `REPLICATE_TARGETS` were baked in, or (for an `ssh://` target) if `REPLICATE_KEY` wasn't or that target has no pinned host key. Scheduled by `install.sh` as a systemd timer (`*-replicate`, every 15 min ± 3 min) whenever `REPLICATE_TARGETS` is configured — and, in that case, `sentinel-check` also verifies and respawns that timer's registration, the same way it protects every other timer on the box. Logs a `replicate`/`pass` audit entry every run, success or failure, so `status` can tell a healthy peer push from a dead timer.
+
+### `warden retrieve <peer-url> [--tier config|data] [--generation N] [--apply] [--audit <file>]`
 
 The reverse of `replicate`: pulls a box's own backups back from a peer that holds a copy, for recovering a box that's been wiped and rebuilt. `<peer-url>` must be one of the URLs already baked into this build's `REPLICATE_TARGETS` — its pinned host key comes from there, not a flag, so recovery can't be tricked into trusting an unpinned location.
 
@@ -89,6 +91,14 @@ warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1 --tier dat
 ```
 
 Dry run (the default) fetches the manifest and reports what's available without touching local state. `--apply` also fetches every object the manifest references into the local store and adopts the manifest as the local live baseline for that tier — after which `warden watch`/`warden restore` work normally again. See DEPLOYMENT.md's "Recovery" section for the full rebuild-and-recover workflow.
+
+`--audit <file>` is the separate recovery path for the evidence trail rather than the backups: it reassembles every audit-log segment that peer holds, in order, into the file you name (`-` for stdout), and ignores the tier/generation flags. Use it when the local `audit.log` was deleted, or when you want one combined log across every box that replicates into that peer.
+
+```
+warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1 --audit ./recovered-audit.log
+```
+
+It writes where you tell it and never over the live local `audit.log`, so a peer's copy can't get mixed into the record this box is still appending to.
 
 ### `warden detect`
 
@@ -174,14 +184,16 @@ warden alerts                                                   # tail react's a
 
 ### `warden scan`
 
-Six bounded checks `watch` structurally can't cover, since `watch` only ever knows a *watched path's content* changed: new local user/group accounts (plus new domain/Active-Directory-backed accounts, flagged separately — see below), new setuid/setgid binaries, cron tampering for any account, `authorized_keys` tampering for any account, new listening TCP ports, and newly installed packages. Not a SIEM replacement — see `docs/PLAN.md` Phase 9 and DESIGN.md's "Anomaly Detection and Account Lockout" section for the full design.
+Six bounded checks `watch` structurally can't cover, since `watch` only ever knows a *watched path's content* changed: new **or modified** local user/group accounts (plus new domain/Active-Directory-backed accounts, flagged separately — see below), new **or replaced-in-place** setuid/setgid binaries, cron tampering for any account, `authorized_keys` tampering for any account, new listening TCP ports, and newly installed packages. Not a SIEM replacement — see `docs/PLAN.md` Phase 9 and DESIGN.md's "Anomaly Detection and Account Lockout" section for the full design.
+
+The two "modified" halves matter as much as the "new" ones and are easy to overlook: giving an *existing* account UID 0, handing a service account a login shell, adding someone to `sudo`/`wheel`, or swapping the contents of an already-known setuid binary are all privilege escalation that creates no new name and no new file.
 
 ```
 warden scan
 scan: 2 finding(s), 1 account(s) locked, 0 IP(s) banned. See 'warden alerts' for detail.
 ```
 
-Always flags and logs every finding (`warden alerts` surfaces them, same as guarded-file alerts above). Once armed, and only if built with `AUTOLOCK_ENABLED`/`AUTOBAN_ENABLED`, also reacts: locks the responsible local account (and kills its sessions) when a finding is unambiguously attributable to one, and separately tries to ban the source IP the same way a guarded-file change already does. **Both reactions additionally require the box to be armed** — unlike the guarded-file ban above, since a new cron job or a teammate's key is something a team plausibly adds routinely while still setting up, not something inherently suspicious the moment it happens.
+Always flags and logs every finding (`warden alerts` surfaces them, same as guarded-file alerts above), and always writes a `scan`/`pass` audit entry even when it finds nothing — so a clean run is distinguishable from a scan timer that died days ago, which `status` reports. Once armed, and only if built with `AUTOLOCK_ENABLED`/`AUTOBAN_ENABLED`, also reacts: locks the responsible local account (and kills its sessions) when a finding is unambiguously attributable to one, and separately tries to ban the source IP the same way a guarded-file change already does. **Both reactions additionally require the box to be armed** — unlike the guarded-file ban above, since a new cron job or a teammate's key is something a team plausibly adds routinely while still setting up, not something inherently suspicious the moment it happens.
 
 A domain-backed account (Active Directory via sssd/winbind, LDAP, ...) never appears in the raw `/etc/passwd` file at all — NSS resolves it dynamically — so a new one is detected via `getent passwd` instead, and reported with no culprit: `accountlock`'s lock is nothing but `passwd`/`usermod` against local files, which does nothing meaningful against a domain account. The finding itself says to lock it down in Active Directory instead.
 
@@ -200,11 +212,13 @@ Disables password auth and interactive shell access, and best-effort kills the a
 
 ### `warden sentinel-check`
 
-Verifies three things sentinel is responsible for keeping alive, and recreates whichever is missing: the `authorized_keys` forced-command entry, its own systemd timer (service file, timer file, and the `timers.target.wants` enabled symlink), and its own cron entry. Every check reads the relevant file directly — never `systemctl status` or `crontab -l` — since either could be lying if red team has altered them.
+Verifies everything sentinel is responsible for keeping alive, and recreates whatever is missing: the `authorized_keys` forced-command entry, the sudoers rule it depends on, the hidden spare copy of the binary, its own cron entry, and **every timer on the box** — `watch`, both snapshot tiers, `scan`, its own, and `replicate` when one is configured. Each timer counts as present only if its service file, timer file, *and* `timers.target.wants` symlink all exist, since a timer missing that symlink never fires. Every check reads the relevant file directly — never `systemctl status` or `crontab -l` — since either could be lying if red team has altered them.
+
+Covering all the timers, not just sentinel's own, is the point: each one carries a whole capability, so a timer nobody watches can be disabled and deleted once, and auto-restore, backups, or anomaly detection quietly stop for the rest of the competition on a box that still looks armed.
 
 ```
 warden sentinel-check
-# recreated: [authorized_keys systemd-timer cron-entry]
+# recreated: [authorized_keys systemd-timer cron-entry watch-timer scan-timer]
 ```
 
 Registered two independent ways (a systemd timer *and* a cron entry, both calling this same command) so killing one registration doesn't kill both — see DESIGN.md's sentinel section.
@@ -231,14 +245,14 @@ ssh -i <team private key> <opmenu-user>@<box>
 
 | You run | opmenu sees | Needs TOTP? |
 | --- | --- | --- |
-| `ssh <opmenu-user>@<box> status` | manifest generation, last snapshot time, last `watch`/`sentinel-check` pass | No |
+| `ssh <opmenu-user>@<box> status` | manifest generation, last snapshot time, last `watch`/`sentinel-check`/`scan`/`replicate` pass | No |
 | `ssh <opmenu-user>@<box> "restore <code> /etc/nginx/nginx.conf"` | dry-run restore of that path | Yes |
 | `ssh <opmenu-user>@<box> "restore <code> /etc/nginx/nginx.conf apply"` | actually restores it (same as `restore --apply`) | Yes |
 | `ssh <opmenu-user>@<box> "shell <code>"` | drops into `/bin/bash` as root — the only path that leaves the Go binary | Yes |
 
-`<code>` is the current 6-digit TOTP code from the seed baked in at build time. Anything else — an unrecognized command, a missing/wrong code on `restore`/`shell` — is rejected and logged to `audit.log` either way, along with the source IP (already constrained by `authorized_keys`' `from=` before opmenu ever runs).
+`<code>` is the current 6-digit TOTP code from the seed baked in at build time. **Each code works exactly once**, across every entry point that asks for one (`restore`/`shell` here, and `accept`/`uninstall` locally — they share one spent-code record, so a code used in one place can't be replayed into another) — a used one is refused for the rest of its validity window, so a dry-run restore and the follow-up `apply` need two different codes. That's deliberate: without it, a code someone observed stays good for up to ~90 seconds in anyone's hands. (The static second factor, being a standing passphrase, is reusable until rotated — see `warden rotate-secret`.) Anything else — an unrecognized command, a missing, wrong, or already-used code on `restore`/`shell` — is rejected and logged to `audit.log` either way, along with the source IP (already constrained by `authorized_keys`' `from=` before opmenu ever runs).
 
-`status` deliberately needs no second factor, so it stays a safe, cheap way to check in without spending a TOTP window. It now also reports whether the box is armed (see `warden arm`/`warden disarm` above).
+`status` deliberately needs no second factor, so it stays a safe, cheap way to check in without spending a TOTP window. It also reports whether the box is armed (see `warden arm`/`warden disarm` above), and the last pass of every periodic component — `watch`, `sentinel-check`, `scan`, and `replicate` — so a timer that stopped firing is visible as a stale timestamp rather than looking like a quiet box.
 
 `arm`/`disarm`/`detect` aren't opmenu commands — there was no compelling reason to add a third TOTP-gated write path when `shell` already gets the team a real shell to run any CLI command from, including these.
 

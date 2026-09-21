@@ -235,11 +235,15 @@ assume incorrectly:
 - **It does not replace human judgment on sensitive changes.** Password
   files, `sudoers`, and similar are always flagged for a person, never
   silently auto-fixed — see "What actually changed" above.
-- **It is not an intrusion detection system.** It only reacts to specific
-  files changing content. It does not scan for malware, watch network
-  traffic, or notice a new suspicious process on its own. (A more general
-  "does anything look wrong" check is a known gap — see `docs/PLAN.md` Phase
-  9 — not something Warden currently does.)
+- **It is not a full intrusion detection system.** It does watch for more
+  than files changing — see "Catching tampering that isn't a watched file
+  changing" above for the specific checks `warden scan` runs — but that's a
+  short, fixed list of high-signal things, not a general "does anything look
+  wrong" engine. It does not scan for malware, watch network traffic, or
+  inspect running processes. Something that gets onto the box without
+  touching a watched file, creating or changing an account, changing a
+  setuid binary, adding a cron job or SSH key, opening a listening port, or
+  installing a package will not be noticed.
 - **It does not add a new hole for red team to also use.** It piggybacks on
   a service that's already running (SSH) instead of opening a new listening
   port, and the forced-command restriction means even someone who steals the
@@ -254,7 +258,9 @@ assume incorrectly:
   retaliation.
 - **It does not scrub evidence or hide what it did.** Every single action —
   a restore, a flagged file, a rejected login attempt — gets written to a
-  log file your team can show a judge if asked. Trying to look invisible by
+  log file your team can show a judge if asked, and (if replication is set
+  up) copied off to a peer box as it goes, so the record survives even if
+  someone deletes it here. Trying to look invisible by
   wiping logs would itself look exactly like what an attacker does after
   breaking in, which is its own way to lose points.
 - **It does not set itself up correctly for your specific competition.**

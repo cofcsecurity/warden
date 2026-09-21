@@ -15,6 +15,7 @@ flowchart TB
         T_sentinel["*-sentinel.timer\nevery 10min ± 2min"]
         T_cron["cron entry\nevery 10min"]
         T_replicate["*-replicate.timer\nevery 15min ± 3min"]
+        T_scan["*-scan.timer\nevery 10min ± 2min"]
     end
 
     subgraph Binary["warden binary (one file, disguised name)"]
@@ -22,6 +23,7 @@ flowchart TB
         snapshot["snapshot --tier config|data"]
         sentinelcheck["sentinel-check"]
         replicate["replicate"]
+        scan["scan"]
         restore["restore"]
         opmenu["opmenu\n(forced command only)"]
     end
@@ -29,7 +31,8 @@ flowchart TB
     subgraph State["/var/lib/&lt;binary-name&gt;/ (named to blend in)"]
         manifests["manifest-config.json\nmanifest-data.json\nmanifests-config/\nmanifests-data/"]
         objects["objects/\n(content-addressed, gzip)"]
-        auditlog["audit.log\n(JSON lines)"]
+        auditlog["audit.log\n(JSON lines, capped + rotated)"]
+        anomalybaselines["anomaly/\n(per-check baselines)"]
     end
 
     subgraph External["Outside this box"]
@@ -46,6 +49,7 @@ flowchart TB
     T_sentinel --> sentinelcheck
     T_cron --> sentinelcheck
     T_replicate --> replicate
+    T_scan --> scan
 
     watch <-- "read only" --> manifests
     watch <-- "read for repair" --> objects
@@ -65,6 +69,10 @@ flowchart TB
     replicate <-- "push (additive-only)" --> peers
     replicate --> manifests
     replicate --> objects
+    replicate <-- "push new entries" --> auditlog
+
+    scan --> auditlog
+    scan <-- "baselines" --> anomalybaselines
 
     restore <-- "pull known-good" --> objects
     restore --> watchedfiles
@@ -116,6 +124,8 @@ flowchart LR
 **Why this doesn't add new attack surface**: nothing here opens a new listening port. The forced-command entry piggybacks on `sshd`, which is already running (and already the thing red team would need to get past to reach a real shell anyway). `opmenu` never execs a shell itself except after a valid TOTP code, and every other path — `status`, `restore` — stays inside the Go binary.
 
 **What if the binary file itself is deleted, not just a registration?** All four registrations above are checks/recreates run *by* the binary — none of them help if the binary itself is gone, since nothing is left to run them. A fifth registration, `binary-backup`, keeps a hidden spare copy in sync (`/var/lib/<name>/.spare`), and the cron trigger's command line checks for the binary and restores it from that spare using only `test`/`cp`/`chmod` — never the Go binary — before invoking anything else. This is the one piece of recovery that has to work without the thing it's recovering.
+
+**The other timers are registrations too.** The four above are what keeps *sentinel-check itself and the access layer* alive; `sentinel-check` additionally verifies and rebuilds every other timer on the box the same way — `watch`, both snapshot tiers, `scan`, and `replicate` when one is configured (`cmd/warden/registrations.go`'s `timerRegistration`). Each of those carries a whole capability on its own, so a timer nobody watches could be disabled and deleted once and simply never come back: auto-restore, backups, anomaly detection, or off-box evidence would stop for the rest of the competition on a box that still looks armed from every outside signal.
 
 ## opmenu: what happens on a forced-command connection
 
