@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -61,7 +62,7 @@ func TestCheckAutoRestoresModifiedFile(t *testing.T) {
 	manifestPath := filepath.Join(dir, "manifest.json")
 	snapshotBaseline(t, manifestPath, []string{confPath}, nil, st)
 
-	w := New(manifestPath, []string{confPath}, nil, true, st, log)
+	w := New(manifestPath, []string{confPath}, nil, true, st, log, nil)
 
 	// A clean check right after the baseline should find nothing to do.
 	res, err := w.Check()
@@ -120,7 +121,7 @@ func TestCheckDoesNotWriteManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := New(manifestPath, []string{confPath}, nil, true, st, log)
+	w := New(manifestPath, []string{confPath}, nil, true, st, log, nil)
 	if _, err := w.Check(); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +146,7 @@ func TestCheckSuppressesRestoreWhenDisarmed(t *testing.T) {
 	manifestPath := filepath.Join(dir, "manifest.json")
 	snapshotBaseline(t, manifestPath, []string{confPath}, nil, st)
 
-	w := New(manifestPath, []string{confPath}, nil, false, st, log)
+	w := New(manifestPath, []string{confPath}, nil, false, st, log, nil)
 
 	// Simulate a team member hardening this exact file during the
 	// pre-arm window.
@@ -185,7 +186,7 @@ func TestCheckFlagsConfirmFirstChanges(t *testing.T) {
 	manifestPath := filepath.Join(dir, "manifest.json")
 	snapshotBaseline(t, manifestPath, []string{sudoersPath}, classify, st)
 
-	w := New(manifestPath, []string{sudoersPath}, classify, true, st, log)
+	w := New(manifestPath, []string{sudoersPath}, classify, true, st, log, nil)
 
 	if err := os.WriteFile(sudoersPath, []byte("attacker ALL=(ALL) NOPASSWD:ALL"), 0o644); err != nil {
 		t.Fatal(err)
@@ -240,7 +241,7 @@ func TestCheckFlagsDeletedConfirmFirstPathRatherThanRestoringIt(t *testing.T) {
 	manifestPath := filepath.Join(dir, "manifest.json")
 	snapshotBaseline(t, manifestPath, []string{sudoersPath}, classify, st)
 
-	w := New(manifestPath, []string{sudoersPath}, classify, true, st, log)
+	w := New(manifestPath, []string{sudoersPath}, classify, true, st, log, nil)
 
 	if err := os.Remove(sudoersPath); err != nil {
 		t.Fatal(err)
@@ -288,7 +289,7 @@ func TestCheckNeverWritesThroughASymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := New(manifestPath, []string{confPath}, nil, true /* armed */, st, log)
+	w := New(manifestPath, []string{confPath}, nil, true /* armed */, st, log, nil)
 	res, err := w.Check()
 	if err != nil {
 		t.Fatal(err)
@@ -307,5 +308,94 @@ func TestCheckNeverWritesThroughASymlink(t *testing.T) {
 	}
 	if string(got) != "root:$6$real-hash:::::::" {
 		t.Errorf("the symlink target was written through: %q", got)
+	}
+}
+
+// TestAutoRestoreReloadsTheOwningService covers the half of auto-restore
+// that isn't writing the file: sshd, nginx and the rest parse their
+// config once at startup, so a restored file changes nothing for the
+// running process until it re-reads. Without the reload, watch reports a
+// box as repaired while the attacker's settings are still live — and
+// restoring sshd_config after being locked out helps nobody.
+func TestAutoRestoreReloadsTheOwningService(t *testing.T) {
+	dir, st, log := setup(t)
+
+	confPath := filepath.Join(dir, "sshd_config")
+	if err := os.WriteFile(confPath, []byte("PermitRootLogin no\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	snapshotBaseline(t, manifestPath, []string{confPath}, nil, st)
+
+	if err := os.WriteFile(confPath, []byte("PermitRootLogin yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var reloaded []string
+	w := New(manifestPath, []string{confPath}, nil, true, st, log, func(path string) error {
+		reloaded = append(reloaded, path)
+		return nil
+	})
+
+	res, err := w.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.AutoRestored) != 1 {
+		t.Fatalf("expected the drift restored, got %+v", res)
+	}
+	if len(reloaded) != 1 || reloaded[0] != confPath {
+		t.Errorf("expected the restored path handed to reload, got %v", reloaded)
+	}
+	if len(res.ReloadErrors) != 0 {
+		t.Errorf("expected no reload errors, got %v", res.ReloadErrors)
+	}
+}
+
+// TestReloadFailureDoesNotAbortThePass: the file is already back to
+// known-good by the time reload runs, and the remaining drifted paths
+// still need restoring. A service that won't reload is reported, not
+// thrown.
+func TestReloadFailureDoesNotAbortThePass(t *testing.T) {
+	dir, st, log := setup(t)
+
+	first := filepath.Join(dir, "nginx.conf")
+	second := filepath.Join(dir, "redis.conf")
+	for _, f := range []string{first, second} {
+		if err := os.WriteFile(f, []byte("known-good\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	snapshotBaseline(t, manifestPath, []string{first, second}, nil, st)
+
+	for _, f := range []string{first, second} {
+		if err := os.WriteFile(f, []byte("tampered\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := New(manifestPath, []string{first, second}, nil, true, st, log, func(path string) error {
+		return errors.New("unit failed to reload")
+	})
+
+	res, err := w.Check()
+	if err != nil {
+		t.Fatalf("a failed reload must not fail the pass: %v", err)
+	}
+	if len(res.AutoRestored) != 2 {
+		t.Errorf("expected both paths restored despite the reload failures, got %+v", res.AutoRestored)
+	}
+	if len(res.ReloadErrors) != 2 {
+		t.Errorf("expected both reload failures reported, got %v", res.ReloadErrors)
+	}
+	for _, f := range []string{first, second} {
+		content, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != "known-good\n" {
+			t.Errorf("%s was not restored: %q", f, content)
+		}
 	}
 }

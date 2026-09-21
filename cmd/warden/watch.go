@@ -22,6 +22,54 @@ func watchCmd() *cobra.Command {
 	}
 }
 
+// reloadServiceFor builds watch's reload hook: after a path is restored,
+// tell the service that owns it to re-read its config.
+//
+// Without this the restore is cosmetic for anything long-running. sshd,
+// nginx, postgres and the rest parse their config once at startup, so a
+// known-good file written underneath a running process changes nothing
+// until it re-reads — the attacker's settings stay live, and the box
+// looks repaired while still being compromised. It matters most for the
+// one file the team's own access depends on: restoring sshd_config after
+// someone locks the team out only helps if sshd actually picks it up.
+//
+// reload-or-restart, not restart: a reload is enough wherever the unit
+// defines one and doesn't interrupt anything, including established SSH
+// sessions. Each unit is reloaded at most once per pass even when
+// several of its config files were restored together, and a unit that
+// isn't installed here is skipped rather than failed (serviceForPath
+// already resolves among the distro-dependent names).
+func reloadServiceFor(log *audit.Logger) watch.Reload {
+	done := map[string]bool{}
+
+	return func(path string) error {
+		unit, ok := serviceForPath(path)
+		if !ok || done[unit] {
+			return nil
+		}
+		done[unit] = true
+
+		err := runSystemctl("reload-or-restart", unit)
+		_ = log.Log("watch", "service-reloaded", map[string]any{
+			"path":    path,
+			"unit":    unit,
+			"ok":      err == nil,
+			"outcome": systemctlOutcome(err),
+		})
+		if err != nil {
+			return fmt.Errorf("watch: reload %s after restoring %s: %w", unit, path, err)
+		}
+		return nil
+	}
+}
+
+func systemctlOutcome(err error) string {
+	if err == nil {
+		return "reloaded"
+	}
+	return err.Error()
+}
+
 func runWatch() error {
 	p, err := loadPaths()
 	if err != nil {
@@ -43,7 +91,7 @@ func runWatch() error {
 		return err
 	}
 
-	w := watch.New(p.configManifestPath, watchedPaths, classifyPath, armed, st, log)
+	w := watch.New(p.configManifestPath, watchedPaths, classifyPath, armed, st, log, reloadServiceFor(log))
 	res, err := w.Check()
 	if err != nil {
 		return err
@@ -59,11 +107,19 @@ func runWatch() error {
 		}
 	}
 
+	// A reload that failed means the file on disk is known-good but the
+	// running service isn't using it — worth saying out loud, since
+	// every other signal now reports this path as repaired.
+	for _, reloadErr := range res.ReloadErrors {
+		fmt.Fprintf(os.Stderr, "warning: %v (file restored, running service may still have the old config)\n", reloadErr)
+	}
+
 	if err := log.Log("watch", "pass", map[string]any{
 		"armed":         armed,
 		"auto_restored": len(res.AutoRestored),
 		"suppressed":    len(res.Suppressed),
 		"flagged":       len(res.Flagged),
+		"reload_errors": len(res.ReloadErrors),
 	}); err != nil {
 		return err
 	}

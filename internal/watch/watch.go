@@ -23,6 +23,18 @@ import (
 	"warden/internal/store"
 )
 
+// Reload is called once for each path auto-restored in a pass, so the
+// service that owns it picks the known-good file back up. Writing the
+// file alone doesn't do that: sshd, nginx and the rest parse their
+// config at start and keep it in memory, so a restored config sits on
+// disk while the running process goes on serving the attacker's
+// version. A nil Reload skips this entirely (it's what the unit tests
+// use, and it's harmless: the file is still restored).
+//
+// Implementations are expected to be idempotent per unit within a pass
+// — several restored paths can map to the same service.
+type Reload func(path string) error
+
 // Watcher ties together the manifest, object store, and audit log needed to
 // run one check pass.
 type Watcher struct {
@@ -32,6 +44,7 @@ type Watcher struct {
 	armed        bool
 	store        *store.Store
 	log          *audit.Logger
+	reload       Reload
 }
 
 // New builds a Watcher. manifestPath is where the last known-good manifest
@@ -44,7 +57,7 @@ type Watcher struct {
 // (editing exactly these same config files) without watch fighting that
 // work every few minutes. ConfirmFirst and unexpected-new-path handling are
 // unaffected either way, since neither of those ever writes to disk.
-func New(manifestPath string, paths []string, classify manifest.Classify, armed bool, st *store.Store, log *audit.Logger) *Watcher {
+func New(manifestPath string, paths []string, classify manifest.Classify, armed bool, st *store.Store, log *audit.Logger, reload Reload) *Watcher {
 	return &Watcher{
 		manifestPath: manifestPath,
 		paths:        paths,
@@ -52,6 +65,7 @@ func New(manifestPath string, paths []string, classify manifest.Classify, armed 
 		armed:        armed,
 		store:        st,
 		log:          log,
+		reload:       reload,
 	}
 }
 
@@ -67,6 +81,11 @@ type Result struct {
 	// Flagged itself stays a plain []string for callers that just want
 	// the count/paths.
 	FlaggedChanges []manifest.Change
+	// ReloadErrors collects failures from Reload. The restores they
+	// belong to still happened — these are reported so an operator
+	// knows a service is running on something other than what's now on
+	// disk.
+	ReloadErrors []error
 }
 
 // Check runs one integrity check pass: generate, diff, act. It does not
@@ -136,6 +155,17 @@ func (w *Watcher) Check() (*Result, error) {
 			}
 			res.AutoRestored = append(res.AutoRestored, change.Path)
 			w.logChange("auto-restored", change)
+
+			// A failed reload must not abort the pass: the file is
+			// already back to known-good, which is the load-bearing
+			// part, and the remaining drifted paths still need
+			// restoring. It's recorded either way.
+			if w.reload != nil {
+				if err := w.reload(change.Path); err != nil {
+					res.ReloadErrors = append(res.ReloadErrors, err)
+					w.logChange("reload-failed", change)
+				}
+			}
 
 		case change.Kind == manifest.Added:
 			// No known-good content exists for a new path, so it can only
