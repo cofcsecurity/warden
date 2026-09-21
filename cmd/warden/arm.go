@@ -96,6 +96,7 @@ func runArm(assumeYes bool) error {
 		return err
 	}
 
+	printArmConfig(os.Stdout, p)
 	printArmReview(os.Stdout, review, time.Now())
 	if len(review.Changes) > 0 {
 		if err := log.Log("arm", "pre-arm-review", review.auditFields()); err != nil {
@@ -129,6 +130,106 @@ func runArm(assumeYes bool) error {
 
 	fmt.Println("\narmed: auto-restore is now on. watch will revert future drift in SafeAutoRestore paths.")
 	return nil
+}
+
+// printArmConfig summarizes how this box is set up, immediately before
+// the operator decides to enforce it.
+//
+// Arming is the moment every one of these settings starts mattering, and
+// it's the last point at which changing one is cheap — several are baked
+// in at build time, so "wrong" means rebuild and redeploy rather than
+// edit a file. They're printed here rather than left to `debug-config`
+// (a build-machine tool) because the failure mode is silent: a box armed
+// with no replication peers, no second factor, or an empty data tier
+// behaves exactly like a correctly configured one right up until the
+// moment that setting is what you needed.
+func printArmConfig(w io.Writer, p paths) {
+	fmt.Fprintln(w, "==> This box's configuration")
+
+	protectedConfig, protectedData, confirmFirst := protectedCounts()
+	fmt.Fprintf(w, "  watched here:       %d config-tier path(s) present, %d of them confirm-first\n", protectedConfig, confirmFirst)
+	if protectedData == 0 {
+		fmt.Fprintln(w, "  data tier:          nothing configured — no service data is being backed up")
+	} else {
+		fmt.Fprintf(w, "  data tier:          %d path(s) present\n", protectedData)
+	}
+
+	fmt.Fprintf(w, "  access from:        %s\n", orNotSet(buildTeamFromIP))
+	fmt.Fprintf(w, "  second factor:      %s\n", secondFactorSummary(p))
+
+	targets := parseReplicateTargets(buildReplicateTargets)
+	if len(targets) == 0 {
+		fmt.Fprintln(w, "  replication:        none — backups, the audit log and heartbeats stay on this box only")
+	} else {
+		fmt.Fprintf(w, "  replication:        %d peer(s)\n", len(targets))
+		for _, t := range targets {
+			fmt.Fprintf(w, "                      %s\n", t.url)
+		}
+	}
+
+	fmt.Fprintf(w, "  auto-ban IPs:       %s\n", enabledSummary(buildAutobanEnabled != ""))
+	fmt.Fprintf(w, "  auto-lock accounts: %s\n", enabledSummary(buildAutolockEnabled != ""))
+	if buildAutolockEnabled != "" {
+		fmt.Fprintf(w, "  never locked:       root, %s%s\n", opmenuUserOrUnknown(), safeAccountsSuffix())
+	}
+	fmt.Fprintln(w)
+}
+
+// protectedCounts reports what's actually present on this box, not what
+// the shipped lists name — a path that doesn't exist here protects
+// nothing, and counting it would overstate the coverage being armed.
+func protectedCounts() (config, data, confirmFirst int) {
+	for _, pp := range currentlyProtected() {
+		switch pp.Tier {
+		case "config":
+			config++
+			if pp.Class == "confirm-first" {
+				confirmFirst++
+			}
+		case "data":
+			data++
+		}
+	}
+	return config, data, confirmFirst
+}
+
+func secondFactorSummary(p paths) string {
+	totp := buildTOTPSecret != ""
+	_, err := os.Stat(p.staticSecretPath)
+	static := err == nil
+
+	switch {
+	case totp && static:
+		return "TOTP and a static secret"
+	case totp:
+		return "TOTP only"
+	case static:
+		return "static secret only (no TOTP baked into this build)"
+	default:
+		return "NONE — restore/shell/accept/uninstall can't be authorized at all"
+	}
+}
+
+func enabledSummary(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off (flag and log only)"
+}
+
+func opmenuUserOrUnknown() string {
+	user, err := opmenuUser()
+	if err != nil {
+		return "the opmenu account"
+	}
+	return user
+}
+
+func safeAccountsSuffix() string {
+	if buildSafeAccounts == "" {
+		return " (no SAFE_ACCOUNTS set — your own account can be locked)"
+	}
+	return ", " + buildSafeAccounts
 }
 
 // armReview is what changed between the last baseline and now, plus
