@@ -284,6 +284,76 @@ var configTierPaths = []string{
 
 	// DHCP
 	"/etc/dhcp/dhcpd.conf",
+
+	// Containers — the runtime's own config, not anything inside a
+	// container. A container's contents aren't reachable from a path
+	// list like this one; what's here is the daemon's configuration
+	// (exposed sockets, registries, runtime flags).
+	"/etc/docker/daemon.json",
+	"/etc/containerd/config.toml",
+
+	// NoSQL, cache, search
+	"/etc/mongod.conf",
+	"/etc/redis/redis.conf",
+	"/etc/redis.conf", // RHEL-family Redis
+	"/etc/elasticsearch/elasticsearch.yml",
+
+	// Java application servers
+	"/etc/tomcat/server.xml",  // RHEL-family Tomcat
+	"/etc/tomcat9/server.xml", // Debian/Ubuntu Tomcat 9
+	"/var/lib/tomcat9/conf/server.xml",
+
+	// Application configs that hold their own database credentials.
+	// Read the WARNING above before adding more of these: an app config
+	// the scoring engine itself rewrites must be ConfirmFirst, not
+	// auto-restored.
+	"/var/www/html/wp-config.php",
+	"/var/www/wordpress/wp-config.php",
+
+	// Time. Worth watching despite looking mundane: skewing a box's
+	// clock breaks TOTP, log correlation, and anything Kerberos-backed
+	// all at once.
+	"/etc/chrony/chrony.conf",
+	"/etc/chrony.conf", // RHEL-family chrony
+	"/etc/ntp.conf",
+
+	// Monitoring and remote management — each one is both a service to
+	// keep working and a way in if it's reconfigured.
+	"/etc/snmp/snmpd.conf",
+	"/etc/xrdp/xrdp.ini",
+	"/etc/tigervnc/vncserver.users",
+
+	// The authentication stack itself. All ConfirmFirst below: a PAM
+	// edit is how an attacker makes every login succeed, and also how a
+	// teammate legitimately hardens the box — and getting it wrong locks
+	// everyone out of everything, so this is never reverted
+	// automatically.
+	"/etc/pam.d/common-auth",     // Debian/Ubuntu
+	"/etc/pam.d/common-password", // Debian/Ubuntu
+	"/etc/pam.d/common-account",  // Debian/Ubuntu
+	"/etc/pam.d/common-session",  // Debian/Ubuntu
+	"/etc/pam.d/system-auth",     // RHEL-family
+	"/etc/pam.d/password-auth",   // RHEL-family
+	"/etc/pam.d/sshd",
+	"/etc/pam.d/sudo",
+	"/etc/pam.d/su",
+	"/etc/nsswitch.conf",
+	"/etc/login.defs",
+
+	// Persistent firewall rules. Also ConfirmFirst, for a reason
+	// specific to these: they're a tool the team actively uses *during*
+	// an incident (blocking an attacker, then saving the ruleset), and
+	// auto-reverting that five minutes later would undo the team's own
+	// response. Warden's own bans are runtime rules, so they never
+	// collide with these files either way.
+	"/etc/iptables/rules.v4",
+	"/etc/iptables/rules.v6",
+	"/etc/sysconfig/iptables",  // RHEL-family
+	"/etc/sysconfig/ip6tables", // RHEL-family
+	"/etc/nftables.conf",
+	"/etc/ufw/user.rules",
+	"/etc/ufw/user6.rules",
+	"/etc/firewalld/firewalld.conf",
 }
 
 // dataTierPaths is the slow snapshot tier: larger service data, snapshotted
@@ -305,6 +375,30 @@ var confirmFirstPaths = map[string]bool{
 	"/etc/gshadow":         true,
 	"/etc/sudoers":         true,
 	"/etc/ssh/sshd_config": true,
+
+	// The PAM stack and what feeds it — see configTierPaths above.
+	"/etc/pam.d/common-auth":     true,
+	"/etc/pam.d/common-password": true,
+	"/etc/pam.d/common-account":  true,
+	"/etc/pam.d/common-session":  true,
+	"/etc/pam.d/system-auth":     true,
+	"/etc/pam.d/password-auth":   true,
+	"/etc/pam.d/sshd":            true,
+	"/etc/pam.d/sudo":            true,
+	"/etc/pam.d/su":              true,
+	"/etc/nsswitch.conf":         true,
+	"/etc/login.defs":            true,
+
+	// Persistent firewall rules: the team edits these mid-incident, so
+	// they're flagged rather than reverted.
+	"/etc/iptables/rules.v4":        true,
+	"/etc/iptables/rules.v6":        true,
+	"/etc/sysconfig/iptables":       true,
+	"/etc/sysconfig/ip6tables":      true,
+	"/etc/nftables.conf":            true,
+	"/etc/ufw/user.rules":           true,
+	"/etc/ufw/user6.rules":          true,
+	"/etc/firewalld/firewalld.conf": true,
 }
 
 func classifyPath(path string) manifest.Class {

@@ -35,7 +35,23 @@ type Service struct {
 // KnownServices is every service detect checks for: the common CCDC-image
 // services named in docs/EXPLAINER.md and DESIGN.md's worked examples —
 // web, database, mail, DNS, file transfer/sharing, and DHCP — plus SSH
-// itself, since sshd_config is already a default watched path.
+// itself, since sshd_config is already a default watched path, and the
+// second wave of things that turn up on modern scored images (containers,
+// NoSQL/cache/search, Java app servers, a CMS, time, SNMP, remote
+// desktop, the firewall).
+//
+// Still a template, not a season's real image: this list is what makes
+// `warden detect` able to *ask the question* about a service, and every
+// entry that isn't on a given box simply never matches. A service nobody
+// here has thought of still won't be found, which is why detect also
+// reports what's running that it has no entry for.
+//
+// A few entries have no ProcessNames at all. That's deliberate rather
+// than an omission: anything JVM-based reports `java` in
+// /proc/<pid>/comm, so Tomcat and Elasticsearch are indistinguishable
+// from each other (and from any other Java process) by process name —
+// their config path is the honest signal. Same for a CMS, which has no
+// process of its own at all; it's files served by someone else's.
 var KnownServices = []Service{
 	{
 		Name:         "nginx",
@@ -106,6 +122,85 @@ var KnownServices = []Service{
 		Name:         "SSH",
 		ProcessNames: []string{"sshd"},
 		ConfigPaths:  []string{"/etc/ssh/sshd_config"},
+	},
+	{
+		Name:         "Docker",
+		ProcessNames: []string{"dockerd"},
+		ConfigPaths:  []string{"/etc/docker/daemon.json"},
+	},
+	{
+		Name:         "containerd",
+		ProcessNames: []string{"containerd"},
+		ConfigPaths:  []string{"/etc/containerd/config.toml"},
+	},
+	{
+		Name:         "MongoDB",
+		ProcessNames: []string{"mongod"},
+		ConfigPaths:  []string{"/etc/mongod.conf"},
+	},
+	{
+		Name:         "Redis",
+		ProcessNames: []string{"redis-server"},
+		ConfigPaths:  []string{"/etc/redis/redis.conf", "/etc/redis.conf"},
+	},
+	{
+		Name:        "Elasticsearch",
+		ConfigPaths: []string{"/etc/elasticsearch/elasticsearch.yml"},
+	},
+	{
+		Name:        "Tomcat",
+		ConfigPaths: []string{"/etc/tomcat/server.xml", "/etc/tomcat9/server.xml", "/var/lib/tomcat9/conf/server.xml"},
+	},
+	{
+		Name:        "WordPress",
+		ConfigPaths: []string{"/var/www/html/wp-config.php", "/var/www/wordpress/wp-config.php"},
+	},
+	{
+		Name:         "NTP (chrony/ntpd)",
+		ProcessNames: []string{"chronyd", "ntpd"},
+		ConfigPaths:  []string{"/etc/chrony/chrony.conf", "/etc/chrony.conf", "/etc/ntp.conf"},
+	},
+	{
+		Name:         "SNMP",
+		ProcessNames: []string{"snmpd"},
+		ConfigPaths:  []string{"/etc/snmp/snmpd.conf"},
+	},
+	{
+		Name:         "RDP (xrdp)",
+		ProcessNames: []string{"xrdp", "xrdp-sesman"},
+		ConfigPaths:  []string{"/etc/xrdp/xrdp.ini"},
+	},
+	{
+		Name:         "VNC",
+		ProcessNames: []string{"Xvnc", "vncserver"},
+		ConfigPaths:  []string{"/etc/tigervnc/vncserver.users"},
+	},
+	{
+		Name:         "Firewall",
+		ProcessNames: []string{"firewalld"},
+		ConfigPaths: []string{
+			"/etc/iptables/rules.v4",
+			"/etc/sysconfig/iptables",
+			"/etc/nftables.conf",
+			"/etc/ufw/user.rules",
+			"/etc/firewalld/firewalld.conf",
+		},
+	},
+	{
+		// Not a service anyone runs, but the file set that decides
+		// whether every other login on the box succeeds — worth
+		// reporting under detect's "is this watched?" check like
+		// anything else.
+		Name: "PAM (authentication stack)",
+		ConfigPaths: []string{
+			"/etc/pam.d/common-auth",
+			"/etc/pam.d/system-auth",
+			"/etc/pam.d/password-auth",
+			"/etc/pam.d/sshd",
+			"/etc/pam.d/sudo",
+			"/etc/nsswitch.conf",
+			"/etc/login.defs",
+		},
 	},
 }
 

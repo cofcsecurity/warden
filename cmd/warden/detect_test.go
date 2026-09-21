@@ -3,6 +3,9 @@ package main
 import (
 	"os"
 	"testing"
+
+	"warden/internal/detect"
+	"warden/internal/manifest"
 )
 
 // TestCurrentlyProtectedOnlyReportsPathsThatExist asserts the structural
@@ -49,6 +52,58 @@ func TestCurrentlyProtectedClassifiesConfirmFirstCorrectly(t *testing.T) {
 		}
 		if pp.Class != "confirm-first" {
 			t.Errorf("%s: expected class confirm-first, got %s", p, pp.Class)
+		}
+	}
+}
+
+// TestEveryDetectableConfigPathIsWatched keeps the two lists that have to
+// agree from drifting apart: internal/detect knows a service's config
+// paths, configTierPaths decides whether they're actually protected, and
+// a path in the first but not the second means `warden detect` reports a
+// service as found and unwatched on every box that runs it — a standing
+// "you should fix this" for something shipped that way deliberately.
+//
+// Adding a service to detect without adding its paths here is the easy
+// mistake; this fails on it rather than leaving it for someone to notice
+// in the output during a competition.
+func TestEveryDetectableConfigPathIsWatched(t *testing.T) {
+	watched := map[string]bool{}
+	for _, p := range configTierPaths {
+		watched[p] = true
+	}
+	for _, p := range dataTierPaths {
+		watched[p] = true
+	}
+
+	for _, svc := range detect.KnownServices {
+		for _, cfg := range svc.ConfigPaths {
+			if !watched[cfg] {
+				t.Errorf("detect knows %s's config path %s, but it isn't in configTierPaths/dataTierPaths", svc.Name, cfg)
+			}
+		}
+	}
+}
+
+// TestNewlyWatchedAuthAndFirewallPathsAreConfirmFirst pins the
+// classification decisions that would be actively harmful to get wrong:
+// reverting a PAM file can lock every account out of the box, and
+// reverting a saved firewall ruleset undoes the team's own response to an
+// attack in progress.
+func TestNewlyWatchedAuthAndFirewallPathsAreConfirmFirst(t *testing.T) {
+	for _, path := range []string{
+		"/etc/pam.d/common-auth",
+		"/etc/pam.d/system-auth",
+		"/etc/pam.d/sshd",
+		"/etc/pam.d/sudo",
+		"/etc/nsswitch.conf",
+		"/etc/login.defs",
+		"/etc/iptables/rules.v4",
+		"/etc/sysconfig/iptables",
+		"/etc/nftables.conf",
+		"/etc/ufw/user.rules",
+	} {
+		if classifyPath(path) != manifest.ConfirmFirst {
+			t.Errorf("%s must be confirm-first, not auto-restored", path)
 		}
 	}
 }
