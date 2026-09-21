@@ -85,9 +85,11 @@ service, say) without watch fighting you, `warden disarm` turns auto-restore
 back off first; run `arm` again when you're done.
 
 Detecting *what* to watch and harden in the first place is its own step —
-run `warden detect` to scan the box for common CCDC services (web, database,
-mail, DNS, file transfer, DHCP) already running or configured, and see which
-of their config files are and aren't already in Warden's watch list.
+run `warden detect` for two things at once: a plain list of every file
+currently protected on this box, and a scan of common CCDC services (web,
+database, mail, DNS, file transfer, DHCP) already running or configured,
+showing which of their config files are and aren't already in Warden's
+watch list.
 
 ## Reacting to a guarded file being touched (opt-in)
 

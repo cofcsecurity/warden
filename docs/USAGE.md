@@ -92,10 +92,16 @@ Dry run (the default) fetches the manifest and reports what's available without 
 
 ### `warden detect`
 
-Read-only scan for what this box is actually running: checks the box's processes and on-disk config paths against a table of services common on CCDC-style images (web, database, mail, DNS, file transfer, DHCP, SSH — see `internal/detect`), and reports which of their config files are and aren't already in `configTierPaths`. Changes nothing; it's meant to answer "what should the watch list actually cover" before relying on it (`docs/PLAN.md` Phase 1).
+Read-only, two parts. First, every entry in `configTierPaths`/`dataTierPaths` that actually exists on **this** box right now — a plain answer to "what is Warden actually protecting here," as opposed to the full lists in `cmd/warden/config.go`, most of which won't apply to any single box. Second, a scan of the box's processes and on-disk config paths against a table of services common on CCDC-style images (web, database, mail, DNS, file transfer, DHCP, SSH — see `internal/detect`), reporting anything found that isn't in the first part yet. Changes nothing; it's meant to answer "what should the watch list actually cover" before relying on it (`docs/PLAN.md` Phase 1).
 
 ```
 warden detect
+==> Currently protected on this box
+  /etc/passwd                              config  confirm-first
+  /etc/ssh/sshd_config                     config  confirm-first
+  /etc/nginx/nginx.conf                    config  auto-restore
+
+==> Scan: services found on this box vs. what's watched
 nginx            running
   /etc/nginx/nginx.conf                   watched
 MySQL/MariaDB    configured, not running

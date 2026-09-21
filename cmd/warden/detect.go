@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -17,22 +18,69 @@ var procRoot = "/proc"
 func detectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "detect",
-		Short: "Scan for running services and config files this box is likely defending",
-		Long: `Read-only. Checks the box's running processes and on-disk config paths
-against a list of services common on CCDC-style images (web, database,
-mail, DNS, file transfer, DHCP, SSH) and reports what it finds, alongside
-whether each one is already in this build's watch list.
+		Short: "Report what's currently protected, plus anything found but not yet covered",
+		Long: `Read-only, two parts:
+
+1. Every watched path (configTierPaths/dataTierPaths) that actually
+   exists on THIS box right now — what's really being protected here,
+   as opposed to the full lists in cmd/warden/config.go, most of which
+   won't apply to any single box.
+2. A scan of running processes and known config paths against services
+   common on CCDC-style images (web, database, mail, DNS, file
+   transfer, DHCP, SSH), reporting anything found that isn't in part 1
+   yet.
 
 This never changes anything — it's meant to answer "what should
 cmd/warden/config.go's watch list actually cover" before a competition,
-not to reconfigure Warden automatically. See docs/PLAN.md Phase 1.`,
+and to give anyone checking in on the box a plain answer to "what is
+Warden actually protecting right now." See docs/PLAN.md Phase 1.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDetect()
 		},
 	}
 }
 
+// protectedPath is one watched path that's confirmed present on this box.
+type protectedPath struct {
+	Path  string
+	Tier  string // "config" or "data"
+	Class string // "auto-restore" or "confirm-first"
+}
+
+// currentlyProtected reports every entry in configTierPaths/dataTierPaths
+// that actually exists on disk right now — a path listed in config.go but
+// absent from this particular box isn't protecting anything here, so it's
+// left out.
+func currentlyProtected() []protectedPath {
+	var out []protectedPath
+	add := func(paths []string, tier string) {
+		for _, p := range paths {
+			if _, err := os.Stat(p); err != nil {
+				continue
+			}
+			class := "auto-restore"
+			if confirmFirstPaths[p] {
+				class = "confirm-first"
+			}
+			out = append(out, protectedPath{Path: p, Tier: tier, Class: class})
+		}
+	}
+	add(configTierPaths, "config")
+	add(dataTierPaths, "data")
+	return out
+}
+
 func runDetect() error {
+	protected := currentlyProtected()
+	fmt.Println("==> Currently protected on this box")
+	if len(protected) == 0 {
+		fmt.Println("  nothing — configTierPaths/dataTierPaths don't match anything present here yet.")
+	} else {
+		for _, pp := range protected {
+			fmt.Printf("  %-40s %-6s %s\n", pp.Path, pp.Tier, pp.Class)
+		}
+	}
+
 	findings, err := detect.Scan(procRoot)
 	if err != nil {
 		return fmt.Errorf("detect: %w", err)
@@ -55,6 +103,7 @@ func runDetect() error {
 	detectedCount := 0
 	unwatchedCount := 0
 
+	fmt.Println("\n==> Scan: services found on this box vs. what's watched")
 	for _, f := range findings {
 		if !f.Detected() {
 			continue
