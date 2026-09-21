@@ -97,6 +97,8 @@ func main() {
 	root.AddCommand(rotateSecretCmd())
 	root.AddCommand(uninstallCmd())
 	root.AddCommand(scanCmd())
+	root.AddCommand(fleetCmd())
+	root.AddCommand(statusCmd())
 	root.AddCommand(lockAccountCmd())
 	root.AddCommand(unlockAccountCmd())
 
