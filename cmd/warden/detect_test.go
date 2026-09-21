@@ -122,26 +122,49 @@ func TestServiceForPathOnlyReturnsUnitsThatExist(t *testing.T) {
 	}
 }
 
-// TestNewlyWatchedAuthAndFirewallPathsAreConfirmFirst pins the
-// classification decisions that would be actively harmful to get wrong:
-// reverting a PAM file can lock every account out of the box, and
-// reverting a saved firewall ruleset undoes the team's own response to an
-// attack in progress.
-func TestNewlyWatchedAuthAndFirewallPathsAreConfirmFirst(t *testing.T) {
+// TestClassificationFollowsTheAccessRecoveryRule pins the classification
+// decisions that would be actively harmful to get backwards.
+//
+// Auto-restore is the stronger setting: the file is back to known-good
+// within a watch cycle with nobody involved. Confirm-first leaves the
+// attacker's version in place until a person acts — which is the right
+// trade only where reverting automatically does more damage than
+// waiting.
+func TestClassificationFollowsTheAccessRecoveryRule(t *testing.T) {
+	// The access path. Flagging these and waiting for a human deadlocks
+	// exactly when it matters: an sshd_config or PAM stack edited to
+	// lock the team out can't be fixed by a human who can't log in.
 	for _, path := range []string{
+		"/etc/ssh/sshd_config",
+		"/etc/passwd",
+		"/etc/group",
+		"/etc/sudoers",
 		"/etc/pam.d/common-auth",
 		"/etc/pam.d/system-auth",
 		"/etc/pam.d/sshd",
 		"/etc/pam.d/sudo",
 		"/etc/nsswitch.conf",
 		"/etc/login.defs",
+	} {
+		if classifyPath(path) != manifest.SafeAutoRestore {
+			t.Errorf("%s must be auto-restored: flagging it is useless if it's what locked us out", path)
+		}
+	}
+
+	// Credential material and firewall rule files, where reverting
+	// automatically undoes the team's own work (a password rotation, a
+	// ban saved mid-incident) and buys nothing an auto-restore of
+	// /etc/passwd or a live 'warden ban' doesn't already.
+	for _, path := range []string{
+		"/etc/shadow",
+		"/etc/gshadow",
 		"/etc/iptables/rules.v4",
 		"/etc/sysconfig/iptables",
 		"/etc/nftables.conf",
 		"/etc/ufw/user.rules",
 	} {
 		if classifyPath(path) != manifest.ConfirmFirst {
-			t.Errorf("%s must be confirm-first, not auto-restored", path)
+			t.Errorf("%s must be confirm-first: auto-reverting it fights the team's own changes", path)
 		}
 	}
 }

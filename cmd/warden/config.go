@@ -247,7 +247,9 @@ func loadPaths() (paths, error) {
 // service operation. Grouped by what they're for; anything not installed
 // on a given box just never shows up in a manifest.
 var configTierPaths = []string{
-	// Core identity/access — always watched, always ConfirmFirst below.
+	// Core identity/access — always watched. Most of these are
+	// auto-restored (see confirmFirstPaths below for the two that
+	// aren't, and why).
 	"/etc/passwd",
 	"/etc/shadow",
 	"/etc/group",
@@ -324,11 +326,10 @@ var configTierPaths = []string{
 	"/etc/xrdp/xrdp.ini",
 	"/etc/tigervnc/vncserver.users",
 
-	// The authentication stack itself. All ConfirmFirst below: a PAM
-	// edit is how an attacker makes every login succeed, and also how a
-	// teammate legitimately hardens the box — and getting it wrong locks
-	// everyone out of everything, so this is never reverted
-	// automatically.
+	// The authentication stack itself. Auto-restored, like the rest of
+	// the access path: a PAM edit is how an attacker makes every login
+	// succeed, and putting the known-good stack back is what fixes that.
+	// See confirmFirstPaths below for why so few things are flag-only.
 	"/etc/pam.d/common-auth",     // Debian/Ubuntu
 	"/etc/pam.d/common-password", // Debian/Ubuntu
 	"/etc/pam.d/common-account",  // Debian/Ubuntu
@@ -341,12 +342,8 @@ var configTierPaths = []string{
 	"/etc/nsswitch.conf",
 	"/etc/login.defs",
 
-	// Persistent firewall rules. Also ConfirmFirst, for a reason
-	// specific to these: they're a tool the team actively uses *during*
-	// an incident (blocking an attacker, then saving the ruleset), and
-	// auto-reverting that five minutes later would undo the team's own
-	// response. Warden's own bans are runtime rules, so they never
-	// collide with these files either way.
+	// Persistent firewall rules — one of the few things left flag-only;
+	// see confirmFirstPaths below.
 	"/etc/iptables/rules.v4",
 	"/etc/iptables/rules.v6",
 	"/etc/sysconfig/iptables",  // RHEL-family
@@ -369,29 +366,49 @@ var dataTierPaths []string
 // that's what drift-detection is actually meant to catch.
 var watchedPaths = configTierPaths
 
+// confirmFirstPaths are the watched paths watch will *never* revert on
+// its own: drift is flagged for a human and left on disk. Everything else
+// is auto-restored within a watch cycle.
+//
+// Read that the right way round: confirm-first is the *weaker* setting.
+// An auto-restored file is back to known-good in a few minutes with
+// nobody involved; a confirm-first file stays exactly as the attacker
+// left it until a person notices and acts. So a path only belongs here
+// when reverting it automatically would do more damage than leaving it
+// wrong for a while.
+//
+// That's why the obvious candidates are deliberately NOT here:
+//
+//   - /etc/ssh/sshd_config is the team's own way in. If red team edits
+//     it to lock everyone out, "flag it and wait for a human" is a
+//     deadlock — the human can't get in to act on the flag. It's
+//     auto-restored, and watch reloads sshd afterwards so the running
+//     daemon actually picks the known-good config back up.
+//   - /etc/passwd, /etc/group and /etc/sudoers are how an attacker keeps
+//     access: a new account, a group membership, a NOPASSWD rule.
+//     Auto-restoring makes all three disappear on their own. A *legitimate*
+//     account added after arming is reverted too — that's the cost, and
+//     'warden accept <path> <code>' is how the team lands one deliberately.
+//   - The PAM stack and what feeds it are how an attacker makes every
+//     login succeed. Reverting to the known-good stack restores working
+//     authentication rather than breaking it.
 var confirmFirstPaths = map[string]bool{
-	"/etc/passwd":          true,
-	"/etc/shadow":          true,
-	"/etc/group":           true,
-	"/etc/gshadow":         true,
-	"/etc/sudoers":         true,
-	"/etc/ssh/sshd_config": true,
+	// Credential material. Reverting these undoes a password rotation
+	// the team performed minutes ago, silently and with no sign it
+	// happened — and would fight a scoring engine that rotates
+	// credentials of its own. Denying an attacker's account is already
+	// handled by restoring /etc/passwd, which is what NSS reads; the
+	// orphaned hash left behind in shadow grants nothing on its own.
+	"/etc/shadow":  true,
+	"/etc/gshadow": true,
 
-	// The PAM stack and what feeds it — see configTierPaths above.
-	"/etc/pam.d/common-auth":     true,
-	"/etc/pam.d/common-password": true,
-	"/etc/pam.d/common-account":  true,
-	"/etc/pam.d/common-session":  true,
-	"/etc/pam.d/system-auth":     true,
-	"/etc/pam.d/password-auth":   true,
-	"/etc/pam.d/sshd":            true,
-	"/etc/pam.d/sudo":            true,
-	"/etc/pam.d/su":              true,
-	"/etc/nsswitch.conf":         true,
-	"/etc/login.defs":            true,
-
-	// Persistent firewall rules: the team edits these mid-incident, so
-	// they're flagged rather than reverted.
+	// Persistent firewall rules, for two reasons. These files are
+	// loaded at boot, so reverting one doesn't change the live ruleset
+	// anyway — the recovery people imagine here doesn't happen. And the
+	// team edits them mid-incident (block an attacker, save the
+	// ruleset), which auto-restore would undo a few minutes later.
+	// Warden's own bans are live rules re-asserted by sentinel-check,
+	// so they never depend on these files.
 	"/etc/iptables/rules.v4":        true,
 	"/etc/iptables/rules.v6":        true,
 	"/etc/sysconfig/iptables":       true,
