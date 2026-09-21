@@ -76,6 +76,13 @@ require_root() {
 #
 # Falls back to fd 0 if there's genuinely no controlling terminal (e.g.
 # `ssh box 'cmd'` without -t).
+#
+# The explicit `return 0` matters: `read` returns non-zero on EOF, and
+# without it, `ask`'s own exit status would be that failure — silently
+# fatal under `set -e` for any caller that happens to be the last thing
+# its own function runs (bare `ask "..." var` with no `||`, which is
+# most of them). An empty/EOF'd answer should behave like an empty
+# answer, not kill the whole script with no message.
 ask() {
 	local prompt="$1" var="$2"
 	printf '%s' "$prompt"
@@ -85,6 +92,7 @@ ask() {
 	else
 		read -r "$var"
 	fi
+	return 0
 }
 
 step_confirm_clean() {
@@ -214,7 +222,11 @@ ensure_go() {
 
 	echo "==> No Go toolchain found on this box."
 	local version arch url tmp
-	version="$(grep -E '^go [0-9]' go.mod | awk '{print $2}')"
+	# `|| true`: under pipefail, grep finding no matching line would make
+	# this whole assignment non-zero — a bare statement that would abort
+	# the script right here under set -e, before the explicit "couldn't
+	# read" check below ever gets a chance to run and explain why.
+	version="$(grep -E '^go [0-9]' go.mod | awk '{print $2}')" || true
 	if [[ -z "$version" ]]; then
 		echo "build-and-install.sh: couldn't read the required Go version from go.mod" >&2
 		exit 1
@@ -274,8 +286,16 @@ prompt_if_unset() {
 # `who` reads utmp directly, independent of that. Empty output (not a
 # real interactive SSH session, or the box doesn't record it) just means
 # no guess is offered — falls back to asking outright.
+#
+# The trailing `|| true` matters: under `pipefail`, grep finding no match
+# (the normal outcome whenever detection isn't possible) makes the whole
+# pipeline return non-zero, and the caller assigns this straight into a
+# plain variable (`detected_ip="$(detect_client_ip)"`) — a bare statement
+# that would silently abort the entire script under `set -e` on exactly
+# the common "couldn't detect anything" case, before the caller's own
+# `[[ -n "$detected_ip" ]]` check ever runs.
 detect_client_ip() {
-	who -m 2>/dev/null | grep -oE '\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' | tr -d '()' | head -n1
+	who -m 2>/dev/null | grep -oE '\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' | tr -d '()' | head -n1 || true
 }
 
 # guess_subnet turns a detected IP into a /24 guess — the common case for
@@ -396,7 +416,9 @@ collect_config() {
 			;;
 		3)
 			ask "    Path to the mounted media (e.g. /mnt/usb): " media_path
-			[[ -n "$media_path" ]] && REPLICATE_TARGETS="file://${media_path}||"
+			if [[ -n "$media_path" ]]; then
+				REPLICATE_TARGETS="file://${media_path}||"
+			fi
 			;;
 		*)
 			: # skip — REPLICATE_TARGETS/REPLICATE_KEY stay empty
@@ -408,7 +430,19 @@ collect_config() {
 	if [[ -z "$AUTOBAN_ENABLED" ]]; then
 		echo "    Auto-ban (docs/DESIGN.md's 'Active Response') actively firewalls an attacker IP."
 		ask "    Enable it? [y/N] " ans
-		[[ "$ans" == "y" || "$ans" == "Y" ]] && AUTOBAN_ENABLED=1
+		# Deliberately a full if, not a bare `[[ ]] && ...`: this is
+		# collect_config's last statement, so ITS exit status is whatever
+		# this line's is. `[[ false ]] && cmd` as a standalone statement
+		# returns non-zero (the failed test) when the answer isn't y/Y —
+		# which is the common case, since this defaults to declining —
+		# and under `set -e`, a bare `collect_config` call in main()
+		# would then abort the entire script right here, silently, before
+		# build() ever runs. That's exactly what happened during testing:
+		# answering "N" here killed the whole install with zero output
+		# and no error, immediately after this prompt.
+		if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+			AUTOBAN_ENABLED=1
+		fi
 	fi
 }
 

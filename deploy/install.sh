@@ -125,9 +125,11 @@ ensure_deps() {
 # $2, always from the controlling terminal directly (/dev/tty) rather
 # than whatever fd 0 currently is — see scripts/build-and-install.sh's
 # identical helper for the full reasoning, including why the prompt is
-# printed separately with printf instead of via `read -p`. Falls back to
-# fd 0 if there's genuinely no controlling terminal (e.g. `ssh box 'cmd'`
-# without -t).
+# printed separately with printf instead of via `read -p`, and why the
+# trailing `return 0` matters (read's own EOF failure must never become
+# ask's exit status — silently fatal under `set -e` for a bare caller).
+# Falls back to fd 0 if there's genuinely no controlling terminal (e.g.
+# `ssh box 'cmd'` without -t).
 ask() {
 	local prompt="$1" var="$2"
 	printf '%s' "$prompt"
@@ -137,6 +139,7 @@ ask() {
 	else
 		read -r "$var"
 	fi
+	return 0
 }
 
 # warn_if_already_installed catches the case where this script (or

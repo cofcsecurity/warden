@@ -21,7 +21,10 @@ set -euo pipefail
 # identical helper for why: `read -p` silently drops its own prompt
 # whenever the fd it reads from isn't a terminal, which matters here
 # since this script can now run through the same curl/bootstrap chain as
-# everything else, not just a plain interactive shell.
+# everything else, not just a plain interactive shell. The trailing
+# `return 0` matters too: `read`'s own EOF failure must never become
+# ask's exit status, which would be silently fatal under `set -e` for a
+# bare caller.
 ask() {
 	local prompt="$1" var="$2"
 	printf '%s' "$prompt"
@@ -31,6 +34,7 @@ ask() {
 	else
 		read -r "$var"
 	fi
+	return 0
 }
 
 ON_BOX=0
