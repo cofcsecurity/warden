@@ -96,3 +96,28 @@ func TestAuthorizedKeysLineRequiresBuildTimeValues(t *testing.T) {
 		}
 	}
 }
+
+func TestEveryTimerUnitRunsItsOwnSubcommand(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		service      string
+		timer        string
+		wantExec     string
+		wantInterval string
+	}{
+		{"watch", watchServiceContent("n-watch", "/usr/local/sbin/n"), watchTimerContent("n-watch"), "ExecStart=/usr/local/sbin/n watch", watchInterval},
+		{"snap-cfg", snapshotConfigServiceContent("n-snap-cfg", "/usr/local/sbin/n"), snapshotConfigTimerContent("n-snap-cfg"), "ExecStart=/usr/local/sbin/n snapshot --tier config", snapshotConfigInterval},
+		{"snap-data", snapshotDataServiceContent("n-snap-data", "/usr/local/sbin/n"), snapshotDataTimerContent("n-snap-data"), "ExecStart=/usr/local/sbin/n snapshot --tier data", snapshotDataInterval},
+		{"scan", scanServiceContent("n-scan", "/usr/local/sbin/n"), scanTimerContent("n-scan"), "ExecStart=/usr/local/sbin/n scan", scanInterval},
+	} {
+		if !strings.Contains(tc.service, tc.wantExec) {
+			t.Errorf("%s service missing %q: %s", tc.name, tc.wantExec, tc.service)
+		}
+		if !strings.Contains(tc.timer, "OnUnitActiveSec="+tc.wantInterval) {
+			t.Errorf("%s timer missing interval %q: %s", tc.name, tc.wantInterval, tc.timer)
+		}
+		if !strings.Contains(tc.timer, "WantedBy=timers.target") {
+			t.Errorf("%s timer missing [Install] section: %s", tc.name, tc.timer)
+		}
+	}
+}

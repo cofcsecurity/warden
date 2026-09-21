@@ -32,37 +32,53 @@ func binaryName() (string, error) {
 // for itself, e.g. "svchelper-sentinel" if the binary is installed as
 // /usr/local/sbin/svchelper.
 func sentinelUnitName() (string, error) {
-	name, err := binaryName()
-	if err != nil {
-		return "", err
-	}
-	return name + "-sentinel", nil
+	return unitNameSuffixed("-sentinel")
 }
 
 // replicateUnitName is the systemd name for the replication timer, when
 // one is configured — see registrations.go's replicate-timer registration.
 func replicateUnitName() (string, error) {
-	name, err := binaryName()
-	if err != nil {
-		return "", err
-	}
-	return name + "-replicate", nil
+	return unitNameSuffixed("-replicate")
 }
 
 // scanUnitName is the systemd name for the anomaly-detection timer — see
 // scan.go and deploy/systemd/warden-scan.*.template.
 func scanUnitName() (string, error) {
+	return unitNameSuffixed("-scan")
+}
+
+// watchUnitName, snapshotConfigUnitName and snapshotDataUnitName are the
+// remaining timers deploy/install.sh lays down. Every one of these
+// suffixes has to match install.sh's resolve_install_path exactly — a
+// mismatch would have sentinel-check "repairing" a second, differently
+// named copy of a timer that's already running, rather than noticing the
+// real one is gone.
+func watchUnitName() (string, error) {
+	return unitNameSuffixed("-watch")
+}
+
+func snapshotConfigUnitName() (string, error) {
+	return unitNameSuffixed("-snap-cfg")
+}
+
+func snapshotDataUnitName() (string, error) {
+	return unitNameSuffixed("-snap-data")
+}
+
+func unitNameSuffixed(suffix string) (string, error) {
 	name, err := binaryName()
 	if err != nil {
 		return "", err
 	}
-	return name + "-scan", nil
+	return name + suffix, nil
 }
 
 // oneshotServiceContent and oneshotTimerContent generate the same shape of
-// unit deploy/install.sh's templates do, for the two units sentinel-check
-// knows how to recreate from scratch (sentinel's own timer, and
-// replicate's, when configured).
+// unit deploy/install.sh's templates do, for every timer sentinel-check
+// knows how to recreate from scratch — which is all of them (see
+// registrations.go). The boot delays and intervals below have to stay in
+// step with deploy/systemd/*.template and install.sh's own defaults, so a
+// recreated timer fires on the same schedule the installed one did.
 func oneshotServiceContent(unitName, path, subcommand string) string {
 	return fmt.Sprintf(`[Unit]
 Description=%s
@@ -102,6 +118,38 @@ func replicateServiceContent(unitName, path string) string {
 
 func replicateTimerContent(unitName string) string {
 	return oneshotTimerContent(unitName, "7min", replicateInterval, replicateJitter)
+}
+
+func watchServiceContent(unitName, path string) string {
+	return oneshotServiceContent(unitName, path, "watch")
+}
+
+func watchTimerContent(unitName string) string {
+	return oneshotTimerContent(unitName, "5min", watchInterval, watchJitter)
+}
+
+func snapshotConfigServiceContent(unitName, path string) string {
+	return oneshotServiceContent(unitName, path, "snapshot --tier config")
+}
+
+func snapshotConfigTimerContent(unitName string) string {
+	return oneshotTimerContent(unitName, "3min", snapshotConfigInterval, snapshotConfigJitter)
+}
+
+func snapshotDataServiceContent(unitName, path string) string {
+	return oneshotServiceContent(unitName, path, "snapshot --tier data")
+}
+
+func snapshotDataTimerContent(unitName string) string {
+	return oneshotTimerContent(unitName, "10min", snapshotDataInterval, snapshotDataJitter)
+}
+
+func scanServiceContent(unitName, path string) string {
+	return oneshotServiceContent(unitName, path, "scan")
+}
+
+func scanTimerContent(unitName string) string {
+	return oneshotTimerContent(unitName, "8min", scanInterval, scanJitter)
 }
 
 // cronMarker tags this registration's line in the crontab so it can be

@@ -13,12 +13,19 @@ import (
 
 // buildRegistrations wires sentinel-check's real checks together: the
 // authorized_keys entry (and the sudoers rule it depends on), its own
-// systemd timer, its own cron entry, and — when a replication target is
-// configured — the replicate timer too. Without that last one, red team
-// could disable backups leaving the box (the actual point of replicate)
-// without touching anything else sentinel watches. Every Check reads the
-// relevant file directly rather than shelling to systemctl/crontab, per
-// docs/DESIGN.md's threat model.
+// cron entry, its hidden spare binary, and *every* timer install.sh lays
+// down — watch, both snapshot tiers, scan, sentinel's own, and (when a
+// replication target is configured) replicate's.
+//
+// Every timer has to be in here, not just sentinel's own: a timer nobody
+// watches can be disabled and deleted once, and nothing ever notices or
+// rebuilds it. That would silently end auto-restore and drift-flagging
+// (watch), backups (snapshot), anomaly detection (scan), or off-box
+// evidence survival (replicate) for the rest of the competition, with a
+// box that still looks armed from the outside.
+//
+// Every Check reads the relevant file directly rather than shelling to
+// systemctl/crontab, per docs/DESIGN.md's threat model.
 func buildRegistrations() ([]sentinel.Registration, error) {
 	path, err := installPath()
 	if err != nil {
@@ -44,10 +51,6 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 	sudoersContent := sudoersDropInContent(opUser, path)
 	sparePath := spareBinaryPath(path)
 
-	servicePath := filepath.Join(systemdUnitDir, unitName+".service")
-	timerPath := filepath.Join(systemdUnitDir, unitName+".timer")
-	enabledLinkPath := filepath.Join(systemdTimersWantsDir, unitName+".timer")
-
 	regs := []sentinel.Registration{
 		{
 			Name:     "authorized_keys",
@@ -63,19 +66,7 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 			Check:    func() (bool, error) { return checkSudoersFile(sudoersPath, sudoersContent) },
 			Recreate: func() error { return recreateSudoersFile(sudoersPath, sudoersContent) },
 		},
-		{
-			Name:  "systemd-timer",
-			Check: func() (bool, error) { return checkSystemdTimerFiles(servicePath, timerPath, enabledLinkPath) },
-			Recreate: func() error {
-				if err := writeSystemdTimerFiles(servicePath, timerPath, sentinelServiceContent(unitName, path), sentinelTimerContent(unitName)); err != nil {
-					return err
-				}
-				if err := runSystemctl("daemon-reload"); err != nil {
-					return err
-				}
-				return runSystemctl("enable", "--now", unitName+".timer")
-			},
-		},
+		timerRegistration("systemd-timer", unitName, sentinelServiceContent(unitName, path), sentinelTimerContent(unitName)),
 		{
 			Name:  "cron-entry",
 			Check: func() (bool, error) { return checkCronEntryFile(cronSpoolPath(), cronMarker(unitName)) },
@@ -96,33 +87,70 @@ func buildRegistrations() ([]sentinel.Registration, error) {
 		},
 	}
 
+	// The remaining timers install.sh installs unconditionally. Each one
+	// is what a whole capability rides on, so each one is watched the
+	// same way sentinel's own timer is.
+	for _, t := range []struct {
+		name    string
+		unit    func() (string, error)
+		service func(unitName, path string) string
+		timer   func(unitName string) string
+	}{
+		{"watch-timer", watchUnitName, watchServiceContent, watchTimerContent},
+		{"snapshot-config-timer", snapshotConfigUnitName, snapshotConfigServiceContent, snapshotConfigTimerContent},
+		{"snapshot-data-timer", snapshotDataUnitName, snapshotDataServiceContent, snapshotDataTimerContent},
+		{"scan-timer", scanUnitName, scanServiceContent, scanTimerContent},
+	} {
+		name, err := t.unit()
+		if err != nil {
+			return nil, err
+		}
+		regs = append(regs, timerRegistration(t.name, name, t.service(name, path), t.timer(name)))
+	}
+
+	// replicate's timer only exists on a box built with peers configured,
+	// so unlike the rest it's registered conditionally — otherwise
+	// sentinel-check would "repair" a replication timer onto every box
+	// that has nothing to replicate to.
 	if buildReplicateTargets != "" {
 		repUnitName, err := replicateUnitName()
 		if err != nil {
 			return nil, err
 		}
-		repServicePath := filepath.Join(systemdUnitDir, repUnitName+".service")
-		repTimerPath := filepath.Join(systemdUnitDir, repUnitName+".timer")
-		repEnabledLinkPath := filepath.Join(systemdTimersWantsDir, repUnitName+".timer")
-
-		regs = append(regs, sentinel.Registration{
-			Name: "replicate-timer",
-			Check: func() (bool, error) {
-				return checkSystemdTimerFiles(repServicePath, repTimerPath, repEnabledLinkPath)
-			},
-			Recreate: func() error {
-				if err := writeSystemdTimerFiles(repServicePath, repTimerPath, replicateServiceContent(repUnitName, path), replicateTimerContent(repUnitName)); err != nil {
-					return err
-				}
-				if err := runSystemctl("daemon-reload"); err != nil {
-					return err
-				}
-				return runSystemctl("enable", "--now", repUnitName+".timer")
-			},
-		})
+		regs = append(regs, timerRegistration(
+			"replicate-timer",
+			repUnitName,
+			replicateServiceContent(repUnitName, path),
+			replicateTimerContent(repUnitName),
+		))
 	}
 
 	return regs, nil
+}
+
+// timerRegistration builds the "this timer must exist and be enabled"
+// registration shared by every timer on the box: the .service file, the
+// .timer file, and the symlink in timers.target.wants that actually makes
+// it fire. Recreate writes all three back and tells the running daemon
+// about them.
+func timerRegistration(name, unitName, serviceContent, timerContent string) sentinel.Registration {
+	servicePath := filepath.Join(systemdUnitDir, unitName+".service")
+	timerPath := filepath.Join(systemdUnitDir, unitName+".timer")
+	enabledLinkPath := filepath.Join(systemdTimersWantsDir, unitName+".timer")
+
+	return sentinel.Registration{
+		Name:  name,
+		Check: func() (bool, error) { return checkSystemdTimerFiles(servicePath, timerPath, enabledLinkPath) },
+		Recreate: func() error {
+			if err := writeSystemdTimerFiles(servicePath, timerPath, serviceContent, timerContent); err != nil {
+				return err
+			}
+			if err := runSystemctl("daemon-reload"); err != nil {
+				return err
+			}
+			return runSystemctl("enable", "--now", unitName+".timer")
+		},
+	}
 }
 
 func checkAuthorizedKeysFile(path, expectedLine string) (bool, error) {

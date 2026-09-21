@@ -26,15 +26,29 @@ const (
 	// referenced only by generations older than the last N are dropped.
 	retainGenerations = 10
 
+	// Every interval/jitter pair below matches deploy/install.sh's own
+	// defaults for the same timer. They're used only when sentinel-check
+	// has to recreate a missing timer from scratch (see
+	// registrations.go): a recreated timer has to fire on the same
+	// schedule the installed one did, or "repaired" would quietly mean
+	// "running at some other cadence than the box was deployed with".
 	sentinelInterval = "10min"
 	sentinelJitter   = "120"
 
-	// replicateInterval/replicateJitter match deploy/install.sh's
-	// REPLICATE_INTERVAL/REPLICATE_JITTER — used only when
-	// sentinel-check has to recreate a missing replicate timer from
-	// scratch (see registrations.go).
 	replicateInterval = "15min"
 	replicateJitter   = "180"
+
+	watchInterval = "5min"
+	watchJitter   = "90"
+
+	snapshotConfigInterval = "5min"
+	snapshotConfigJitter   = "60"
+
+	snapshotDataInterval = "1h"
+	snapshotDataJitter   = "300"
+
+	scanInterval = "10min"
+	scanJitter   = "120"
 
 	// autobanDuration is how long an auto-triggered ban (see watch.go's
 	// reactToConfirmFirstChange) lasts before sentinel-check's Reconcile
@@ -121,11 +135,19 @@ type paths struct {
 	// Absent until `warden rotate-secret` is run at least once, which is
 	// the safe default: opmenu simply never matches on it until then.
 	staticSecretPath string
+	// spentTOTPPath is opmenu's TOTP replay guard: the last accepted
+	// time step, so a captured code can't be used a second time within
+	// its skew window.
+	spentTOTPPath string
 	// anomalyDir holds every internal/anomaly check's own baseline file —
 	// see scan.go. accountLocksPath is accountlock's Store, the local-
 	// account equivalent of bannedIPsPath above.
 	anomalyDir       string
 	accountLocksPath string
+	// auditPushStatePath records how much of the audit log has already
+	// been pushed to each replication peer, so each pass only sends
+	// what's new — see cmd/warden/replicate.go's pushAuditLog.
+	auditPushStatePath string
 }
 
 // loadPaths resolves paths for the current box. configManifestPath and
@@ -156,8 +178,10 @@ func loadPaths() (paths, error) {
 		armedMarkerPath:    dir + "/armed",
 		bannedIPsPath:      dir + "/banned_ips.json",
 		staticSecretPath:   dir + "/second-factor",
+		spentTOTPPath:      dir + "/second-factor-spent",
 		anomalyDir:         dir + "/anomaly",
 		accountLocksPath:   dir + "/account_locks.json",
+		auditPushStatePath: dir + "/audit-replicated.json",
 	}, nil
 }
 

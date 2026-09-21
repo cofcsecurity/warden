@@ -299,3 +299,96 @@ func TestCronEntryFilePreservesOtherJobsAndDedupsOwnLine(t *testing.T) {
 		t.Errorf("expected exactly one line carrying our marker, got:\n%s", content)
 	}
 }
+
+// TestBuildRegistrationsCoversEveryTimer is the regression guard for the
+// gap this file used to have: only sentinel's own timer (and replicate's)
+// were registered, so watch, both snapshot tiers, and scan could each be
+// disabled and deleted once with nothing ever noticing or rebuilding them.
+func TestBuildRegistrationsCoversEveryTimer(t *testing.T) {
+	oldPubKey, oldFromIP, oldTargets := buildTeamPubKey, buildTeamFromIP, buildReplicateTargets
+	defer func() {
+		buildTeamPubKey, buildTeamFromIP, buildReplicateTargets = oldPubKey, oldFromIP, oldTargets
+	}()
+	buildTeamPubKey, buildTeamFromIP = "ssh-ed25519 AAAA team@ccdc", "203.0.113.10"
+	buildReplicateTargets = ""
+
+	regs, err := buildRegistrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, r := range regs {
+		names[r.Name] = true
+	}
+
+	for _, want := range []string{
+		"authorized_keys", "sudoers", "systemd-timer", "cron-entry", "binary-backup",
+		"watch-timer", "snapshot-config-timer", "snapshot-data-timer", "scan-timer",
+	} {
+		if !names[want] {
+			t.Errorf("no %q registration; sentinel-check would never notice it being disabled", want)
+		}
+	}
+	if names["replicate-timer"] {
+		t.Error("replicate-timer registered on a build with no replication targets configured")
+	}
+
+	buildReplicateTargets = "file:///tmp/peer"
+	regs, err = buildRegistrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range regs {
+		if r.Name == "replicate-timer" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a replicate-timer registration once targets are configured")
+	}
+}
+
+// TestTimerRegistrationChecksAllThreeFiles pins the contract every timer
+// registration relies on: a .timer file with no symlink in
+// timers.target.wants never actually fires, so "present" has to mean all
+// three files, not just the unit ones.
+func TestTimerRegistrationChecksAllThreeFiles(t *testing.T) {
+	dir := t.TempDir()
+	service := filepath.Join(dir, "x.service")
+	timer := filepath.Join(dir, "x.timer")
+	link := filepath.Join(dir, "wants", "x.timer")
+
+	ok, err := checkSystemdTimerFiles(service, timer, link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("expected absent before anything is written")
+	}
+
+	if err := writeSystemdTimerFiles(service, timer, "svc", "tmr"); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = checkSystemdTimerFiles(service, timer, link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("a timer with no timers.target.wants symlink must not count as present")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(timer, link); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = checkSystemdTimerFiles(service, timer, link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected present once all three exist")
+	}
+}
