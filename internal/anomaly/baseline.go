@@ -51,6 +51,18 @@ func hashContent(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// legacyPresenceValue is what earlier versions of the name-keyed
+// baselines (accounts, SUID) stored for every entry: a bare "1" meaning
+// "this existed", with nothing recorded about what it *was*. Those
+// checks now store a content hash instead, so they can also catch an
+// entry being changed in place rather than only added. An upgraded box
+// still has the old file on disk, and treating "1" as a real hash would
+// report every single known account and setuid binary as modified on
+// the first run after the upgrade. Seen on an entry, it means "no
+// recorded state to compare against" — reseed it quietly, the same
+// bootstrap tradeoff firstRun already documents.
+const legacyPresenceValue = "1"
+
 // firstRun reports whether a baseline file simply didn't exist yet — the
 // caller uses this to decide whether to report zero findings (bootstrap)
 // rather than flagging everything present as "new". Same tradeoff

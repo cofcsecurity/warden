@@ -3,6 +3,7 @@ package anomaly
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,5 +85,63 @@ func writeSetuidFile(t *testing.T, path string) {
 	}
 	if info.Mode()&os.ModeSetuid == 0 {
 		t.Skip("this environment doesn't let chmod set the setuid bit (common outside Linux) — skipping")
+	}
+}
+
+// TestCheckSUIDFlagsAnInPlaceReplacement covers trojaning a setuid
+// binary that's been on the box since the first scan: same path, same
+// mode, new contents — invisible to a baseline keyed on path alone.
+func TestCheckSUIDFlagsAnInPlaceReplacement(t *testing.T) {
+	baseDir := t.TempDir()
+	binDir := t.TempDir()
+	sudo := filepath.Join(binDir, "sudo")
+	writeSetuidFile(t, sudo)
+
+	if _, err := CheckSUID(baseDir, []string{binDir}); err != nil {
+		t.Fatal(err) // bootstrap
+	}
+
+	if err := os.WriteFile(sudo, []byte("#!/bin/sh\nexec /bin/sh\n"), 0o4755); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := CheckSUID(baseDir, []string{binDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected the replaced binary to be flagged, got %+v", findings)
+	}
+	if !strings.Contains(findings[0].Description, "replaced in place") {
+		t.Errorf("unexpected description: %s", findings[0].Description)
+	}
+
+	// Unchanged on the next pass.
+	findings, err = CheckSUID(baseDir, []string{binDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings once the new contents are the baseline, got %+v", findings)
+	}
+}
+
+func TestCheckSUIDIgnoresLegacyBaselineValues(t *testing.T) {
+	baseDir := t.TempDir()
+	binDir := t.TempDir()
+	sudo := filepath.Join(binDir, "sudo")
+	writeSetuidFile(t, sudo)
+
+	if err := os.WriteFile(filepath.Join(baseDir, "suid.json"),
+		[]byte(`{"`+sudo+`":"1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := CheckSUID(baseDir, []string{binDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("a legacy path-only baseline must reseed quietly, got %+v", findings)
 	}
 }
