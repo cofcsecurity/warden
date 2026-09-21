@@ -57,6 +57,8 @@ warden watch
 # armed: true, auto-restored: 1, suppressed: 0, flagged: 0
 ```
 
+Auto-restoring a service's config also reloads that service (`systemctl reload-or-restart`, once per unit per pass, skipped if the unit isn't installed here). Writing the file alone isn't a restore for anything long-running — sshd, nginx and the rest parse their config at startup, so the attacker's settings stay live under a repaired-looking file. A reload that fails is reported and logged, but never stops the pass: the file is already back to known-good.
+
 ### `warden restore <target> [--snapshot <generation>] [--apply]`
 
 The human-triggered "fix this now" path for one specific config-tier path.
@@ -68,6 +70,10 @@ warden restore /etc/nginx/nginx.conf --apply              # actually restore
 ```
 
 Dry run (the default) prints current vs. target hash for the path and does nothing else. `--apply` stops the mapped systemd unit if one exists (`serviceForPath` in `config.go`), writes the known-good content, reverifies the hash, and restarts the unit — logging every step. A restore across multiple paths isn't supported in one invocation; run it once per path.
+
+**On an armed box the config baseline is frozen.** A config-tier snapshot keeps the existing record for any path that drifted, was deleted, or appeared since, logs which paths it declined, and writes no new generation when nothing moved. Only `warden accept` (one path) and `warden arm` (all of them) move the baseline while armed.
+
+That's not an optimization — before it, `snapshot` and `watch` raced for the baseline. Both run every five minutes with independent jitter, so an attacker's edit was reverted if `watch` won and became the new known-good state if `snapshot` won, roughly a coin flip per edit, with nothing in the log to say which happened. The data tier still absorbs changes normally: it exists to back up service data that legitimately changes all day.
 
 ### `warden replicate`
 
@@ -132,7 +138,24 @@ warden disarm     # turn auto-restore back off, e.g. ahead of a planned maintena
 
 `arm` takes a fresh config-tier snapshot immediately before flipping the switch, so whatever's on disk at that moment — not a stale pre-hardening snapshot — becomes the enforced baseline. Both log to `audit.log`; `status` (below) reports the current armed state.
 
-**Before it snapshots anything, `arm` lists every watched path that changed since the last baseline** and asks you to confirm:
+`arm` prints this box's configuration first — what's actually watched here, whether a second factor and replication peers are configured, whether auto-ban/auto-lock are on, and who can never be locked out:
+
+```
+==> This box's configuration
+  watched here:       23 config-tier path(s) present, 8 of them confirm-first
+  data tier:          nothing configured — no service data is being backed up
+  access from:        203.0.113.0/24
+  second factor:      TOTP and a static secret
+  replication:        2 peer(s)
+                      ssh://warden-backup@box2/home/warden-backup/from-box1
+                      ssh://warden-backup@box6/home/warden-backup/from-box1
+  auto-ban IPs:       on
+  auto-lock accounts: off (flag and log only)
+```
+
+Arming is when every one of those starts mattering, and the last cheap moment to change one — several are baked in at build time, so fixing them afterwards means rebuild and redeploy. The failure modes are silent: a box armed with no replication peers, no second factor, or an empty data tier behaves exactly like a correctly configured one right up until that setting is what you needed.
+
+**Then, before it snapshots anything, `arm` lists every watched path that changed since the last baseline** and asks you to confirm:
 
 ```
 ==> 3 watched path(s) changed since the baseline taken 47m0s ago (generation 1):

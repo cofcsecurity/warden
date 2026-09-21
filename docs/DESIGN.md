@@ -76,6 +76,8 @@ Purpose: the single source of truth for what known-good state looks like. Every 
 Design steps:
 
 1. Define a record: file path, SHA-256 hash, file mode, mtime, and a class field (safe-auto-restore or confirm-first). The class split is what lets the watcher decide whether to fix something immediately or flag it for a human.
+
+   **Read the split the right way round: confirm-first is the weaker setting.** An auto-restored file is back to known-good within a watch cycle with nobody involved; a confirm-first file stays exactly as the attacker left it until a person notices and acts. A path earns confirm-first only when reverting it automatically would do more damage than leaving it wrong for a while — which is a short list. `/etc/ssh/sshd_config`, `/etc/passwd`, `/etc/group`, `/etc/sudoers` and the PAM stack are all **auto-restored**, because they're the access path: "flag it and wait for a human" deadlocks precisely when an attacker has used one of them to lock that human out. What stays confirm-first is credential material (`/etc/shadow`, `/etc/gshadow` — reverting silently undoes a password rotation the team just performed) and saved firewall rulesets (reverting the file doesn't change the live ruleset anyway, and it would undo a ban the team saved mid-incident).
 2. Format: JSON, one manifest per snapshot generation. Human-readable on purpose, since it needs to be debuggable under pressure.
 3. Hashing: `crypto/sha256` from the standard library, over file contents, not metadata, so a touch-only change doesn't false-positive.
 4. Two core functions: `Generate(paths []string) (*Manifest, error)` builds a fresh manifest from current disk state; `Diff(old, new *Manifest) []Change` compares two manifests and returns what moved.
@@ -92,6 +94,11 @@ Design steps:
 2. A snapshot is a manifest pointing at object hashes, not a full copy of every file. Cheap, fast, and easy to diff.
 3. Two tiers: a fast tier for config-sized files, run every few minutes; a slower tier for larger service data, run hourly. Implement as two separate Cobra invocations with different target lists, scheduled by two different systemd timers.
 4. Retention: on each snapshot, prune object files no longer referenced by any of the last N manifests. Simple mark-and-sweep.
+5. **An armed box's config baseline is frozen.** While armed, a config-tier snapshot keeps the existing record for any path that drifted, deleted or appeared since, records which paths it declined, and writes no new generation at all when nothing moved.
+
+   Without that, the two timers raced for the baseline. `snapshot` and `watch` both run every five minutes, jittered independently: an attacker's edit was reverted if `watch` fired first and *became the new known-good state* if `snapshot` did — roughly a coin flip, per edit, decided by timer jitter. A backdoor that won the toss was then defended by Warden rather than removed by it, and nothing in the audit log, `status` or `alerts` would ever say so, because from the next pass on there was no drift left to see. While armed, the only things that move the config baseline are the two commands a human runs deliberately: `warden accept` for one path, `warden arm` for all of them.
+
+   Config tier only. The data tier exists to back up service data that legitimately changes all day; freezing that would just stop taking backups.
 
 ## Component: replicate Package (Off-Host Push)
 
@@ -126,7 +133,7 @@ Purpose: this is the actual persistence mechanism, and the trigger for both auto
 Design steps:
 
 1. Not a long-lived daemon. Invoke via a systemd timer at a jittered interval, so the check doesn't have a fixed, fingerprintable period. Each run: generate a fresh manifest of watched paths, diff against the last known-good manifest, act on differences, exit.
-2. For each changed file classed safe-auto-restore: pull the old content from the store and overwrite it immediately, then log it. For each classed confirm-first (keys, passwd, sudoers): don't touch it, write a high-priority alert to the audit log, and surface it in the operator menu's status view.
+2. For each changed file classed safe-auto-restore: pull the old content from the store, overwrite the file, **then tell the service that owns it to re-read its config** (`systemctl reload-or-restart`, once per unit per pass, skipped when the unit isn't installed here). Writing the file alone isn't a restore for anything long-running: sshd, nginx, postgres and the rest parse their config at startup and keep it in memory, so the attacker's settings stay live under a repaired-looking file. `reload-or-restart` rather than `restart` because a reload doesn't interrupt anything, established SSH sessions included. A reload that fails is reported and logged but never aborts the pass — the file is already back to known-good, and the other drifted paths still need restoring. Then log it. For each classed confirm-first (keys, passwd, sudoers): don't touch it, write a high-priority alert to the audit log, and surface it in the operator menu's status view.
 3. Include Warden's own dependencies (any external binary it ends up trusting) in the watch list too, closing the gap where the tool meant to catch altered binaries could itself be undermined by one.
 
 ## Component: opmenu Package (Access Layer)

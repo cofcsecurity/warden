@@ -48,15 +48,33 @@ with it.
 **3. It watches for tampering and reacts differently depending on what changed.**
 
 Every few minutes, Warden checks: does anything on disk not match the last
-known-good snapshot? If a config file changed in a way that's safe to just
-fix automatically (like someone tweaking `nginx.conf`), Warden reverts it
-immediately, no human needed. If something more sensitive changed — the
-password file, `sudoers`, `sshd_config`, or the credentials scoring itself
-depends on — Warden deliberately does **not** touch it. It just flags it,
-loudly, and keeps flagging it every single check until a human looks at it.
-The reasoning: silently "fixing" a credential file could just as easily undo
-something your own teammate meant to change, or paper over exactly the thing
-a judge needs to see. Some decisions need a person.
+known-good snapshot? Most files it just puts back, immediately, no human
+needed — and then tells the service that owns the file to re-read it, since
+a program like nginx or sshd reads its config once when it starts and
+wouldn't otherwise notice the fix.
+
+That deliberately includes the files your own access depends on:
+`sshd_config`, the password file, `sudoers`, the login system. It has to.
+If red team edits `sshd_config` to lock your team out, "flag it and wait for
+a human to decide" is a trap — the human who'd decide can't get in. Putting
+those back automatically is what gets you back in, usually before anyone
+notices they were gone. An account red team added, or a sudo rule they gave
+themselves, disappears the same way.
+
+A short list is left alone on purpose, because automatically reverting it
+would undo *your* work rather than theirs: the stored password hashes
+(reverting those would silently roll back a password your team just
+changed) and saved firewall rules (which your team edits mid-incident, and
+which don't take effect until reboot anyway). Those get flagged, loudly, and
+keep getting flagged until a person looks.
+
+One more thing worth knowing: once armed, Warden will not quietly accept a
+change to a watched file as the new normal, no matter how long it sits
+there. The backup routine and the checking routine run on the same clock,
+and the backup one used to be able to photograph red team's edit first and
+call it the new known-good. It can't any more — while armed, only a person
+running `warden accept` (for one file) or `warden arm` again (for all of
+them) can move that line.
 
 ## Turning auto-restore on: arm and disarm
 
@@ -261,9 +279,14 @@ assume incorrectly:
   accepts your team's specific key, only from your team's specific network
   address, and only runs a small fixed menu of commands — never an open
   shell without a one-time code proving it's actually your team typing.
-- **It does not replace human judgment on sensitive changes.** Password
-  files, `sudoers`, and similar are always flagged for a person, never
-  silently auto-fixed — see "What actually changed" above.
+- **It does not replace human judgment on the few things that need it.**
+  Stored password hashes and saved firewall rules are flagged for a person,
+  never auto-reverted, because reverting those would undo your own team's
+  work — see "What Warden actually does" above. Note this is the *short*
+  list: the access-critical files (`sshd_config`, the password file,
+  `sudoers`, the login system) are put back automatically on purpose,
+  because waiting for a human is useless if that's what locked the human
+  out.
 - **It is not a full intrusion detection system.** It does watch for more
   than files changing — see "Catching tampering that isn't a watched file
   changing" above for the specific checks `warden scan` runs — but that's a
