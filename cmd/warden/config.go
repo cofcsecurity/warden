@@ -50,6 +50,22 @@ const (
 	scanInterval = "10min"
 	scanJitter   = "120"
 
+	// heartbeatInterval is how often a box is expected to leave a
+	// heartbeat on its peers — every replicate pass, so it tracks
+	// replicateInterval exactly rather than being a second schedule to
+	// keep in step. A peer reads it out of the beat itself (see
+	// internal/heartbeat's IntervalSeconds) rather than assuming this
+	// value, so boxes built with different intervals still judge each
+	// other correctly.
+	heartbeatInterval = 15 * time.Minute
+
+	// heartbeatStaleGrace is how far past a peer's own declared interval
+	// it has to go silent before sentinel-check calls it out. Two full
+	// missed pushes plus the jitter on them: short enough that a box
+	// going dark is noticed inside an hour, long enough that one failed
+	// push, a reboot, or a brief network blip doesn't cry wolf.
+	heartbeatStaleGrace = 35 * time.Minute
+
 	// autobanDuration is how long an auto-triggered ban (see watch.go's
 	// reactToConfirmFirstChange) lasts before sentinel-check's Reconcile
 	// call lifts it — long enough to matter, short enough that a
@@ -57,6 +73,20 @@ const (
 	// rather than needing a human to notice and run `warden unban`.
 	autobanDuration = time.Hour
 )
+
+// inboundHeartbeatGlobs is where *other* boxes' heartbeats land on this
+// box: one directory per peer that replicates here, under the receiving
+// account's home (docs/DEPLOYMENT.md creates `warden-backup` with roots
+// like /home/warden-backup/from-box1). The account name isn't hardcoded
+// — any home directory containing a replication root matches — since
+// that name is a deployment convention rather than something the binary
+// controls.
+//
+// Anything readable here is treated as a report, not as proof: a beat is
+// written by whatever account receives replication, so anyone able to
+// write in that directory can forge one. Nothing automatic acts on them
+// (see cmd/warden/heartbeat.go's checkPeerHeartbeats).
+var inboundHeartbeatGlobs = []string{"/home/*/*/heartbeat/*.json"}
 
 // authLogPaths are checked in order; the first one that exists is used.
 // Debian/Ubuntu ships /var/log/auth.log via rsyslog by default; RHEL-family
@@ -148,6 +178,10 @@ type paths struct {
 	// been pushed to each replication peer, so each pass only sends
 	// what's new — see cmd/warden/replicate.go's pushAuditLog.
 	auditPushStatePath string
+	// heartbeatAlertsPath remembers which silent peers have already been
+	// alerted on, so one dark box produces one alert rather than one
+	// every sentinel-check pass — see cmd/warden/heartbeat.go.
+	heartbeatAlertsPath string
 }
 
 // loadPaths resolves paths for the current box. configManifestPath and
@@ -168,20 +202,21 @@ func loadPaths() (paths, error) {
 	dir := "/var/lib/" + name
 
 	return paths{
-		dataDir:            dir,
-		configManifestPath: dir + "/manifest-config.json",
-		configManifestsDir: dir + "/manifests-config",
-		dataManifestPath:   dir + "/manifest-data.json",
-		dataManifestsDir:   dir + "/manifests-data",
-		storeRoot:          dir,
-		auditLogPath:       dir + "/audit.log",
-		armedMarkerPath:    dir + "/armed",
-		bannedIPsPath:      dir + "/banned_ips.json",
-		staticSecretPath:   dir + "/second-factor",
-		spentTOTPPath:      dir + "/second-factor-spent",
-		anomalyDir:         dir + "/anomaly",
-		accountLocksPath:   dir + "/account_locks.json",
-		auditPushStatePath: dir + "/audit-replicated.json",
+		dataDir:             dir,
+		configManifestPath:  dir + "/manifest-config.json",
+		configManifestsDir:  dir + "/manifests-config",
+		dataManifestPath:    dir + "/manifest-data.json",
+		dataManifestsDir:    dir + "/manifests-data",
+		storeRoot:           dir,
+		auditLogPath:        dir + "/audit.log",
+		armedMarkerPath:     dir + "/armed",
+		bannedIPsPath:       dir + "/banned_ips.json",
+		staticSecretPath:    dir + "/second-factor",
+		spentTOTPPath:       dir + "/second-factor-spent",
+		anomalyDir:          dir + "/anomaly",
+		accountLocksPath:    dir + "/account_locks.json",
+		auditPushStatePath:  dir + "/audit-replicated.json",
+		heartbeatAlertsPath: dir + "/heartbeat-alerts.json",
 	}, nil
 }
 

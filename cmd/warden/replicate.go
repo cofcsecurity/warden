@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"warden/internal/audit"
+	"warden/internal/heartbeat"
 	"warden/internal/manifest"
 	"warden/internal/replicate"
 	"warden/internal/store"
@@ -49,7 +50,7 @@ func parseReplicateTargets(raw string) []replicateTarget {
 func replicateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "replicate",
-		Short: "Push new snapshot objects and audit-log entries to every configured replication peer",
+		Short: "Push new snapshot objects, audit-log entries, and this box's heartbeat to every peer",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReplicate()
 		},
@@ -87,10 +88,22 @@ func runReplicate() error {
 		return err
 	}
 
+	// Built once, pushed to every peer: one beat describing this box at
+	// this moment, not a slightly different one per peer.
+	beat, err := collectHeartbeat(p, time.Now())
+	if err != nil {
+		return err
+	}
+	beatData, err := heartbeat.Encode(beat)
+	if err != nil {
+		return err
+	}
+	beatName := replicate.HeartbeatName(beat.Host, beat.WrittenAt)
+
 	var errs []string
 	auditBytes := 0
 	for _, t := range targets {
-		pushed, err := pushToTarget(p, st, t, state)
+		pushed, err := pushToTarget(p, st, t, state, beatName, beatData)
 		auditBytes += pushed
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", t.url, err))
@@ -121,9 +134,9 @@ func runReplicate() error {
 	return nil
 }
 
-// pushToTarget pushes both snapshot tiers and then the audit log to one
-// peer, returning how many bytes of audit log it sent.
-func pushToTarget(p paths, st *store.Store, t replicateTarget, state auditPushState) (int, error) {
+// pushToTarget pushes both snapshot tiers, the audit log, and this box's
+// heartbeat to one peer, returning how many bytes of audit log it sent.
+func pushToTarget(p paths, st *store.Store, t replicateTarget, state auditPushState, beatName string, beatData []byte) (int, error) {
 	target, closeTarget, err := dialReplicateTarget(t.url, t.hostKey)
 	if err != nil {
 		return 0, err
@@ -151,15 +164,27 @@ func pushToTarget(p paths, st *store.Store, t replicateTarget, state auditPushSt
 		pushed++
 	}
 
-	// The audit log goes even if neither tier has been snapshotted yet:
-	// a box that hasn't been snapshotted has still been logging, and
-	// that record is exactly what a wipe would otherwise destroy.
+	// The audit log and the heartbeat both go even if neither tier has
+	// been snapshotted yet: a box that hasn't been snapshotted has still
+	// been logging and is still either alive or not, and both of those
+	// are exactly what a wipe would otherwise destroy any record of.
 	auditBytes, auditErr := pushAuditLog(p, r, t.url, state)
 
-	if pushed == 0 && auditErr == nil {
+	// The beat goes last and is reported separately, so "this box is
+	// alive" never displaces an error about the backups themselves —
+	// and a failure to write it is still an error, since silently not
+	// beating is indistinguishable from being dead.
+	beatErr := r.PushHeartbeat(beatName, beatData)
+
+	switch {
+	case auditErr != nil:
+		return auditBytes, auditErr
+	case beatErr != nil:
+		return auditBytes, beatErr
+	case pushed == 0:
 		return auditBytes, fmt.Errorf("no local manifest yet for either tier; run 'warden snapshot' first")
 	}
-	return auditBytes, auditErr
+	return auditBytes, nil
 }
 
 // auditPushState maps a replication target URL to what was last pushed to

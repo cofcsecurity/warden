@@ -211,6 +211,13 @@ func (t *SSHTarget) AuditSegments() ([]string, error) {
 	return segments, nil
 }
 
+func (t *SSHTarget) PutHeartbeat(name string, data []byte) error {
+	if name == "" || strings.Contains(name, "/") {
+		return fmt.Errorf("replicate: invalid heartbeat name %q", name)
+	}
+	return t.writeOnceRemote(path.Join(t.root, "heartbeat", name), data)
+}
+
 func (t *SSHTarget) exists(remotePath string) (bool, error) {
 	err := t.run(fmt.Sprintf("test -e %s", shellQuote(remotePath)))
 	if err == nil {

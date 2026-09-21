@@ -16,7 +16,7 @@ import (
 func sentinelCheckCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "sentinel-check",
-		Short: "Verify the sentinel pair (systemd timer + cron entry) and respawn if needed",
+		Short: "Verify every registration and timer, respawn what's missing, and check on peers",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSentinelCheck()
 		},
@@ -104,5 +104,14 @@ func runSentinelCheck() error {
 	if len(lockedAccounts) > 0 {
 		fmt.Printf("active account lock(s): %v\n", lockedAccounts)
 	}
+
+	// The dead-man's switch for *other* boxes, on the same schedule and
+	// for the same reason as the reconciles above: this box is the only
+	// place a peer's silence can be noticed, since a box that has gone
+	// dark by definition isn't running anything that could report it.
+	if err := checkPeerHeartbeats(p, log, time.Now()); err != nil {
+		reconcileErrs = append(reconcileErrs, fmt.Errorf("sentinel-check: check peer heartbeats: %w", err))
+	}
+
 	return errors.Join(reconcileErrs...)
 }

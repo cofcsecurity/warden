@@ -17,20 +17,32 @@ import (
 // fakeTarget is an in-memory Target for testing Push/Pull's own logic in
 // isolation from any real transport.
 type fakeTarget struct {
-	objects          map[string][]byte
-	manifests        map[string]map[int][]byte
-	audit            map[string][]byte
-	putCalls         int
-	putManifestCalls int
-	putAuditCalls    int
+	objects           map[string][]byte
+	manifests         map[string]map[int][]byte
+	audit             map[string][]byte
+	heartbeats        map[string][]byte
+	putCalls          int
+	putManifestCalls  int
+	putAuditCalls     int
+	putHeartbeatCalls int
 }
 
 func newFakeTarget() *fakeTarget {
 	return &fakeTarget{
-		objects:   map[string][]byte{},
-		manifests: map[string]map[int][]byte{},
-		audit:     map[string][]byte{},
+		objects:    map[string][]byte{},
+		manifests:  map[string]map[int][]byte{},
+		audit:      map[string][]byte{},
+		heartbeats: map[string][]byte{},
 	}
+}
+
+func (f *fakeTarget) PutHeartbeat(name string, data []byte) error {
+	f.putHeartbeatCalls++
+	if _, ok := f.heartbeats[name]; ok {
+		return nil // additive-only, same as the real targets
+	}
+	f.heartbeats[name] = data
+	return nil
 }
 
 func (f *fakeTarget) HasAudit(name string) (bool, error) {

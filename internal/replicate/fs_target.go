@@ -129,6 +129,13 @@ func (t *FSTarget) AuditSegments() ([]string, error) {
 	return names, nil
 }
 
+func (t *FSTarget) PutHeartbeat(name string, data []byte) error {
+	if name == "" || name != filepath.Base(name) {
+		return fmt.Errorf("replicate: invalid heartbeat name %q", name)
+	}
+	return writeOnceLocal(filepath.Join(t.root, "heartbeat", name), data)
+}
+
 func (t *FSTarget) ManifestGenerations(namespace string) ([]int, error) {
 	dir := t.manifestsDir(namespace)
 	entries, err := os.ReadDir(dir)

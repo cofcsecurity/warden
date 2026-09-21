@@ -5,8 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"warden/internal/audit"
+	"warden/internal/heartbeat"
 	"warden/internal/replicate"
 )
 
@@ -98,13 +100,14 @@ func auditTestPaths(t *testing.T) paths {
 	}
 }
 
-func fsReplicator(t *testing.T) (*replicate.Replicator, *replicate.FSTarget) {
+func fsReplicator(t *testing.T) (*replicate.Replicator, *replicate.FSTarget, string) {
 	t.Helper()
-	target, err := replicate.NewFSTarget(t.TempDir())
+	root := t.TempDir()
+	target, err := replicate.NewFSTarget(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return replicate.New(target), target
+	return replicate.New(target), target, root
 }
 
 func replicatedAudit(t *testing.T, target *replicate.FSTarget) string {
@@ -121,7 +124,7 @@ func replicatedAudit(t *testing.T, target *replicate.FSTarget) string {
 // every pass.
 func TestPushAuditLogSendsOnlyWhatIsNew(t *testing.T) {
 	p := auditTestPaths(t)
-	r, target := fsReplicator(t)
+	r, target, _ := fsReplicator(t)
 	state := auditPushState{}
 
 	if err := os.WriteFile(p.auditLogPath, []byte("one\n"), 0o600); err != nil {
@@ -164,7 +167,7 @@ func TestPushAuditLogSendsOnlyWhatIsNew(t *testing.T) {
 // written to the old file after the last push only exist there.
 func TestPushAuditLogSurvivesRotation(t *testing.T) {
 	p := auditTestPaths(t)
-	r, target := fsReplicator(t)
+	r, target, _ := fsReplicator(t)
 	state := auditPushState{}
 
 	if err := os.WriteFile(p.auditLogPath, []byte("one\n"), 0o600); err != nil {
@@ -199,7 +202,7 @@ func TestPushAuditLogSurvivesRotation(t *testing.T) {
 
 func TestPushAuditLogWithNoLogYetIsNotAnError(t *testing.T) {
 	p := auditTestPaths(t)
-	r, _ := fsReplicator(t)
+	r, _, _ := fsReplicator(t)
 
 	sent, err := pushAuditLog(p, r, "file:///peer", auditPushState{})
 	if err != nil {
@@ -235,5 +238,109 @@ func TestAuditPushStateRoundTrip(t *testing.T) {
 	}
 	if len(state) != 0 {
 		t.Errorf("expected an empty state, got %+v", state)
+	}
+}
+
+func TestPushHeartbeatLandsOnThePeer(t *testing.T) {
+	r, _, root := fsReplicator(t)
+	at := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+
+	beat := heartbeat.Beat{Host: "box1", WrittenAt: at, IntervalSeconds: 900, Armed: true, Generation: 4}
+	data, err := heartbeat.Encode(beat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.PushHeartbeat(replicate.HeartbeatName(beat.Host, at), data); err != nil {
+		t.Fatal(err)
+	}
+
+	beats, err := heartbeat.Collect(heartbeatGlobsUnder(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beats) != 1 || beats[0].Host != "box1" || beats[0].Generation != 4 {
+		t.Fatalf("expected the pushed beat to be readable from the peer root, got %+v", beats)
+	}
+}
+
+// TestPushHeartbeatNamesNeverCollide: each push leaves its own file, so
+// two pushes in the same second must not silently become one (the
+// write-once targets skip a name that already exists).
+func TestPushHeartbeatNamesNeverCollide(t *testing.T) {
+	r, _, root := fsReplicator(t)
+	at := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+
+	for i, when := range []time.Time{at, at.Add(time.Millisecond)} {
+		beat := heartbeat.Beat{Host: "box1", WrittenAt: when, IntervalSeconds: 900, Generation: i + 1}
+		data, err := heartbeat.Encode(beat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.PushHeartbeat(replicate.HeartbeatName(beat.Host, when), data); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, err := filepath.Glob(filepath.Join(root, "heartbeat", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected both pushes to leave a file, got %v", files)
+	}
+
+	// The reader takes the newest, which is the later generation.
+	beats, err := heartbeat.Collect(heartbeatGlobsUnder(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beats) != 1 || beats[0].Generation != 2 {
+		t.Fatalf("expected the newest beat to win, got %+v", beats)
+	}
+}
+
+func TestCollectHeartbeatReportsThisBoxesState(t *testing.T) {
+	dir := t.TempDir()
+	p := paths{
+		configManifestPath: filepath.Join(dir, "manifest-config.json"),
+		auditLogPath:       filepath.Join(dir, "audit.log"),
+		armedMarkerPath:    filepath.Join(dir, "armed"),
+		bannedIPsPath:      filepath.Join(dir, "banned_ips.json"),
+		accountLocksPath:   filepath.Join(dir, "account_locks.json"),
+	}
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+
+	log, err := audit.New(p.auditLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Log("watch", "pass", nil); err != nil {
+		t.Fatal(err)
+	}
+	log.Close()
+
+	if err := os.WriteFile(p.armedMarkerPath, []byte("armed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	beat, err := collectHeartbeat(p, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !beat.Armed {
+		t.Error("expected the beat to report this box as armed")
+	}
+	if beat.IntervalSeconds != int(heartbeatInterval.Seconds()) {
+		t.Errorf("expected the beat to declare its own interval, got %d", beat.IntervalSeconds)
+	}
+	if _, ok := beat.LastPass["watch"]; !ok {
+		t.Errorf("expected the recorded watch pass to be reported, got %+v", beat.LastPass)
+	}
+	if _, ok := beat.LastPass["scan"]; ok {
+		t.Error("a component that has never run must be absent, not zero-valued")
+	}
+	if !beat.WrittenAt.Equal(now.UTC()) {
+		t.Errorf("expected the beat stamped with the given time, got %v", beat.WrittenAt)
 	}
 }

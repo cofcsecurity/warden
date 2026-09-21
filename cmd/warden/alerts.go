@@ -80,8 +80,12 @@ func printAlert(e audit.Entry) {
 	ts := e.Time.Local().Format("15:04:05")
 	switch e.Action {
 	case "alert":
-		if source, _ := e.Fields["source"].(string); source == "anomaly" {
+		switch source, _ := e.Fields["source"].(string); source {
+		case "anomaly":
 			printAnomalyAlert(ts, e)
+			return
+		case "heartbeat":
+			printHeartbeatAlert(ts, e)
 			return
 		}
 		path, _ := e.Fields["path"].(string)
@@ -98,6 +102,9 @@ func printAlert(e audit.Entry) {
 			fmt.Printf("[%s] ⚠ %s changed, but couldn't attribute it to a specific outside IP (%s) — might want to check that\n", ts, path, evidence)
 			printCandidateIPs(e)
 		}
+	case "peer-returned":
+		peer, _ := e.Fields["peer"].(string)
+		fmt.Printf("[%s] %s is reporting again\n", ts, peer)
 	case "manual-ban":
 		ip, _ := e.Fields["ip"].(string)
 		reason, _ := e.Fields["reason"].(string)
@@ -144,6 +151,19 @@ func printAnomalyAlert(ts string, e audit.Entry) {
 		fmt.Printf("           source IP: %s (%s)\n", suspectIP, bannedNote)
 	} else {
 		printCandidateIPs(e)
+	}
+}
+
+// printHeartbeatAlert renders a peer that has stopped reporting. Worth a
+// distinct shape from the other alerts: nothing happened *on this box*,
+// and the box it's about is exactly the one that can't tell anyone
+// itself.
+func printHeartbeatAlert(ts string, e audit.Entry) {
+	peer, _ := e.Fields["peer"].(string)
+	desc, _ := e.Fields["description"].(string)
+	fmt.Printf("[%s] ⚠ [heartbeat] %s\n", ts, desc)
+	if lastSeen, ok := e.Fields["last_seen"].(string); ok && lastSeen != "" {
+		fmt.Printf("           %s last reported at %s — 'warden fleet' for the full picture\n", peer, lastSeen)
 	}
 }
 

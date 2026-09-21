@@ -54,6 +54,25 @@ type Target interface {
 	PutAudit(name string, data []byte) error
 	GetAudit(name string) ([]byte, error)
 	AuditSegments() ([]string, error)
+
+	// PutHeartbeat leaves one "this box was alive at time T" record on
+	// the peer (see internal/heartbeat). Write-once per name like
+	// everything else here; names carry a timestamp, so each push adds
+	// one small file rather than replacing a previous one. There's
+	// deliberately no read method: a box reads the beats that arrived
+	// *in its own* receiving directory, which is a local filesystem
+	// read, not something it fetches back from a peer it pushed to.
+	PutHeartbeat(name string, data []byte) error
+}
+
+// HeartbeatName builds the name for one pushed heartbeat: the box it came
+// from and when it was written, fixed-width so names sort chronologically
+// and can't collide between two pushes.
+func HeartbeatName(host string, at time.Time) string {
+	if host == "" {
+		host = "unknown"
+	}
+	return fmt.Sprintf("%s-%019d.json", sanitizeHost(host), at.UTC().UnixNano())
 }
 
 // AuditSegmentName builds the name for one pushed chunk of a box's audit
@@ -158,6 +177,20 @@ func (r *Replicator) PushAudit(name string, data []byte) error {
 	}
 	if err := r.target.PutAudit(name, data); err != nil {
 		return fmt.Errorf("replicate: push audit segment %s: %w", name, err)
+	}
+	return nil
+}
+
+// PushHeartbeat writes this box's current heartbeat to the peer. Unlike
+// Push and PushAudit, there's nothing to skip or resume: a beat is a
+// fresh statement about right now, and its whole value is in having been
+// written recently.
+func (r *Replicator) PushHeartbeat(name string, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if err := r.target.PutHeartbeat(name, data); err != nil {
+		return fmt.Errorf("replicate: push heartbeat %s: %w", name, err)
 	}
 	return nil
 }
