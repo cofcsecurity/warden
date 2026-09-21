@@ -33,6 +33,15 @@ type Record struct {
 	Mode  os.FileMode `json:"mode"`
 	MTime time.Time   `json:"mtime"`
 	Class Class       `json:"class"`
+	// Symlink records that Path itself was a symbolic link when this
+	// record was generated (Hash/Mode/MTime still describe what it
+	// pointed at, so content drift of the target is still detected).
+	// Nothing may write *through* such a path — see Diff, watch, and
+	// restore: replacing a watched path with a link to somewhere else is
+	// how an attacker turns a restore into a write to a file of their
+	// choosing. Omitted from the JSON when false, so manifests written
+	// before this field existed parse unchanged.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 // Manifest is one generation of known-good state.
@@ -174,9 +183,23 @@ func Generate(paths []string, classify Classify, generation int) (*Manifest, err
 	}
 
 	for _, p := range paths {
-		info, err := os.Stat(p)
+		// Lstat first, Stat second: some distros legitimately ship a
+		// watched path as a symlink (RHEL's /etc/my.cnf, say), so the
+		// link's target is still hashed and still watched for content
+		// drift — but the fact that it *is* a link is recorded, since
+		// nothing downstream may write through it blindly.
+		linkInfo, err := os.Lstat(p)
 		if os.IsNotExist(err) {
 			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("manifest: lstat %s: %w", p, err)
+		}
+		isSymlink := linkInfo.Mode()&os.ModeSymlink != 0
+
+		info, err := os.Stat(p)
+		if os.IsNotExist(err) {
+			continue // dangling symlink: nothing to hash
 		}
 		if err != nil {
 			return nil, fmt.Errorf("manifest: stat %s: %w", p, err)
@@ -191,11 +214,12 @@ func Generate(paths []string, classify Classify, generation int) (*Manifest, err
 		}
 
 		m.Records = append(m.Records, Record{
-			Path:  p,
-			Hash:  hash,
-			Mode:  info.Mode(),
-			MTime: info.ModTime().UTC(),
-			Class: classify(p),
+			Path:    p,
+			Hash:    hash,
+			Mode:    info.Mode(),
+			MTime:   info.ModTime().UTC(),
+			Class:   classify(p),
+			Symlink: isSymlink,
 		})
 	}
 
@@ -256,7 +280,12 @@ func Diff(old, new *Manifest) []Change {
 		newRec := newRec
 		if oldRec, ok := oldByPath[path]; ok {
 			oldRec := oldRec
-			if oldRec.Hash != newRec.Hash {
+			// A path that became (or stopped being) a symlink is a
+			// change even when the content behind it hashes the same:
+			// swapping a watched file for a link to /etc/shadow is
+			// exactly the tamper that would otherwise read as "no
+			// drift" right up until something wrote through it.
+			if oldRec.Hash != newRec.Hash || oldRec.Symlink != newRec.Symlink {
 				changes = append(changes, Change{Kind: Modified, Path: path, Old: &oldRec, New: &newRec})
 			}
 		} else {
@@ -272,4 +301,22 @@ func Diff(old, new *Manifest) []Change {
 	}
 
 	return changes
+}
+
+// IsSymlink reports whether path itself is a symbolic link right now,
+// independent of any recorded state. Every code path that writes a
+// watched path back to disk checks this immediately before writing:
+// os.WriteFile follows links, so without it "restore the known-good
+// /etc/nginx/nginx.conf" becomes "write those bytes over whatever
+// /etc/nginx/nginx.conf currently points at" — which an attacker with
+// root gets to choose.
+func IsSymlink(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("manifest: lstat %s: %w", path, err)
+	}
+	return info.Mode()&os.ModeSymlink != 0, nil
 }

@@ -155,3 +155,38 @@ func TestApplyWithNoServiceMapWritesDirectly(t *testing.T) {
 		t.Errorf("expected no service interaction, got %+v", results[0])
 	}
 }
+
+func TestApplyRefusesToWriteThroughASymlink(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := st.Put([]byte("known-good"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	victim := filepath.Join(dir, "shadow")
+	if err := os.WriteFile(victim, []byte("do not touch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "nginx.conf")
+	if err := os.Symlink(victim, target); err != nil {
+		t.Fatal(err)
+	}
+
+	r := New(st, nil)
+	results := r.Apply([]PlanEntry{{Path: target, TargetHash: hash, TargetMode: 0o644, Changed: true}})
+	if len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("expected a refusal for the symlinked path, got %+v", results)
+	}
+
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "do not touch" {
+		t.Errorf("the symlink target was written through: %q", got)
+	}
+}

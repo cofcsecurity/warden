@@ -108,6 +108,24 @@ func (w *Watcher) Check() (*Result, error) {
 			w.logChange("flagged", change)
 
 		case change.Kind == manifest.Modified || change.Kind == manifest.Removed:
+			// A watched path that is now a symlink is never written
+			// through, armed or not: os.WriteFile follows the link, so
+			// "restore the known-good bytes" would become "write them
+			// over whatever this now points at" — an attacker with root
+			// picks the target (/etc/shadow, an authorized_keys, a
+			// scored service's data file). Flagged for a human instead,
+			// which is also the honest signal: the path being a link at
+			// all is itself the tamper.
+			symlink, err := manifest.IsSymlink(change.Path)
+			if err != nil {
+				return res, fmt.Errorf("watch: check %s: %w", change.Path, err)
+			}
+			if symlink {
+				res.Flagged = append(res.Flagged, change.Path)
+				res.FlaggedChanges = append(res.FlaggedChanges, change)
+				w.logChange("flagged-symlink", change)
+				continue
+			}
 			if !w.armed {
 				res.Suppressed = append(res.Suppressed, change.Path)
 				w.logChange("drift-suppressed", change)

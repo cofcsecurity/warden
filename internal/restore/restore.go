@@ -104,6 +104,21 @@ func (r *Restorer) applyOne(e PlanEntry) EntryResult {
 		unit, hasService = r.services(e.Path)
 	}
 
+	// Never write through a symlink — same reasoning as watch's own
+	// guard: os.WriteFile below follows the link, so a watched path
+	// swapped for a link to somewhere else would turn this restore into
+	// a write to a file the attacker chose. Fails this one entry; the
+	// rest of the plan still applies.
+	symlink, err := manifest.IsSymlink(e.Path)
+	if err != nil {
+		res.Err = fmt.Errorf("restore %s: %w", e.Path, err)
+		return res
+	}
+	if symlink {
+		res.Err = fmt.Errorf("restore %s: refusing to write through a symlink — this path is now a link, which is itself a tamper worth looking at; remove the link first if this is legitimate", e.Path)
+		return res
+	}
+
 	if hasService {
 		if err := systemctl("stop", unit); err != nil {
 			res.Err = fmt.Errorf("restore %s: stop %s: %w", e.Path, unit, err)

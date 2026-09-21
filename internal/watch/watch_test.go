@@ -260,3 +260,52 @@ func TestCheckFlagsDeletedConfirmFirstPathRatherThanRestoringIt(t *testing.T) {
 		t.Fatalf("expected the path to remain deleted, got err=%v", err)
 	}
 }
+
+// TestCheckNeverWritesThroughASymlink covers the attack this guard
+// exists for: a SafeAutoRestore path replaced by a link to something
+// else entirely, so that the next auto-restore would write known-good
+// bytes over the attacker's chosen target instead.
+func TestCheckNeverWritesThroughASymlink(t *testing.T) {
+	dir, st, log := setup(t)
+
+	confPath := filepath.Join(dir, "nginx.conf")
+	if err := os.WriteFile(confPath, []byte("known-good"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	snapshotBaseline(t, manifestPath, []string{confPath}, nil, st)
+
+	// Red team's move: swap the watched path for a link to a file they
+	// want overwritten, with different content so it also reads as drift.
+	victim := filepath.Join(dir, "shadow")
+	if err := os.WriteFile(victim, []byte("root:$6$real-hash:::::::"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(confPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, confPath); err != nil {
+		t.Fatal(err)
+	}
+
+	w := New(manifestPath, []string{confPath}, nil, true /* armed */, st, log)
+	res, err := w.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(res.AutoRestored) != 0 {
+		t.Errorf("must never auto-restore through a symlink, restored: %v", res.AutoRestored)
+	}
+	if len(res.Flagged) != 1 || res.Flagged[0] != confPath {
+		t.Errorf("expected the symlinked path to be flagged instead, got %v", res.Flagged)
+	}
+
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "root:$6$real-hash:::::::" {
+		t.Errorf("the symlink target was written through: %q", got)
+	}
+}

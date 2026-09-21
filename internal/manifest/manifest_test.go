@@ -179,3 +179,77 @@ func TestParseDecodesBytesWithNoBackingFile(t *testing.T) {
 		t.Fatal("expected Save to fail on a manifest with no backing path")
 	}
 }
+
+func TestGenerateRecordsSymlinkAndStillHashesTarget(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.conf")
+	link := filepath.Join(dir, "link.conf")
+	if err := os.WriteFile(real, []byte("listen 80;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := Generate([]string{real, link}, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Records) != 2 {
+		t.Fatalf("expected both paths recorded, got %d", len(m.Records))
+	}
+
+	byPath := map[string]Record{}
+	for _, r := range m.Records {
+		byPath[r.Path] = r
+	}
+	if byPath[real].Symlink {
+		t.Error("a real file must not be recorded as a symlink")
+	}
+	if !byPath[link].Symlink {
+		t.Error("a symlinked watched path must be recorded as one")
+	}
+	if byPath[link].Hash != byPath[real].Hash {
+		t.Error("a symlink's record should still hash what it points at, so content drift is still caught")
+	}
+}
+
+// TestDiffFlagsAPathThatBecameASymlink is the important one: swapping a
+// watched file for a link to somewhere else leaves the hashed content
+// identical, so without this it reads as "no drift at all" right up until
+// something writes through it.
+func TestDiffFlagsAPathThatBecameASymlink(t *testing.T) {
+	old := &Manifest{Records: []Record{{Path: "/etc/x.conf", Hash: "abc", Class: SafeAutoRestore}}}
+	now := &Manifest{Records: []Record{{Path: "/etc/x.conf", Hash: "abc", Class: SafeAutoRestore, Symlink: true}}}
+
+	changes := Diff(old, now)
+	if len(changes) != 1 || changes[0].Kind != Modified {
+		t.Fatalf("expected one Modified change, got %+v", changes)
+	}
+}
+
+func TestIsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	link := filepath.Join(dir, "link")
+	if err := os.WriteFile(real, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	for path, want := range map[string]bool{
+		real:                          false,
+		link:                          true,
+		filepath.Join(dir, "missing"): false,
+	} {
+		got, err := IsSymlink(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("IsSymlink(%s) = %v, want %v", path, got, want)
+		}
+	}
+}
