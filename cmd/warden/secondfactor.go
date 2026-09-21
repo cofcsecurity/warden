@@ -24,14 +24,20 @@ func verifySecondFactor(code string) (bool, error) {
 	if code == "" {
 		return false, nil
 	}
-	if buildTOTPSecret != "" {
-		if ok, err := totp.Validate(buildTOTPSecret, code, time.Now(), 1); err == nil && ok {
-			return true, nil
-		}
-	}
 	p, err := loadPaths()
 	if err != nil {
 		return false, err
+	}
+	if buildTOTPSecret != "" {
+		if ok, counter, err := totp.ValidateAt(buildTOTPSecret, code, time.Now(), 1); err == nil && ok {
+			// Spent against the same file opmenu uses, so a code can't
+			// be used once here and once over SSH — one code, one
+			// command, wherever it's presented.
+			if err := totp.ConsumeCounter(p.spentTOTPPath, counter); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
 	}
 	stored, err := os.ReadFile(p.staticSecretPath)
 	if err != nil {

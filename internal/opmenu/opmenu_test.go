@@ -4,6 +4,7 @@ import (
 	"encoding/base32"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,7 @@ func testHandlerWithStaticSecret(t *testing.T, restoreCalled *bool, staticSecret
 	h := New(
 		secret,
 		staticSecretPath,
+		filepath.Join(t.TempDir(), "second-factor-spent"),
 		func() (string, error) { return "ok", nil },
 		func(target string, args []string) (string, error) {
 			if restoreCalled != nil {
@@ -183,5 +185,44 @@ func TestUnconfiguredStaticSecretPathNeverMatches(t *testing.T) {
 	}
 	if called {
 		t.Errorf("RestoreFn should not have been invoked")
+	}
+}
+
+// TestTOTPCodeCannotBeReplayed covers the window a captured code used to
+// stay good for: without this, anyone who observed a code had the rest of
+// its ~90-second skew window to use it themselves.
+func TestTOTPCodeCannotBeReplayed(t *testing.T) {
+	h, secret := testHandler(t, nil)
+	code, err := totp.Generate(secret, timeNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.Handle(Request{Command: CommandRestore, TOTPCode: code, Args: []string{"nginx"}}); err != nil {
+		t.Fatalf("first use of a fresh code should be accepted: %v", err)
+	}
+
+	_, err = h.Handle(Request{Command: CommandRestore, TOTPCode: code, Args: []string{"nginx"}})
+	if err == nil {
+		t.Fatal("expected the same code to be refused the second time")
+	}
+	if !strings.Contains(err.Error(), "already been used") {
+		t.Errorf("expected the error to say why, got: %v", err)
+	}
+}
+
+func TestSpentTOTPStateIsPerHandlerPath(t *testing.T) {
+	// A handler with no replay-protection path configured (tests only)
+	// must still work rather than refusing everything.
+	h, secret := testHandler(t, nil)
+	h.SpentTOTPPath = ""
+	code, err := totp.Generate(secret, timeNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := h.Handle(Request{Command: CommandRestore, TOTPCode: code, Args: []string{"nginx"}}); err != nil {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
 	}
 }

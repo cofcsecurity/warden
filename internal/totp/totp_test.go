@@ -2,6 +2,8 @@ package totp
 
 import (
 	"encoding/base32"
+	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -80,5 +82,49 @@ func TestValidateRejectsWrongCode(t *testing.T) {
 	}
 	if ok {
 		t.Errorf("expected wrong code to be rejected")
+	}
+}
+
+func TestConsumeCounterRefusesAReplay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "second-factor-spent")
+
+	if err := ConsumeCounter(path, 100); err != nil {
+		t.Fatalf("first use of a step should be accepted: %v", err)
+	}
+	if err := ConsumeCounter(path, 100); !errors.Is(err, ErrCodeAlreadyUsed) {
+		t.Errorf("expected the same step to be refused, got %v", err)
+	}
+	// An earlier step is refused too: a code from the skew window below
+	// the last accepted one is just as replayed.
+	if err := ConsumeCounter(path, 99); !errors.Is(err, ErrCodeAlreadyUsed) {
+		t.Errorf("expected an earlier step to be refused, got %v", err)
+	}
+	if err := ConsumeCounter(path, 101); err != nil {
+		t.Errorf("expected the next step to be accepted, got %v", err)
+	}
+}
+
+func TestConsumeCounterWithNoPathIsANoop(t *testing.T) {
+	for i := 0; i < 2; i++ {
+		if err := ConsumeCounter("", 100); err != nil {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
+	}
+}
+
+func TestValidateAtReportsTheMatchedStep(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	at := time.Unix(1700000000, 0)
+	code, err := Generate(secret, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ok, counter, err := ValidateAt(secret, code, at, 1)
+	if err != nil || !ok {
+		t.Fatalf("expected the code to validate, ok=%v err=%v", ok, err)
+	}
+	if want := at.Unix() / int64(DefaultPeriod.Seconds()); counter != want {
+		t.Errorf("expected step %d, got %d", want, counter)
 	}
 }

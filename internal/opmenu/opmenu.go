@@ -53,17 +53,25 @@ type Handler struct {
 	// it doesn't expire on its own — so TOTP is still checked first and
 	// this is purely additive, not a replacement.
 	StaticSecretPath string
-	StatusFn         func() (string, error)
-	RestoreFn        func(target string, args []string) (string, error)
-	ShellPath        string
-	Log              *audit.Logger
+	// SpentTOTPPath records the last TOTP time step accepted here, so a
+	// code can't be replayed. "" disables the check — which is only
+	// appropriate in tests; every real caller passes a path, since this
+	// handler is reached over the network, where a code is observable in
+	// flight and otherwise stays good for the rest of its ~90-second
+	// skew window.
+	SpentTOTPPath string
+	StatusFn      func() (string, error)
+	RestoreFn     func(target string, args []string) (string, error)
+	ShellPath     string
+	Log           *audit.Logger
 }
 
 // New builds a Handler.
-func New(secret, staticSecretPath string, statusFn func() (string, error), restoreFn func(target string, args []string) (string, error), shellPath string, log *audit.Logger) *Handler {
+func New(secret, staticSecretPath, spentTOTPPath string, statusFn func() (string, error), restoreFn func(target string, args []string) (string, error), shellPath string, log *audit.Logger) *Handler {
 	return &Handler{
 		Secret:           secret,
 		StaticSecretPath: staticSecretPath,
+		SpentTOTPPath:    spentTOTPPath,
 		StatusFn:         statusFn,
 		RestoreFn:        restoreFn,
 		ShellPath:        shellPath,
@@ -82,9 +90,9 @@ func (h *Handler) Handle(req Request) (string, error) {
 		return out, err
 
 	case CommandRestore:
-		if !h.checkSecondFactor(req) {
-			h.log(req, false, fmt.Errorf("second factor check failed"))
-			return "", fmt.Errorf("opmenu: second factor required")
+		if ok, reason := h.checkSecondFactor(req); !ok {
+			h.log(req, false, fmt.Errorf("second factor check failed: %s", reason))
+			return "", fmt.Errorf("opmenu: second factor required (%s)", reason)
 		}
 		if len(req.Args) == 0 {
 			h.log(req, false, fmt.Errorf("missing restore target"))
@@ -95,9 +103,9 @@ func (h *Handler) Handle(req Request) (string, error) {
 		return out, err
 
 	case CommandShell:
-		if !h.checkSecondFactor(req) {
-			h.log(req, false, fmt.Errorf("second factor check failed"))
-			return "", fmt.Errorf("opmenu: second factor required")
+		if ok, reason := h.checkSecondFactor(req); !ok {
+			h.log(req, false, fmt.Errorf("second factor check failed: %s", reason))
+			return "", fmt.Errorf("opmenu: second factor required (%s)", reason)
 		}
 		h.log(req, true, nil)
 		return "", h.execShell()
@@ -108,15 +116,22 @@ func (h *Handler) Handle(req Request) (string, error) {
 	}
 }
 
-// checkSecondFactor accepts either a valid TOTP code or, if configured, an
-// exact match against the current static secret file — see StaticSecretPath.
-func (h *Handler) checkSecondFactor(req Request) bool {
+// checkSecondFactor accepts either a valid TOTP code — used at most once,
+// see spendTOTPCounter — or, if configured, an exact match against the
+// current static secret file (see StaticSecretPath). The returned reason
+// is for the audit log and the caller's error text; it never says which
+// factor was tried, only why nothing was accepted.
+func (h *Handler) checkSecondFactor(req Request) (ok bool, reason string) {
 	if req.TOTPCode == "" {
-		return false
+		return false, "no code given"
 	}
 	if h.Secret != "" {
-		if ok, err := totp.Validate(h.Secret, req.TOTPCode, timeNow(), 1); err == nil && ok {
-			return true
+		valid, counter, err := totp.ValidateAt(h.Secret, req.TOTPCode, timeNow(), 1)
+		if err == nil && valid {
+			if err := h.spendTOTPCounter(counter); err != nil {
+				return false, err.Error()
+			}
+			return true, ""
 		}
 	}
 	if h.StaticSecretPath != "" {
@@ -124,11 +139,25 @@ func (h *Handler) checkSecondFactor(req Request) bool {
 		if err == nil {
 			expected := strings.TrimSpace(string(stored))
 			if expected != "" && subtle.ConstantTimeCompare([]byte(expected), []byte(req.TOTPCode)) == 1 {
-				return true
+				// No replay protection is possible here, by
+				// construction: the static secret is a standing
+				// passphrase for competitions where authenticator apps
+				// aren't usable at all, so it's reusable until rotated.
+				// That's why it's the fallback and TOTP is checked
+				// first — see rotate-secret.
+				return true, ""
 			}
 		}
 	}
-	return false
+	return false, "invalid code"
+}
+
+// spendTOTPCounter marks this time step used, so the same code can't be
+// presented again — see totp.ConsumeCounter. The cost is that a code is
+// good for exactly one command: a dry-run restore and its apply need two
+// codes, which is the intended tradeoff.
+func (h *Handler) spendTOTPCounter(counter int64) error {
+	return totp.ConsumeCounter(h.SpentTOTPPath, counter)
 }
 
 // execShell is the only path in opmenu that leaves the Go binary. It's
