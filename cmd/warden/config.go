@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -408,31 +409,85 @@ func classifyPath(path string) manifest.Class {
 	return manifest.SafeAutoRestore
 }
 
-var pathServices = map[string]string{
-	"/etc/nginx/nginx.conf":           "nginx",
-	"/etc/apache2/apache2.conf":       "apache2",
-	"/etc/httpd/conf/httpd.conf":      "httpd",
-	"/etc/mysql/my.cnf":               "mysql",
-	"/etc/my.cnf":                     "mariadb",
-	"/etc/postgresql/postgresql.conf": "postgresql",
-	"/etc/postfix/main.cf":            "postfix",
-	"/etc/dovecot/dovecot.conf":       "dovecot",
-	"/etc/mail/sendmail.cf":           "sendmail",
-	"/etc/bind/named.conf":            "bind9",
-	"/etc/named.conf":                 "named",
-	"/etc/vsftpd.conf":                "vsftpd",
-	"/etc/proftpd/proftpd.conf":       "proftpd",
-	"/etc/samba/smb.conf":             "smbd",
-	"/etc/dhcp/dhcpd.conf":            "isc-dhcp-server",
-	"/etc/ssh/sshd_config":            "sshd",
+// pathServices maps a watched path to the systemd unit(s) that might own
+// it. Several of these genuinely differ by distro for the *same* config
+// file (chrony vs chronyd, redis vs redis-server, ssh vs sshd), so each
+// entry is a candidate list and serviceForPath picks whichever unit
+// actually exists on this box. Guessing wrong isn't harmless: restore
+// stops the unit before writing, and a stop that fails aborts that path's
+// restore entirely — so "no unit found" has to mean "just write the
+// file," not "try a name that isn't there."
+var pathServices = map[string][]string{
+	"/etc/nginx/nginx.conf":           {"nginx"},
+	"/etc/apache2/apache2.conf":       {"apache2"},
+	"/etc/httpd/conf/httpd.conf":      {"httpd"},
+	"/etc/mysql/my.cnf":               {"mysql", "mariadb"},
+	"/etc/my.cnf":                     {"mariadb", "mysqld", "mysql"},
+	"/etc/postgresql/postgresql.conf": {"postgresql"},
+	"/etc/postfix/main.cf":            {"postfix"},
+	"/etc/dovecot/dovecot.conf":       {"dovecot"},
+	"/etc/mail/sendmail.cf":           {"sendmail"},
+	"/etc/bind/named.conf":            {"bind9", "named"},
+	"/etc/named.conf":                 {"named", "bind9"},
+	"/etc/vsftpd.conf":                {"vsftpd"},
+	"/etc/proftpd/proftpd.conf":       {"proftpd"},
+	"/etc/samba/smb.conf":             {"smbd", "smb"},
+	"/etc/dhcp/dhcpd.conf":            {"isc-dhcp-server", "dhcpd"},
+	"/etc/ssh/sshd_config":            {"sshd", "ssh"},
+
+	// Containers. Restarting the container runtime bounces every
+	// container on the box, which is a far wider blast radius than any
+	// other entry here — deliberately still mapped, since a daemon
+	// config that's been reverted but not reloaded is a restore that
+	// didn't actually restore anything, and the operator running
+	// 'warden restore' on this path is asking for exactly that.
+	"/etc/docker/daemon.json":              {"docker"},
+	"/etc/containerd/config.toml":          {"containerd"},
+	"/etc/mongod.conf":                     {"mongod"},
+	"/etc/redis/redis.conf":                {"redis-server", "redis"},
+	"/etc/redis.conf":                      {"redis", "redis-server"},
+	"/etc/elasticsearch/elasticsearch.yml": {"elasticsearch"},
+	"/etc/tomcat/server.xml":               {"tomcat", "tomcat9"},
+	"/etc/tomcat9/server.xml":              {"tomcat9", "tomcat"},
+	"/var/lib/tomcat9/conf/server.xml":     {"tomcat9", "tomcat"},
+	"/etc/chrony/chrony.conf":              {"chrony", "chronyd"},
+	"/etc/chrony.conf":                     {"chronyd", "chrony"},
+	"/etc/ntp.conf":                        {"ntp", "ntpd"},
+	"/etc/snmp/snmpd.conf":                 {"snmpd"},
+	"/etc/xrdp/xrdp.ini":                   {"xrdp"},
+}
+
+// systemdUnitSearchDirs is where serviceForPath looks for a unit file. A
+// var so tests can point it somewhere harmless instead of the real box.
+var systemdUnitSearchDirs = []string{
+	systemdUnitDir,
+	"/etc/systemd/system",
+	"/lib/systemd/system",
+	"/usr/lib/systemd/system",
 }
 
 // serviceForPath maps a watched path to the systemd unit that owns it, for
-// restore's stop/write/restart sequence. Returns ok=false for paths with no
-// mapped service (e.g. passwd/shadow/sudoers, which don't need a restart).
+// restore's stop/write/restart sequence. Returns ok=false for paths with
+// no mapped service (passwd/shadow/sudoers and friends, which don't need
+// a restart) and, just as importantly, for a mapped path whose unit isn't
+// installed here under any of its known names — writing the file without
+// a restart beats failing the restore over a unit that doesn't exist.
 func serviceForPath(path string) (unit string, ok bool) {
-	unit, ok = pathServices[path]
-	return unit, ok
+	for _, candidate := range pathServices[path] {
+		if unitFileExists(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func unitFileExists(unit string) bool {
+	for _, dir := range systemdUnitSearchDirs {
+		if _, err := os.Stat(filepath.Join(dir, unit+".service")); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // snapshotTier selects which path list a snapshot covers.

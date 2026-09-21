@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"warden/internal/detect"
@@ -81,6 +82,43 @@ func TestEveryDetectableConfigPathIsWatched(t *testing.T) {
 				t.Errorf("detect knows %s's config path %s, but it isn't in configTierPaths/dataTierPaths", svc.Name, cfg)
 			}
 		}
+	}
+}
+
+// TestServiceForPathOnlyReturnsUnitsThatExist covers the reason
+// serviceForPath checks disk at all: restore stops a unit before writing,
+// so naming one that isn't installed turns a restore into a failure
+// instead of a plain file write.
+func TestServiceForPathOnlyReturnsUnitsThatExist(t *testing.T) {
+	dir := t.TempDir()
+	oldDirs := systemdUnitSearchDirs
+	systemdUnitSearchDirs = []string{dir}
+	defer func() { systemdUnitSearchDirs = oldDirs }()
+
+	if _, ok := serviceForPath("/etc/nginx/nginx.conf"); ok {
+		t.Error("expected no unit when nothing is installed on this box")
+	}
+	if _, ok := serviceForPath("/etc/passwd"); ok {
+		t.Error("expected no unit for a path with no service at all")
+	}
+
+	// Only the RHEL-family name for this config file is installed here.
+	if err := os.WriteFile(filepath.Join(dir, "chronyd.service"), []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unit, ok := serviceForPath("/etc/chrony/chrony.conf")
+	if !ok || unit != "chronyd" {
+		t.Errorf("expected the installed candidate (chronyd), got %q ok=%v", unit, ok)
+	}
+
+	// With both present, the first candidate wins, so the distro's own
+	// primary name is preferred over the alias.
+	if err := os.WriteFile(filepath.Join(dir, "chrony.service"), []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unit, _ = serviceForPath("/etc/chrony/chrony.conf")
+	if unit != "chrony" {
+		t.Errorf("expected the first installed candidate, got %q", unit)
 	}
 }
 
