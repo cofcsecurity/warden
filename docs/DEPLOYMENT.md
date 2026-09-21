@@ -245,18 +245,31 @@ Once the access-layer verification prompt near the end passes, `install.sh` dele
 
 ## 6.5. Harden, then arm
 
-The box comes up **disarmed**: `watch` runs on schedule and flags sensitive drift, but won't auto-revert anything yet. That's the window for the team's actual hardening work — get a shell (`ssh <opmenu-user>@<box> "shell <code>"` over opmenu, TOTP required) and:
+Two orders work, and **arm behaves the same in both** — it lists every watched path that changed since the last baseline and makes you acknowledge that list before enforcing it:
+
+| Order | What it buys | What to watch for |
+| --- | --- | --- |
+| **Harden → install → arm** | Shortest unprotected window: the install-time snapshot is already of a hardened box, so there's less time in which an edit nobody reviews can land. | You harden without `detect`/`scan` output to aim with, so run both right after installing and *before* arming — `detect` to confirm the paths you hardened are actually watched, `scan` to bootstrap its baselines. `arm`'s review should then list nothing, which is the confirmation that nothing moved between install and arm. |
+| **Install → harden → arm** | `detect` tells you what to cover before you start, `scan` gives you a baseline, and `watch` flags sensitive drift (without reverting) while you work. This is the flow the steps below walk through. | The hardening window is unprotected, so someone else's edit lands in the same diff yours does. That's exactly what `arm`'s review is for — read it. |
+
+A note on the first row's "should list nothing": if you hardened *after* installing and `arm` still reports no changes, that's a finding, not an all-clear — it means what you edited isn't in a watched path. `arm` says so itself rather than leaving you to notice.
+
+The box comes up **disarmed** either way: `watch` runs on schedule and flags sensitive drift, but won't auto-revert anything yet. That's the window for the team's actual hardening work — get a shell (`ssh <opmenu-user>@<box> "shell <code>"` over opmenu, TOTP required) and:
 
 1. Run `warden detect` to see what's actually running on this box and which of its config files aren't yet in `configTierPaths` — add the ones that matter for this competition's scoring to `cmd/warden/config.go` and rebuild/redeploy if anything's missing (steps 3–5 again for just this box).
 2. Run `warden scan` once too — it bootstraps its own baseline (SUID binaries, cron, `authorized_keys`, accounts, listening ports, packages) the same way the first `warden snapshot` does, so it needs to see this box's *already-hardened* state at least once before arming, same reasoning as step 3 below.
 3. Do the actual hardening: lock down `sshd_config`, tighten service configs, rotate anything default, whatever this box needs.
-4. Once that's done: `warden arm`. This snapshots the box's current (hardened) state and turns on auto-restore — from here on, drift in a watched file gets reverted, not just flagged.
+4. Once that's done: `warden arm`. It first lists every watched path that changed since the last baseline — normally your own hardening — then snapshots the current state and turns on auto-restore. From here on, drift in a watched file gets reverted, not just flagged.
+
+   **Read that list before confirming it.** Everything between installing and arming happened on a box with auto-restore off, so anything else that was changed in that window is in the diff too, and arming blesses all of it — a backdoored `sshd_config` included. Confirm-first paths (accounts, sudo, SSH, PAM, firewall rules) are listed first, because those are the ones an attacker touches. Anything you didn't do, fix before arming.
+
+   Over `opmenu`'s `shell` there's no terminal to prompt at, so `arm` refuses and tells you to re-run as `arm --yes` once you've read the list. The list is printed either way — `--yes` skips the question, not the review, and both are recorded in `audit.log`.
 
 **Nothing arms the box for you.** `install.sh` finishes with the box monitored but not defended, and prints this same checklist as commands to run — deliberately, since arming an un-hardened box locks in exactly the state you were about to fix. `warden status` (locally, or over `opmenu`) is the quickest confirmation of which side of that line a box is currently on.
 
 Once more than one box is up, `warden fleet` on any of them shows that box plus every peer replicating to it — armed state, manifest generation, and how long since each one last reported. A box that has gone dark can't report that itself, so what you're looking for there is a heartbeat that's *overdue*; `sentinel-check` raises the same thing as an alert without anyone watching for it.
 
-Don't skip straight to step 4 before steps 1–3: arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done. If a specific hardening edit needs to land on a `ConfirmFirst` path (which is never auto-reverted anyway, armed or not) without perpetually flagging, `warden accept <path> <totp-code>` marks just that one file's current state as known-good.
+Don't skip straight to step 4 before steps 1–3 (unless you hardened before installing — see the table above): arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done. If a specific hardening edit needs to land on a `ConfirmFirst` path (which is never auto-reverted anyway, armed or not) without perpetually flagging, `warden accept <path> <totp-code>` marks just that one file's current state as known-good.
 
 If this build has `AUTOBAN_ENABLED` and/or `AUTOLOCK_ENABLED` set, open a second SSH session now (`ssh <opmenu-user>@<box> "shell <code>"`) and leave `warden alerts` running in it — see `docs/DESIGN.md`'s "Active Response" and "Anomaly Detection and Account Lockout" sections.
 

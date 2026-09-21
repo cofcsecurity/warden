@@ -125,11 +125,35 @@ MySQL/MariaDB    configured, not running
 Gates `watch`'s auto-restore. A box comes up **disarmed** right after `install.sh` — `watch` still runs on schedule and still flags `ConfirmFirst` drift, but a `SafeAutoRestore` path that changed is reported as suppressed rather than overwritten. That's deliberate: the team is usually still hardening the box (locking down `sshd_config`, `nginx.conf`, etc.) in this window, and armed auto-restore would just revert that hardening back to the pre-install state every few minutes.
 
 ```
-warden arm      # snapshot the current (hardened) state, then turn auto-restore on
-warden disarm   # turn auto-restore back off, e.g. ahead of a planned maintenance window
+warden arm        # review what changed, snapshot the current state, turn auto-restore on
+warden arm --yes  # same, without being prompted (the review is still printed and logged)
+warden disarm     # turn auto-restore back off, e.g. ahead of a planned maintenance window
 ```
 
 `arm` takes a fresh config-tier snapshot immediately before flipping the switch, so whatever's on disk at that moment — not a stale pre-hardening snapshot — becomes the enforced baseline. Both log to `audit.log`; `status` (below) reports the current armed state.
+
+**Before it snapshots anything, `arm` lists every watched path that changed since the last baseline** and asks you to confirm:
+
+```
+==> 3 watched path(s) changed since the baseline taken 47m0s ago (generation 1):
+
+  modified  confirm-first /etc/ssh/sshd_config
+  modified  auto-restore  /etc/nginx/nginx.conf
+  added     auto-restore  /etc/redis/redis.conf
+
+    Arming makes all of the above the enforced known-good state.
+    1 of them is a confirm-first path — accounts, sudo, SSH, PAM, firewall
+    rules. Those are what an attacker changes. Check each one was your team.
+    Anything here you didn't do, fix it first — arming would bless it.
+
+    Arm with these 3 change(s) as the new known-good state? [y/N]
+```
+
+Everything between installing and arming happens with auto-restore off, so that diff is the team's own hardening *and* anything else that landed in the same window. Arming blesses all of it. Confirm-first paths sort first because those are the ones worth reading carefully.
+
+Over `opmenu`'s `shell` there's no terminal to answer the prompt, so `arm` refuses and tells you to re-run with `--yes` once you've read the list — `--yes` skips the question, not the review, and the full list goes to `audit.log` as an `arm`/`pre-arm-review` entry either way.
+
+Both orders of work are supported and `arm` behaves identically in each. If the box was hardened **before** Warden was installed, the review normally lists nothing, which confirms nothing moved between install and arm. If it was hardened **after** and the review still lists nothing, that's a coverage gap rather than an all-clear — what you edited isn't in a watched path — and `arm` says exactly that instead of leaving you to spot it.
 
 ### `warden uninstall <code> [--force] [--yes]`
 

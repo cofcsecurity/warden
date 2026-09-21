@@ -77,12 +77,31 @@ reverted and leaves it alone. Once your team is done hardening, run:
 warden arm
 ```
 
-This takes one more snapshot of exactly what's on disk right now — locking
-in your hardened state as the new "known good" — and turns auto-restore on.
-From that point forward, watch behaves the way "What Warden actually does"
-above describes. If you need to do more maintenance later (patching a
-service, say) without watch fighting you, `warden disarm` turns auto-restore
-back off first; run `arm` again when you're done.
+Before it does anything, `arm` shows you every watched file that has
+changed since Warden was installed, and asks you to confirm. Usually that
+list is just your own hardening. But that whole window ran with
+auto-restore off, so if anyone *else* changed one of those files in the
+meantime, their change is in the same list — and arming would make it part
+of the "known good" state Warden then defends. The sensitive files
+(accounts, sudo, SSH, the login system, firewall rules) are listed first,
+because those are the ones worth reading carefully. Anything on that list
+you didn't do, fix it before arming.
+
+Once you confirm, it takes one more snapshot of exactly what's on disk —
+locking your hardened state in as the new "known good" — and turns
+auto-restore on. From that point forward, watch behaves the way "What
+Warden actually does" above describes. If you need to do more maintenance
+later (patching a service, say) without watch fighting you, `warden disarm`
+turns auto-restore back off first; run `arm` again when you're done — and
+it'll show you what changed during the maintenance window too.
+
+Some teams prefer to harden a box *before* installing Warden at all, which
+is fine and slightly safer: there's less unprotected time. Then the list at
+arming should be empty, which is its own confirmation that nothing moved in
+between. The one case worth knowing: if you hardened *after* installing and
+the list is still empty, something's wrong — it means the files you changed
+aren't ones Warden is watching. It tells you so rather than letting you
+assume all is well.
 
 Detecting *what* to watch and harden in the first place is its own step —
 run `warden detect` for two things at once: a plain list of every file
