@@ -30,7 +30,7 @@ func reactToGuardedChange(p paths, change manifest.Change, log *audit.Logger, no
 		eventTime = change.New.MTime
 	}
 
-	suspect, account, evidence := attributeChange(eventTime, now)
+	suspect, account, evidence, candidates := attributeChange(eventTime, now)
 
 	fields := map[string]any{
 		"path":     change.Path,
@@ -40,6 +40,17 @@ func reactToGuardedChange(p paths, change manifest.Change, log *audit.Logger, no
 	if suspect != "" {
 		fields["suspect_ip"] = suspect
 		fields["account"] = account
+	}
+	// When attribution was ambiguous, the candidate IPs go in as a
+	// structured field rather than only inside the prose evidence
+	// string. Opening a second throwaway root session from anywhere is
+	// all it takes to push a change into this branch and suppress the
+	// automatic ban (deliberately — see attributeChange), so the least
+	// this can do is hand an operator the exact shortlist to act on:
+	// `warden alerts` prints them, and `warden ban <ip>` takes it from
+	// there.
+	if suspect == "" && len(candidates) > 1 {
+		fields["candidate_ips"] = candidates
 	}
 
 	autobanned := false
@@ -61,20 +72,29 @@ func reactToGuardedChange(p paths, change manifest.Change, log *audit.Logger, no
 
 // attributeChange returns the single non-team root IP that had a session
 // open at eventTime, if exactly one exists, along with the account name
-// on record for it and a short human-readable note on how confident that
-// is. It returns suspect="" whenever the evidence doesn't clearly point at
-// one outside party — including "no auth log," "no session found," "the
-// only session was the team's own," and "more than one candidate IP" —
-// since a ban needs to be confident, not just plausible.
-func attributeChange(eventTime, now time.Time) (suspect, account, evidence string) {
+// on record for it, a short human-readable note on how confident that is,
+// and every non-team candidate IP it considered. It returns suspect=""
+// whenever the evidence doesn't clearly point at one outside party —
+// including "no auth log," "no session found," "the only session was the
+// team's own," and "more than one candidate IP" — since a ban needs to be
+// confident, not just plausible.
+//
+// The last of those is cheap for an attacker to force on purpose: a
+// second root session open from anywhere else at the moment they touch a
+// guarded file is enough to make this return no suspect. That's still the
+// right call for an *automatic* ban (the alternative is banning an IP
+// that might be the scoring engine's), but it's exactly why candidates
+// comes back too — the flag, the log entry, and the shortlist all still
+// happen, so a human loses nothing but the automation.
+func attributeChange(eventTime, now time.Time) (suspect, account, evidence string, candidates []string) {
 	logPath, ok := findAuthLog()
 	if !ok {
-		return "", "", "no auth log found on this box (checked " + fmt.Sprint(authLogPaths) + ")"
+		return "", "", "no auth log found on this box (checked " + fmt.Sprint(authLogPaths) + ")", nil
 	}
 
 	sessions, err := attribution.SessionsFromAuthLog(logPath, now)
 	if err != nil {
-		return "", "", "could not read auth log: " + err.Error()
+		return "", "", "could not read auth log: " + err.Error(), nil
 	}
 
 	// Only root sessions matter here: the team's own forced-command entry
@@ -92,25 +112,25 @@ func attributeChange(eventTime, now time.Time) (suspect, account, evidence strin
 		}
 	}
 
-	candidates := attribution.Overlapping(rootSessions, eventTime)
+	open := attribution.Overlapping(rootSessions, eventTime)
 
 	var foreign []string
-	for _, ip := range candidates {
+	for _, ip := range open {
 		if !ipMatchesTeam(ip) {
 			foreign = append(foreign, ip)
 		}
 	}
 
 	switch {
-	case len(candidates) == 0:
-		return "", "", "no root SSH session was open when this changed (console access, or the log doesn't cover it)"
+	case len(open) == 0:
+		return "", "", "no root SSH session was open when this changed (console access, or the log doesn't cover it)", nil
 	case len(foreign) == 0:
-		return "", "", fmt.Sprintf("only the team's own IP (%s) had a session open at the time", buildTeamFromIP)
+		return "", "", fmt.Sprintf("only the team's own IP (%s) had a session open at the time", buildTeamFromIP), nil
 	case len(foreign) > 1:
-		return "", "", fmt.Sprintf("more than one non-team IP had a session open (%v) — too ambiguous to single one out", foreign)
+		return "", "", fmt.Sprintf("more than one non-team IP had a session open (%v) — too ambiguous to single one out automatically; ban whichever is yours to ban with 'warden ban <ip>'", foreign), foreign
 	default:
 		ip := foreign[0]
-		return ip, attribution.UserFor(rootSessions, ip, eventTime), "exactly one non-team root session was open at the time"
+		return ip, attribution.UserFor(rootSessions, ip, eventTime), "exactly one non-team root session was open at the time", foreign
 	}
 }
 

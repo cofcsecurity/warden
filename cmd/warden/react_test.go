@@ -66,7 +66,7 @@ func TestAttributeChangeNoAuthLogMeansNoSuspect(t *testing.T) {
 	authLogPaths = []string{"/nonexistent/auth.log"}
 	defer func() { authLogPaths = origPaths }()
 
-	suspect, _, evidence := attributeChange(time.Now(), time.Now())
+	suspect, _, evidence, _ := attributeChange(time.Now(), time.Now())
 	if suspect != "" {
 		t.Fatalf("expected no suspect with no auth log, got %q", suspect)
 	}
@@ -84,7 +84,7 @@ func TestAttributeChangeSkipsTheTeamsOwnSession(t *testing.T) {
 	now := time.Date(2026, time.September, 20, 15, 0, 0, 0, time.UTC)
 	eventTime := time.Date(2026, time.September, 20, 14, 40, 0, 0, time.UTC)
 
-	suspect, _, evidence := attributeChange(eventTime, now)
+	suspect, _, evidence, _ := attributeChange(eventTime, now)
 	if suspect != "" {
 		t.Fatalf("expected no ban target when only the team's own IP had a session, got %q (%s)", suspect, evidence)
 	}
@@ -99,7 +99,7 @@ func TestAttributeChangeFindsAForeignRootSession(t *testing.T) {
 	now := time.Date(2026, time.September, 20, 15, 0, 0, 0, time.UTC)
 	eventTime := time.Date(2026, time.September, 20, 14, 40, 0, 0, time.UTC)
 
-	suspect, account, evidence := attributeChange(eventTime, now)
+	suspect, account, evidence, _ := attributeChange(eventTime, now)
 	if suspect != "198.51.100.6" {
 		t.Fatalf("expected the foreign IP to be identified as the suspect, got %q (%s)", suspect, evidence)
 	}
@@ -121,7 +121,7 @@ func TestAttributeChangeIgnoresNonRootSessions(t *testing.T) {
 	now := time.Date(2026, time.September, 20, 15, 0, 0, 0, time.UTC)
 	eventTime := time.Date(2026, time.September, 20, 14, 40, 0, 0, time.UTC)
 
-	suspect, _, evidence := attributeChange(eventTime, now)
+	suspect, _, evidence, _ := attributeChange(eventTime, now)
 	if suspect != "" {
 		t.Fatalf("expected a non-root session to never be a ban suspect, got %q (%s)", suspect, evidence)
 	}
@@ -137,7 +137,7 @@ func TestAttributeChangeAmbiguousWithMultipleForeignSessions(t *testing.T) {
 	now := time.Date(2026, time.September, 20, 15, 0, 0, 0, time.UTC)
 	eventTime := time.Date(2026, time.September, 20, 14, 40, 0, 0, time.UTC)
 
-	suspect, _, evidence := attributeChange(eventTime, now)
+	suspect, _, evidence, _ := attributeChange(eventTime, now)
 	if suspect != "" {
 		t.Fatalf("expected no single suspect when more than one foreign IP overlaps, got %q (%s)", suspect, evidence)
 	}

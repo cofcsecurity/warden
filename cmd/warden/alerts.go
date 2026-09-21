@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -95,6 +96,7 @@ func printAlert(e audit.Entry) {
 		} else {
 			evidence, _ := e.Fields["evidence"].(string)
 			fmt.Printf("[%s] ⚠ %s changed, but couldn't attribute it to a specific outside IP (%s) — might want to check that\n", ts, path, evidence)
+			printCandidateIPs(e)
 		}
 	case "manual-ban":
 		ip, _ := e.Fields["ip"].(string)
@@ -140,5 +142,30 @@ func printAnomalyAlert(ts string, e audit.Entry) {
 			bannedNote = "BANNED"
 		}
 		fmt.Printf("           source IP: %s (%s)\n", suspectIP, bannedNote)
+	} else {
+		printCandidateIPs(e)
 	}
+}
+
+// printCandidateIPs renders the shortlist behind an "ambiguous, not
+// banned" alert (see react.go's attributeChange). Nothing was banned
+// automatically, so the whole value of the alert is handing an operator
+// the addresses to look at — and a second decoy session is all it takes
+// for an attacker to land in this branch on purpose.
+func printCandidateIPs(e audit.Entry) {
+	raw, ok := e.Fields["candidate_ips"].([]any)
+	if !ok || len(raw) == 0 {
+		return
+	}
+	ips := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if ip, ok := v.(string); ok {
+			ips = append(ips, ip)
+		}
+	}
+	if len(ips) == 0 {
+		return
+	}
+	fmt.Printf("           candidate IPs (none banned automatically): %s\n", strings.Join(ips, ", "))
+	fmt.Printf("           → 'warden ban <ip>' if you can tell which of these is red team\n")
 }
