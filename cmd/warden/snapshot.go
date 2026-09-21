@@ -93,6 +93,7 @@ func runSnapshot(tier snapshotTier) error {
 		}
 	}
 
+	newObjects := 0
 	for _, r := range next.Records {
 		// Skip anything already stored. While armed that's every record
 		// (the baseline's content was stored when it was taken), which
@@ -113,6 +114,7 @@ func runSnapshot(tier snapshotTier) error {
 		if _, err := st.Put(content); err != nil {
 			return fmt.Errorf("snapshot: store %s: %w", r.Path, err)
 		}
+		newObjects++
 	}
 
 	// Nothing moved, so there's nothing to record: a new generation per
@@ -123,6 +125,7 @@ func runSnapshot(tier snapshotTier) error {
 		if err := pruneOldObjects(p, st); err != nil {
 			return fmt.Errorf("snapshot: prune: %w", err)
 		}
+		fmt.Printf("snapshot: %s tier unchanged at generation %d (%d path(s)).\n", tier, last.Generation, len(next.Records))
 		return log.Log("snapshot", "unchanged", map[string]any{
 			"tier":       string(tier),
 			"generation": last.Generation,
@@ -140,10 +143,12 @@ func runSnapshot(tier snapshotTier) error {
 		return fmt.Errorf("snapshot: prune: %w", err)
 	}
 
+	fmt.Printf("snapshot: %s tier generation %d, %d path(s), %d new object(s).\n", tier, next.Generation, len(next.Records), newObjects)
 	return log.Log("snapshot", "taken", map[string]any{
-		"tier":       string(tier),
-		"generation": next.Generation,
-		"records":    len(next.Records),
+		"tier":        string(tier),
+		"generation":  next.Generation,
+		"records":     len(next.Records),
+		"new_objects": newObjects,
 	})
 }
 

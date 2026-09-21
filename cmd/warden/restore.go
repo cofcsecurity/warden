@@ -13,7 +13,7 @@ import (
 )
 
 func restoreCmd() *cobra.Command {
-	var snapshotID string
+	var snapshotID, tier string
 	var apply bool
 
 	cmd := &cobra.Command{
@@ -21,21 +21,30 @@ func restoreCmd() *cobra.Command {
 		Short: "Restore a watched path from a snapshot",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRestore(args[0], snapshotID, apply)
+			t, err := parseTier(tier)
+			if err != nil {
+				return err
+			}
+			return runRestoreTier(args[0], snapshotID, apply, t)
 		},
 	}
+	cmd.Flags().StringVar(&tier, "tier", "config", "snapshot tier: config or data")
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "snapshot generation to restore from (default: latest)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "apply the restore instead of only showing what would change")
 	return cmd
 }
 
 func runRestore(target, snapshotID string, apply bool) error {
+	return runRestoreTier(target, snapshotID, apply, tierConfig)
+}
+
+func runRestoreTier(target, snapshotID string, apply bool, tier snapshotTier) error {
 	p, err := loadPaths()
 	if err != nil {
 		return err
 	}
 
-	m, err := loadSnapshot(p, snapshotID)
+	m, err := loadSnapshotTier(p, snapshotID, tier)
 	if err != nil {
 		return err
 	}
@@ -70,14 +79,18 @@ func runRestore(target, snapshotID string, apply bool) error {
 // loadSnapshot loads the requested generation, or the latest live manifest
 // when snapshotID is empty.
 func loadSnapshot(p paths, snapshotID string) (*manifest.Manifest, error) {
+	return loadSnapshotTier(p, snapshotID, tierConfig)
+}
+
+func loadSnapshotTier(p paths, snapshotID string, tier snapshotTier) (*manifest.Manifest, error) {
 	if snapshotID == "" {
-		return manifest.New(p.configManifestPath)
+		return manifest.New(p.manifestPathForTier(tier))
 	}
 	gen, err := strconv.Atoi(snapshotID)
 	if err != nil {
 		return nil, fmt.Errorf("restore: --snapshot must be a generation number: %w", err)
 	}
-	return manifest.LoadGeneration(p.configManifestsDir, gen)
+	return manifest.LoadGeneration(p.manifestsDirForTier(tier), gen)
 }
 
 // planLines renders a restore plan the same way for both `warden restore`

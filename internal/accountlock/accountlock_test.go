@@ -238,3 +238,28 @@ func TestReconcileKeepsGoingPastAFailedUnlock(t *testing.T) {
 		t.Errorf("expected only the failed unlock kept, got %+v", locks)
 	}
 }
+
+func TestIndefiniteLockPersistsUntilRemoved(t *testing.T) {
+	st, sys := newTestStore(t), newFakeSystem()
+	now := time.Now()
+	if err := Add(st, sys, "example", "test", 0, now); err != nil {
+		t.Fatal(err)
+	}
+	locks, err := st.Load()
+	if err != nil || len(locks) != 1 || !locks[0].ExpiresAt.IsZero() {
+		t.Fatalf("locks=%v err=%v", locks, err)
+	}
+	active, expired, err := Reconcile(st, sys, now.AddDate(10, 0, 0))
+	if err != nil || len(active) != 1 || len(expired) != 0 || !sys.locked["example"] {
+		t.Fatalf("active=%v expired=%v err=%v", active, expired, err)
+	}
+	if err := Remove(st, sys, "example"); err != nil {
+		t.Fatal(err)
+	}
+	if sys.locked["example"] {
+		t.Fatal("explicit unlock failed")
+	}
+	if err := Add(st, sys, "invalid", "test", -time.Second, now); err == nil || sys.locked["invalid"] {
+		t.Fatal("negative duration accepted")
+	}
+}

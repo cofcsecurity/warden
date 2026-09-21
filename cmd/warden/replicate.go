@@ -101,13 +101,15 @@ func runReplicate() error {
 	beatName := replicate.HeartbeatName(beat.Host, beat.WrittenAt)
 
 	var errs []string
-	auditBytes := 0
+	auditBytes, peersOK := 0, 0
 	for _, t := range targets {
 		pushed, err := pushToTarget(p, st, t, state, beatName, beatData)
 		auditBytes += pushed
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", t.url, err))
+			continue
 		}
+		peersOK++
 	}
 
 	// Saved even when a peer failed: whatever did get pushed is pushed,
@@ -127,6 +129,10 @@ func runReplicate() error {
 	}); logErr != nil {
 		return logErr
 	}
+
+	// Report completed pushes for manual deployment verification.
+	fmt.Printf("replicate: %d of %d peer(s) completed, %d byte(s) of audit log sent.\n",
+		peersOK, len(targets), auditBytes)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("replicate: %d of %d peers failed:\n%s", len(errs), len(targets), strings.Join(errs, "\n"))

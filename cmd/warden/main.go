@@ -71,10 +71,11 @@ func main() {
 	root := &cobra.Command{
 		Use:   "warden",
 		Short: "Warden provides resilient persistence and backup/restore for a defended host",
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if verbose {
 				logLevel.Set(slog.LevelDebug)
 			}
+			return loadHostProfile(hostProfilePath)
 		},
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")

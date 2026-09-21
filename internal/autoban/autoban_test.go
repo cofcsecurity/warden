@@ -195,3 +195,29 @@ func TestReconcileKeepsGoingPastAFailedRule(t *testing.T) {
 		t.Errorf("expected all three bans kept for the next pass, got %d", len(bans))
 	}
 }
+
+func TestIndefiniteBanSurvivesReconcileUntilRemoved(t *testing.T) {
+	st, fw := newTestStore(t), newFakeFirewall()
+	now := time.Now()
+	if err := Add(st, fw, "192.0.2.1", "test", 0, now); err != nil {
+		t.Fatal(err)
+	}
+	bans, err := st.Load()
+	if err != nil || len(bans) != 1 || !bans[0].ExpiresAt.IsZero() {
+		t.Fatalf("bans=%v err=%v", bans, err)
+	}
+	delete(fw.blocked, "192.0.2.1")
+	active, expired, err := Reconcile(st, fw, now.AddDate(10, 0, 0))
+	if err != nil || len(active) != 1 || len(expired) != 0 || !fw.blocked["192.0.2.1"] {
+		t.Fatalf("active=%v expired=%v err=%v", active, expired, err)
+	}
+	if err := Remove(st, fw, "192.0.2.1"); err != nil {
+		t.Fatal(err)
+	}
+	if fw.blocked["192.0.2.1"] {
+		t.Fatal("unban did not remove rule")
+	}
+	if err := Add(st, fw, "192.0.2.2", "invalid", -time.Second, now); err == nil {
+		t.Fatal("negative duration accepted")
+	}
+}

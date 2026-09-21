@@ -1,10 +1,16 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"fmt"
+	"golang.org/x/crypto/ssh"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"warden/internal/attribution"
 )
 
 func writeAuthLog(t *testing.T, lines ...string) string {
@@ -62,6 +68,11 @@ func TestIPMatchesTeamCIDR(t *testing.T) {
 }
 
 func TestAttributeChangeNoAuthLogMeansNoSuspect(t *testing.T) {
+	oldJournal := journalSessions
+	journalSessions = func(time.Time, time.Time) ([]attribution.Session, error) {
+		return nil, fmt.Errorf("journal unavailable")
+	}
+	t.Cleanup(func() { journalSessions = oldJournal })
 	origPaths := authLogPaths
 	authLogPaths = []string{"/nonexistent/auth.log"}
 	defer func() { authLogPaths = origPaths }()
@@ -140,5 +151,43 @@ func TestAttributeChangeAmbiguousWithMultipleForeignSessions(t *testing.T) {
 	suspect, _, evidence, _ := attributeChange(eventTime, now)
 	if suspect != "" {
 		t.Fatalf("expected no single suspect when more than one foreign IP overlaps, got %q (%s)", suspect, evidence)
+	}
+}
+
+func TestJournalFallbackAndTeamKeyExclusion(t *testing.T) {
+	oldJournal, oldKey := journalSessions, buildTeamPubKey
+	t.Cleanup(func() { journalSessions, buildTeamPubKey = oldJournal, oldKey })
+	withAuthLogAndTeamIP(t, "/nonexistent/auth.log", "203.0.113.10")
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildTeamPubKey = string(ssh.MarshalAuthorizedKey(key))
+	now := time.Now()
+	journalSessions = func(event, now time.Time) ([]attribution.Session, error) {
+		return []attribution.Session{
+			{User: "operator", IP: "192.0.2.1", KeyFingerprint: ssh.FingerprintSHA256(key), Start: now.Add(-time.Hour)},
+			{User: "root", IP: "192.0.2.1", Start: now.Add(-time.Minute)},
+		}, nil
+	}
+	suspect, _, _, _ := attributeChange(now, now)
+	if suspect != "" {
+		t.Fatalf("team key's IP targeted: %s", suspect)
+	}
+	journalSessions = func(event, now time.Time) ([]attribution.Session, error) {
+		return []attribution.Session{{User: "root", IP: "192.0.2.2", Start: now.Add(-time.Minute)}}, nil
+	}
+	suspect, _, _, _ = attributeChange(now, now)
+	if suspect != "192.0.2.2" {
+		t.Fatalf("journal session missing: %s", suspect)
+	}
+	journalSessions = func(event, now time.Time) ([]attribution.Session, error) { return nil, fmt.Errorf("unavailable") }
+	suspect, _, evidence, _ := attributeChange(now, now)
+	if suspect != "" || !strings.Contains(evidence, "unavailable") {
+		t.Fatalf("failed journal read: %s %s", suspect, evidence)
 	}
 }

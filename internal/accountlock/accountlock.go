@@ -1,4 +1,4 @@
-// Package accountlock tracks temporary local-account lockouts and keeps
+// Package accountlock tracks local-account lockouts and keeps
 // the box's actual account state in sync with them. Mirrors
 // internal/autoban's shape exactly (Store/Add/Remove/Reconcile), just for
 // a local account instead of a firewalled IP. It never decides *who* to
@@ -28,9 +28,9 @@ type Lock struct {
 	PreviousShell string `json:"previous_shell"`
 }
 
-// Expired reports whether the lock's window has passed as of now.
+// Expired reports whether a timed lock has elapsed. A zero expiry is indefinite.
 func (l Lock) Expired(now time.Time) bool {
-	return now.After(l.ExpiresAt)
+	return !l.ExpiresAt.IsZero() && !now.Before(l.ExpiresAt)
 }
 
 // System is the actual lock/unlock/kill mechanism. An interface so
@@ -183,8 +183,16 @@ func (s *Store) Save(locks []Lock) error {
 // Add records a new lock and applies it immediately. Locking an account
 // that's already locked refreshes its expiry rather than adding a
 // duplicate entry (and keeps the originally recorded PreviousShell, not a
-// second Lock call's now-already-nologin shell).
+// second Lock call's now-already-nologin shell). Zero duration is indefinite;
+// negative durations are invalid.
 func Add(store *Store, sys System, user, reason string, duration time.Duration, now time.Time) error {
+	if duration < 0 {
+		return fmt.Errorf("accountlock: duration must be nonnegative (0 means indefinite)")
+	}
+	var expires time.Time
+	if duration > 0 {
+		expires = now.Add(duration)
+	}
 	locks, err := store.Load()
 	if err != nil {
 		return err
@@ -194,7 +202,7 @@ func Add(store *Store, sys System, user, reason string, duration time.Duration, 
 		if locks[i].User == user {
 			locks[i].Reason = reason
 			locks[i].LockedAt = now
-			locks[i].ExpiresAt = now.Add(duration)
+			locks[i].ExpiresAt = expires
 			return store.Save(locks)
 		}
 	}
@@ -207,7 +215,7 @@ func Add(store *Store, sys System, user, reason string, duration time.Duration, 
 		User:          user,
 		Reason:        reason,
 		LockedAt:      now,
-		ExpiresAt:     now.Add(duration),
+		ExpiresAt:     expires,
 		PreviousShell: previousShell,
 	})
 	return store.Save(locks)

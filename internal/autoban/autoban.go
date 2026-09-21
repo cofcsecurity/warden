@@ -1,4 +1,4 @@
-// Package autoban tracks temporary IP bans and keeps a firewall in sync
+// Package autoban tracks IP bans and keeps a firewall in sync
 // with them. It never decides *who* to ban — that judgment call (checking
 // an IP isn't the team's own, isn't a replication peer, and actually
 // overlapped a guarded file changing) belongs to the caller, in
@@ -23,9 +23,9 @@ type Ban struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// Expired reports whether the ban's window has passed as of now.
+// Expired reports whether a timed ban has elapsed. A zero expiry is indefinite.
 func (b Ban) Expired(now time.Time) bool {
-	return now.After(b.ExpiresAt)
+	return !b.ExpiresAt.IsZero() && !now.Before(b.ExpiresAt)
 }
 
 // Firewall is the actual block/unblock mechanism. An interface so
@@ -110,8 +110,15 @@ func (s *Store) Save(bans []Ban) error {
 
 // Add records a new ban and applies it immediately. Banning an IP that's
 // already banned refreshes its expiry rather than adding a duplicate
-// entry.
+// entry. A zero duration is indefinite; negative durations are invalid.
 func Add(store *Store, fw Firewall, ip, reason string, duration time.Duration, now time.Time) error {
+	if duration < 0 {
+		return fmt.Errorf("autoban: duration must be nonnegative (0 means indefinite)")
+	}
+	var expires time.Time
+	if duration > 0 {
+		expires = now.Add(duration)
+	}
 	bans, err := store.Load()
 	if err != nil {
 		return err
@@ -122,13 +129,13 @@ func Add(store *Store, fw Firewall, ip, reason string, duration time.Duration, n
 		if bans[i].IP == ip {
 			bans[i].Reason = reason
 			bans[i].BannedAt = now
-			bans[i].ExpiresAt = now.Add(duration)
+			bans[i].ExpiresAt = expires
 			found = true
 			break
 		}
 	}
 	if !found {
-		bans = append(bans, Ban{IP: ip, Reason: reason, BannedAt: now, ExpiresAt: now.Add(duration)})
+		bans = append(bans, Ban{IP: ip, Reason: reason, BannedAt: now, ExpiresAt: expires})
 	}
 
 	if err := fw.Block(ip); err != nil {

@@ -28,10 +28,10 @@ func detectCmd() *cobra.Command {
 2. A scan of running processes and known config paths against services
    common on CCDC-style images (web, database, mail, DNS, file
    transfer, DHCP, SSH), reporting anything found that isn't in part 1
-   yet.
+   yet. Unknown running process names are also listed for review.
 
 This never changes anything — it's meant to answer "what should
-cmd/warden/config.go's watch list actually cover" before a competition,
+the host profile actually cover" before a competition,
 and to give anyone checking in on the box a plain answer to "what is
 Warden actually protecting right now." See docs/PLAN.md Phase 1.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -103,13 +103,17 @@ func runDetect() error {
 	detectedCount := 0
 	unwatchedCount := 0
 
-	fmt.Println("\n==> Scan: services found on this box vs. what's watched")
+	fmt.Println("\n==> Scan: services and unknown processes vs. what's watched")
 	for _, f := range findings {
 		if !f.Detected() {
 			continue
 		}
 		detectedCount++
 
+		if f.Unknown {
+			fmt.Printf("%s  unknown process (PIDs %v); inspect its config and add scored files to /etc/warden/profile.json\n", f.Service.Name, f.PIDs)
+			continue
+		}
 		status := "running"
 		if len(f.PIDs) == 0 {
 			status = "configured, not running"
@@ -135,7 +139,7 @@ func runDetect() error {
 	}
 
 	if unwatchedCount > 0 {
-		fmt.Printf("\n%d config path(s) above aren't in cmd/warden/config.go's configTierPaths yet — add the ones that matter for this competition's scoring before relying on watch/snapshot to cover them.\n", unwatchedCount)
+		fmt.Printf("\n%d config path(s) above aren't in the config tier yet — add to /etc/warden/profile.json the ones that matter for this competition's scoring before relying on watch/snapshot to cover them.\n", unwatchedCount)
 	}
 
 	return nil

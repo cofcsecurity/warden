@@ -2,9 +2,9 @@
 
 Persistence and backup/restore for a host under active attack, built for the CofC Cybersecurity Club's SECCDC/PCDC defense team.
 
-New here? Start with [docs/EXPLAINER.md](docs/EXPLAINER.md) for what Warden does and why, in plain language.
+[EXPLAINER.md](docs/EXPLAINER.md) covers the main features.
 
-Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, [docs/USAGE.md](docs/USAGE.md) for every command and what it does, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the step-by-step checklist to stand this up ahead of a competition, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for diagrams of how the pieces connect, and [docs/PLAN.md](docs/PLAN.md) for what's built versus what's left, phased.
+Documentation: [design](docs/DESIGN.md), [commands](docs/USAGE.md), [deployment](docs/DEPLOYMENT.md), [architecture](docs/ARCHITECTURE.md), and [implementation history](docs/PLAN.md).
 
 ## Layout
 
@@ -12,7 +12,7 @@ Read [docs/DESIGN.md](docs/DESIGN.md) for the full design and rationale, [docs/U
 cmd/warden/    Cobra CLI: snapshot, replicate, watch, restore, sentinel-check, opmenu
 internal/      manifest, store, replicate, watch, restore, audit, opmenu, sentinel, totp
 deploy/        systemd unit/timer templates, install.sh
-scripts/       generate-keys.sh — one-time per-competition secret generation
+scripts/       generate-keys.sh, one-time per-competition secret generation
 docs/          design notes, usage reference, deployment checklist, implementation plan
 ```
 
@@ -29,7 +29,7 @@ make build TEAM_PUBKEY="ssh-ed25519 AAAA... team@ccdc" TEAM_FROM_IP=203.0.113.10
 
 `REPLICATE_URL` can be `file:///path` instead (removable media) if there's no second team-controlled box; in that case `REPLICATE_KEY`/`REPLICATE_HOST_KEY` aren't needed.
 
-Produces a stripped, static `bin/warden` for `linux/amd64` with no build-time config file — see DESIGN.md's "Configuration" section for why.
+Produces a stripped, static `bin/warden` for `linux/amd64` with no build-time config file, see DESIGN.md's "Configuration" section for why.
 
 ## Testing
 

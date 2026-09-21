@@ -14,6 +14,7 @@ package attribution
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"time"
@@ -24,11 +25,12 @@ import (
 // this session closing (still open, or the log rotated out from under it)
 // — Overlapping treats that as "open through now."
 type Session struct {
-	User  string
-	IP    string
-	PID   string
-	Start time.Time
-	End   time.Time
+	KeyFingerprint string
+	User           string
+	IP             string
+	PID            string
+	Start          time.Time
+	End            time.Time
 }
 
 // open reports whether the session was live at t.
@@ -43,10 +45,12 @@ func (s Session) open(t time.Time) bool {
 }
 
 var (
-	timestampRe    = regexp.MustCompile(`^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+\S+\s+sshd\[(\d+)\]:\s*(.*)$`)
-	acceptedRe     = regexp.MustCompile(`^Accepted \S+ for (\S+) from ([0-9a-fA-F.:]+) port \d+`)
-	disconnectRe   = regexp.MustCompile(`^Disconnected from(?: user \S+)? ([0-9a-fA-F.:]+) port \d+`)
-	receivedDiscRe = regexp.MustCompile(`^Received disconnect from ([0-9a-fA-F.:]+) port \d+`)
+	timestampRe      = regexp.MustCompile(`^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+\S+\s+sshd(?:-session)?\[(\d+)\]:\s*(.*)$`)
+	keyFingerprintRe = regexp.MustCompile(`\b(SHA256:[A-Za-z0-9+/]+={0,2})\s*$`)
+	isoTimestampRe   = regexp.MustCompile(`^(\S+)\s+\S+\s+sshd(?:-session)?\[(\d+)\]:\s*(.*)$`)
+	acceptedRe       = regexp.MustCompile(`^Accepted \S+ for (\S+) from ([0-9a-fA-F.:]+) port \d+`)
+	disconnectRe     = regexp.MustCompile(`^Disconnected from(?: user \S+)? ([0-9a-fA-F.:]+) port \d+`)
+	receivedDiscRe   = regexp.MustCompile(`^Received disconnect from ([0-9a-fA-F.:]+) port \d+`)
 )
 
 // SessionsFromAuthLog reads every accepted-login/disconnect pair it can
@@ -60,29 +64,52 @@ func SessionsFromAuthLog(path string, now time.Time) ([]Session, error) {
 	}
 	defer f.Close()
 
+	return SessionsFromReader(f, now)
+}
+
+// SessionsFromReader parses classic syslog or journalctl short-iso output.
+func SessionsFromReader(r io.Reader, now time.Time) ([]Session, error) {
 	open := map[string]*Session{} // pid -> session, until closed
 	var sessions []Session
 
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(r)
 	// Auth logs can have long lines (rare, but don't let one truncate the
 	// scan); 1MB is generous for a single syslog line.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
 		m := timestampRe.FindStringSubmatch(scanner.Text())
-		if m == nil {
-			continue
+		var ts time.Time
+		if m != nil {
+			var ok bool
+			ts, ok = parseSyslogTime(m[1], now)
+			if !ok {
+				continue
+			}
+		} else {
+			m = isoTimestampRe.FindStringSubmatch(scanner.Text())
+			if m == nil {
+				continue
+			}
+			var err error
+			ts, err = time.Parse(time.RFC3339Nano, m[1])
+			if err != nil {
+				ts, err = time.Parse("2006-01-02T15:04:05-0700", m[1])
+			}
+			if err != nil {
+				continue
+			}
 		}
-		ts, ok := parseSyslogTime(m[1], now)
-		if !ok {
-			continue
-		}
+
 		pid, rest := m[2], m[3]
 
 		switch {
 		case acceptedRe.MatchString(rest):
 			am := acceptedRe.FindStringSubmatch(rest)
 			open[pid] = &Session{User: am[1], IP: am[2], PID: pid, Start: ts}
+			if key := keyFingerprintRe.FindStringSubmatch(rest); key != nil {
+				open[pid].KeyFingerprint = key[1]
+			}
 
 		case disconnectRe.MatchString(rest):
 			dm := disconnectRe.FindStringSubmatch(rest)
@@ -94,7 +121,7 @@ func SessionsFromAuthLog(path string, now time.Time) ([]Session, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("attribution: read %s: %w", path, err)
+		return nil, fmt.Errorf("attribution: read sessions: %w", err)
 	}
 
 	// Anything still open when the log ends is still-open, not missing.
@@ -123,7 +150,7 @@ func closeSession(open map[string]*Session, sessions *[]Session, pid, ip string,
 // a year if that would otherwise land in the future (a log line from just
 // before a new year, read just after it).
 func parseSyslogTime(s string, now time.Time) (time.Time, bool) {
-	t, err := time.Parse("Jan _2 15:04:05 2006", s+" "+fmt.Sprint(now.Year()))
+	t, err := time.ParseInLocation("Jan _2 15:04:05 2006", s+" "+fmt.Sprint(now.Year()), now.Location())
 	if err != nil {
 		return time.Time{}, false
 	}

@@ -46,10 +46,13 @@ func TestScanServicesDetectsRunningProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 2 {
-		t.Fatalf("expected 2 findings, got %d", len(findings))
+	if len(findings) != 3 {
+		t.Fatalf("expected 3 findings, got %d", len(findings))
 	}
 
+	if findings[2].Service.Name != "systemd" || len(findings[2].PIDs) != 1 {
+		t.Fatalf("unknown process missing: %v", findings)
+	}
 	nginx := findings[0]
 	if !nginx.Detected() {
 		t.Fatalf("expected nginx to be detected")
@@ -81,8 +84,8 @@ func TestScanServicesDetectsConfigWithoutProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(findings))
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings, got %d", len(findings))
 	}
 	f := findings[0]
 	if len(f.PIDs) != 0 {

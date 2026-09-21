@@ -67,12 +67,9 @@ const (
 	// push, a reboot, or a brief network blip doesn't cry wolf.
 	heartbeatStaleGrace = 35 * time.Minute
 
-	// autobanDuration is how long an auto-triggered ban (see watch.go's
-	// reactToConfirmFirstChange) lasts before sentinel-check's Reconcile
-	// call lifts it — long enough to matter, short enough that a
-	// mis-attributed ban on a legitimate but unlisted IP self-heals
-	// rather than needing a human to notice and run `warden unban`.
-	autobanDuration = time.Hour
+	// Zero keeps bans and account locks active until explicitly removed.
+	autobanDuration     time.Duration = 0
+	accountLockDuration time.Duration = 0
 )
 
 // inboundHeartbeatGlobs is where *other* boxes' heartbeats land on this
@@ -89,12 +86,7 @@ const (
 // (see cmd/warden/heartbeat.go's checkPeerHeartbeats).
 var inboundHeartbeatGlobs = []string{"/home/*/*/heartbeat/*.json"}
 
-// authLogPaths are checked in order; the first one that exists is used.
-// Debian/Ubuntu ships /var/log/auth.log via rsyslog by default; RHEL-family
-// distros use /var/log/secure for the same sshd log lines. If neither
-// exists (no rsyslog, journald-only), attribution has no evidence to work
-// from and auto-ban simply doesn't fire — see docs/DESIGN.md's note on
-// why a wrong auto-response is worse than none.
+// Prefer a plaintext auth log; fall back to the system journal when absent.
 var authLogPaths = []string{"/var/log/auth.log", "/var/log/secure"}
 
 func findAuthLog() (string, bool) {

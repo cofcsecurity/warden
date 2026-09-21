@@ -22,7 +22,7 @@ func lockAccountCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "lock-account <user>",
-		Short: "Manually lock a local account and kill its sessions for a limited time",
+		Short: "Manually lock a local account and kill its sessions",
 		Long: `Disables password auth and interactive shell access for user, and
 best-effort kills its currently running sessions. Refuses to lock root,
 the opmenu account itself (no override — either would be self-inflicted
@@ -34,7 +34,7 @@ account on the configured SAFE_ACCOUNTS list (override with --force).`,
 			return runLockAccount(args[0], reason, duration, force)
 		},
 	}
-	cmd.Flags().DurationVar(&duration, "duration", autobanDuration, "how long the lock lasts before sentinel-check's Reconcile lifts it")
+	cmd.Flags().DurationVar(&duration, "duration", accountLockDuration, "lock duration (0 means indefinite; positive durations expire)")
 	cmd.Flags().StringVar(&reason, "reason", "manual lock", "short note recorded alongside the lock in audit.log")
 	cmd.Flags().BoolVar(&force, "force", false, "lock even if the account is on the configured SAFE_ACCOUNTS list")
 	return cmd
@@ -80,7 +80,11 @@ func runLockAccount(user, reason string, duration time.Duration, force bool) err
 		return err
 	}
 
-	fmt.Printf("locked %s for %s: %s\n", user, duration, reason)
+	if duration == 0 {
+		fmt.Printf("locked %s indefinitely: %s\n", user, reason)
+	} else {
+		fmt.Printf("locked %s for %s: %s\n", user, duration, reason)
+	}
 	return nil
 }
 

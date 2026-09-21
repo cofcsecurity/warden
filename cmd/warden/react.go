@@ -5,6 +5,8 @@ import (
 	"net"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"warden/internal/attribution"
 	"warden/internal/audit"
 	"warden/internal/autoban"
@@ -87,24 +89,23 @@ func reactToGuardedChange(p paths, change manifest.Change, log *audit.Logger, no
 // comes back too — the flag, the log entry, and the shortlist all still
 // happen, so a human loses nothing but the automation.
 func attributeChange(eventTime, now time.Time) (suspect, account, evidence string, candidates []string) {
-	logPath, ok := findAuthLog()
-	if !ok {
-		return "", "", "no auth log found on this box (checked " + fmt.Sprint(authLogPaths) + ")", nil
-	}
-
-	sessions, err := attribution.SessionsFromAuthLog(logPath, now)
+	sessions, err := authSessions(eventTime, now)
 	if err != nil {
-		return "", "", "could not read auth log: " + err.Error(), nil
+		return "", "", "could not read SSH attribution evidence: " + err.Error(), nil
 	}
 
-	// Only root sessions matter here: the team's own forced-command entry
-	// always logs in as root (see docs/DESIGN.md's opmenu section), and a
-	// replication peer's inbound session authenticates as the
-	// low-privilege warden-backup account, which is command="/usr/bin/false"
-	// restricted and never touches a config-tier path — see
-	// docs/DEPLOYMENT.md's receiving-account setup. Filtering to root
-	// keeps those out of consideration entirely rather than needing to
-	// know every peer's IP here.
+	// Recognize the team's key across all login accounts before limiting
+	// suspects to root sessions. The opmenu account is not root, and its
+	// source IP must still be excluded if another root session shares it.
+	teamIPs := map[string]bool{}
+	if key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(buildTeamPubKey)); err == nil {
+		fingerprint := ssh.FingerprintSHA256(key)
+		for _, s := range sessions {
+			if s.KeyFingerprint == fingerprint {
+				teamIPs[s.IP] = true
+			}
+		}
+	}
 	var rootSessions []attribution.Session
 	for _, s := range sessions {
 		if s.User == "root" {
@@ -116,7 +117,7 @@ func attributeChange(eventTime, now time.Time) (suspect, account, evidence strin
 
 	var foreign []string
 	for _, ip := range open {
-		if !ipMatchesTeam(ip) {
+		if !ipMatchesTeam(ip) && !teamIPs[ip] {
 			foreign = append(foreign, ip)
 		}
 	}
@@ -125,7 +126,7 @@ func attributeChange(eventTime, now time.Time) (suspect, account, evidence strin
 	case len(open) == 0:
 		return "", "", "no root SSH session was open when this changed (console access, or the log doesn't cover it)", nil
 	case len(foreign) == 0:
-		return "", "", fmt.Sprintf("only the team's own IP (%s) had a session open at the time", buildTeamFromIP), nil
+		return "", "", "all overlapping root IPs match the configured team address or a logged team key", nil
 	case len(foreign) > 1:
 		return "", "", fmt.Sprintf("more than one non-team IP had a session open (%v) — too ambiguous to single one out automatically; ban whichever is yours to ban with 'warden ban <ip>'", foreign), foreign
 	default:

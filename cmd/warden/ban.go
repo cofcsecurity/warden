@@ -19,13 +19,13 @@ func banCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "ban <ip>",
-		Short: "Manually block an IP at the firewall for a limited time",
+		Short: "Manually block an IP at the firewall",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runBan(args[0], reason, duration)
 		},
 	}
-	cmd.Flags().DurationVar(&duration, "duration", autobanDuration, "how long the ban lasts before sentinel-check's Reconcile lifts it")
+	cmd.Flags().DurationVar(&duration, "duration", autobanDuration, "ban duration (0 means indefinite; positive durations expire)")
 	cmd.Flags().StringVar(&reason, "reason", "manual ban", "short note recorded alongside the ban in audit.log")
 	return cmd
 }
@@ -60,7 +60,11 @@ func runBan(ip, reason string, duration time.Duration) error {
 		return err
 	}
 
-	fmt.Printf("banned %s for %s: %s\n", ip, duration, reason)
+	if duration == 0 {
+		fmt.Printf("banned %s indefinitely: %s\n", ip, reason)
+	} else {
+		fmt.Printf("banned %s for %s: %s\n", ip, duration, reason)
+	}
 	return nil
 }
 

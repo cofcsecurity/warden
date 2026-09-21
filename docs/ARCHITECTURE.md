@@ -4,7 +4,7 @@ Visual companions to [DESIGN.md](DESIGN.md) (why it's built this way) and [USAGE
 
 ## Component overview
 
-What runs on one box, and how the pieces connect. Nothing here is a long-lived process — every box on the left is a systemd timer or cron entry invoking the binary briefly, then exiting.
+Components on one host. Timers and cron invoke short-lived commands.
 
 ```mermaid
 flowchart TB
@@ -87,7 +87,7 @@ flowchart TB
 
 ## Persistence: how it survives a kill attempt
 
-The actual persistence mechanism isn't a running process — there's nothing to `kill -9`. It's four independent *registrations* (a systemd timer, a cron entry, an `authorized_keys` line, and the sudoers rule that line's forced command depends on) that `sentinel-check` verifies and rebuilds whichever is missing, triggered by either of the first two.
+Persistence uses four registrations: a systemd timer, cron entry, forced-command SSH key, and sudoers rule. The timer and cron entry invoke `sentinel-check`, which verifies and repairs missing registrations.
 
 ```mermaid
 flowchart LR
@@ -121,13 +121,13 @@ flowchart LR
     style R4 fill:#2d3748,color:#fff
 ```
 
-**Why killing one doesn't kill persistence**: `sentinel-check` is triggered by *two* of the four registrations (the timer and the cron entry), so removing either trigger still leaves the other one calling `sentinel-check`, which then notices and rebuilds whatever's missing — including, if it comes to it, the trigger that just fired it. The `authorized_keys` line and the sudoers rule have no trigger of their own; they're purely targets `sentinel-check` verifies and restores. All four would have to be destroyed in the same instant, before the next timer or cron tick, to actually cut off access for good — and even then, the box's watched files are still being auto-reverted by `watch` in the meantime, so red team's edits to *those* don't stick either.
+`sentinel-check` has two independent triggers. Either can restore the other. The SSH key and sudoers rule are checked registrations, not triggers. Removing both triggers stops scheduled repair until one is restored.
 
-**Why this doesn't add new attack surface**: nothing here opens a new listening port. The forced-command entry piggybacks on `sshd`, which is already running (and already the thing red team would need to get past to reach a real shell anyway). `opmenu` never execs a shell itself except after a valid TOTP code, and every other path — `status`, `restore` — stays inside the Go binary.
+The access layer uses the existing SSH service. Only the authenticated shell command starts a shell; status and restore run inside the binary.
 
-**What if the binary file itself is deleted, not just a registration?** All four registrations above are checks/recreates run *by* the binary — none of them help if the binary itself is gone, since nothing is left to run them. A fifth registration, `binary-backup`, keeps a hidden spare copy in sync (`/var/lib/<name>/.spare`), and the cron trigger's command line checks for the binary and restores it from that spare using only `test`/`cp`/`chmod` — never the Go binary — before invoking anything else. This is the one piece of recovery that has to work without the thing it's recovering.
+The `binary-backup` registration maintains `/var/lib/<name>/.spare`. Before invoking Warden, the cron command checks for a missing binary and copies it from the spare using `test`, `cp`, and `chmod`.
 
-**The other timers are registrations too.** The four above are what keeps *sentinel-check itself and the access layer* alive; `sentinel-check` additionally verifies and rebuilds every other timer on the box the same way — `watch`, both snapshot tiers, `scan`, and `replicate` when one is configured (`cmd/warden/registrations.go`'s `timerRegistration`). Each of those carries a whole capability on its own, so a timer nobody watches could be disabled and deleted once and simply never come back: auto-restore, backups, anomaly detection, or off-box evidence would stop for the rest of the competition on a box that still looks armed from every outside signal.
+Sentinel also verifies watch, both snapshot tiers, scan, and configured replication through `timerRegistration` in `cmd/warden/registrations.go`.
 
 ## opmenu: what happens on a forced-command connection
 
@@ -155,7 +155,7 @@ sequenceDiagram
     end
     opmenu->>opmenu: audit.Log(accepted/rejected, source IP, command)
 
-    Note over Op,Bash: "shell <code>" is the one path that<br/>leaves the Go binary — only reached<br/>after the same TOTP check passes
+    Note over Op,Bash: "shell <code>" is the one path that<br/>leaves the Go binary, only reached<br/>after the same TOTP check passes
 ```
 
 ## Watch: detect, classify, act
@@ -163,7 +163,7 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     Start["watch runs\n(systemd timer, every ~5min)"] --> Gen["Generate manifest\nfrom configTierPaths right now"]
-    Gen --> Diff["Diff against last snapshot\n(read-only — watch never writes it)"]
+    Gen --> Diff["Diff against last snapshot\n(read-only, watch never writes it)"]
     Diff --> Changed{{"Any changes?"}}
     Changed -- no --> Exit["exit, log 'pass'"]
     Changed -- yes --> Class{{"Record's Class?"}}
@@ -185,7 +185,7 @@ flowchart LR
         DS["snapshot --tier data\nevery 1 hour"] --> DM["manifest-data.json\n(live pointer)"]
         DM --> DA["manifests-data/\nmanifest-1.json, -2.json, ..."]
     end
-    CS --> OBJ["objects/\n(shared, content-addressed —\ndedup is safe across tiers,\nsince identical content hashes\nidentically either way)"]
+    CS --> OBJ["objects/\n(shared, content-addressed,\ndedup is safe across tiers,\nsince identical content hashes\nidentically either way)"]
     DS --> OBJ
 
     W["watch"] -. "reads only" .-> CM
@@ -196,7 +196,7 @@ flowchart LR
     style DataTier fill:#1a365d,color:#fff
 ```
 
-Keeping these separate is why `install.sh` running `snapshot --tier config` immediately followed by `snapshot --tier data` doesn't erase either tier's baseline — an earlier version of this shared one `manifest.json`, and the second snapshot silently wiped out what the first one had just established (see `docs/PLAN.md` Phase 6).
+Separate manifests prevent a data snapshot from replacing the config baseline. An earlier shared-manifest implementation had this defect; see PLAN.md Phase 6.
 
 ## Mesh replication and recovery (multiple boxes)
 
@@ -219,7 +219,7 @@ flowchart LR
     style B6 fill:#22543d,color:#fff
 ```
 
-Each arrow is additive-only in both directions: `box2` can only ever add files under its own `from-box1` subdirectory (a restricted, non-root receiving account enforces this), never delete or overwrite what's already there — so even a fully compromised `box1` can't destroy the copy of its own data sitting on `box2`.
+Each arrow represents client-side additive writes. The current SSH transport does not restrict a compromised key to these operations. Use separate receiving accounts and independent retention to protect prior backups.
 
 ```mermaid
 sequenceDiagram

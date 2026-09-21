@@ -172,7 +172,7 @@ func reactToAnomalyFinding(p paths, f anomaly.Finding, armed bool, now time.Time
 
 	sys := accountlock.OSAccounts{NologinShell: nologinShellPath()}
 	store := accountlock.NewStore(p.accountLocksPath)
-	if err := accountlock.Add(store, sys, f.Culprit, f.Description, autobanDuration, now); err != nil {
+	if err := accountlock.Add(store, sys, f.Culprit, f.Description, accountLockDuration, now); err != nil {
 		return false, "", err
 	}
 	_ = sys.KillSessions(f.Culprit)

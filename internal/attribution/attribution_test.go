@@ -3,6 +3,7 @@ package attribution
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,5 +137,18 @@ func TestUserForReturnsAttributedUsername(t *testing.T) {
 	}
 	if u := UserFor(sessions, "9.9.9.9", at); u != "" {
 		t.Fatalf("expected no user for an unrelated ip, got %q", u)
+	}
+}
+
+func TestJournalISOAndKeyFingerprint(t *testing.T) {
+	now := time.Date(2026, 9, 21, 18, 0, 0, 0, time.UTC)
+	input := "2026-09-21T12:00:00-0400 box sshd-session[10]: Accepted publickey for root from 192.0.2.1 port 123 ssh2: ED25519 SHA256:abc123\n2026-09-21T12:05:00-0400 box sshd-session[10]: Disconnected from user root 192.0.2.1 port 123\n"
+	sessions, err := SessionsFromReader(strings.NewReader(input), now)
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("sessions=%v err=%v", sessions, err)
+	}
+	s := sessions[0]
+	if s.KeyFingerprint != "SHA256:abc123" || s.Start.Hour() != 12 || s.End.IsZero() || len(Overlapping(sessions, now)) != 0 {
+		t.Fatalf("bad session: %+v", s)
 	}
 }

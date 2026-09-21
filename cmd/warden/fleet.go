@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -35,26 +37,25 @@ receives replication, so anyone who can write in that directory can
 forge one — this is a report for a human, not an input to anything
 automatic.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFleet(fromDir, time.Now())
+			p, err := loadPaths()
+			if err != nil {
+				return err
+			}
+			return runFleet(os.Stdout, p, fromDir, time.Now())
 		},
 	}
 	cmd.Flags().StringVar(&fromDir, "from", "", "directory holding peers' replication roots (default: the replication account's home, auto-detected)")
 	return cmd
 }
 
-func runFleet(fromDir string, now time.Time) error {
-	p, err := loadPaths()
-	if err != nil {
-		return err
-	}
-
+func runFleet(w io.Writer, p paths, fromDir string, now time.Time) error {
 	self, err := collectHeartbeat(p, now)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("==> This box")
-	printBeatLine(self, now, false)
+	fmt.Fprintln(w, "==> This box")
+	printBeatLine(w, self, now, false)
 
 	globs := inboundHeartbeatGlobs
 	if fromDir != "" {
@@ -78,13 +79,13 @@ func runFleet(fromDir string, now time.Time) error {
 		}
 	}
 
-	fmt.Println("\n==> Peers reporting to this box")
+	fmt.Fprintln(w, "\n==> Peers reporting to this box")
 	if len(peers) == 0 {
-		fmt.Println("  none yet.")
-		fmt.Println("  Peers appear here once they replicate TO this box at least once. If that's")
-		fmt.Println("  expected already, check that their REPLICATE_TARGETS point here, that their")
-		fmt.Println("  build includes heartbeats, and that their replication root is under a home")
-		fmt.Printf("  directory (searched: %s) — otherwise pass --from with the right directory.\n", strings.Join(globs, ", "))
+		fmt.Fprintln(w, "  none yet.")
+		fmt.Fprintln(w, "  Peers appear here once they replicate TO this box at least once. If that's")
+		fmt.Fprintln(w, "  expected already, check that their REPLICATE_TARGETS point here, that their")
+		fmt.Fprintln(w, "  build includes heartbeats, and that their replication root is under a home")
+		fmt.Fprintf(w, "  directory (searched: %s) — otherwise pass --from with the right directory.\n", strings.Join(globs, ", "))
 		return nil
 	}
 
@@ -94,11 +95,11 @@ func runFleet(fromDir string, now time.Time) error {
 		if isStale {
 			stale++
 		}
-		printBeatLine(b, now, isStale)
+		printBeatLine(w, b, now, isStale)
 	}
 
 	if stale > 0 {
-		fmt.Printf("\n%d peer(s) above are overdue. That can be a reboot or a network blip — or a box\nthat's been taken down or had its timers killed. Check them before assuming the first.\n", stale)
+		fmt.Fprintf(w, "\n%d peer(s) above are overdue. That can be a reboot or a network blip — or a box\nthat's been taken down or had its timers killed. Check them before assuming the first.\n", stale)
 	}
 	return nil
 }
@@ -106,7 +107,7 @@ func runFleet(fromDir string, now time.Time) error {
 // printBeatLine renders one box: its identity and age on the first line,
 // what it was doing on the second. Two lines rather than one wide table
 // row, since this is read in an 80-column SSH session as often as not.
-func printBeatLine(b heartbeat.Beat, now time.Time, stale bool) {
+func printBeatLine(w io.Writer, b heartbeat.Beat, now time.Time, stale bool) {
 	host := b.Host
 	if host == "" {
 		host = "(unknown host)"
@@ -130,9 +131,9 @@ func printBeatLine(b heartbeat.Beat, now time.Time, stale bool) {
 		age += "  ** OVERDUE **"
 	}
 
-	fmt.Printf("%s %-24s %-9s gen %-4d bans %-3d locks %-3d %s\n",
+	fmt.Fprintf(w, "%s %-24s %-9s gen %-4d bans %-3d locks %-3d %s\n",
 		marker, host, armed, b.Generation, b.ActiveBans, b.ActiveLocks, age)
-	fmt.Printf("    last: %s\n", summarizeLastPass(b, now))
+	fmt.Fprintf(w, "    last: %s\n", summarizeLastPass(b, now))
 }
 
 // summarizeLastPass renders each periodic component's last run as an age,

@@ -206,6 +206,7 @@ var KnownServices = []Service{
 
 // Finding is what Scan found for one Service.
 type Finding struct {
+	Unknown        bool // running process with no known service metadata
 	Service        Service
 	PIDs           []int    // every matching process found, empty if none
 	ConfigsPresent []string // subset of Service.ConfigPaths that exist on disk
@@ -252,6 +253,24 @@ func scanServices(procRoot string, services []Service) ([]Finding, error) {
 		findings = append(findings, f)
 	}
 
+	known := map[string]bool{}
+	for _, svc := range services {
+		for _, name := range svc.ProcessNames {
+			known[name] = true
+		}
+	}
+	var unknown []string
+	for name := range running {
+		if !known[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	sort.Strings(unknown)
+	for _, name := range unknown {
+		pids := running[name]
+		sort.Ints(pids)
+		findings = append(findings, Finding{Service: Service{Name: name, ProcessNames: []string{name}}, PIDs: pids, Unknown: true})
+	}
 	return findings, nil
 }
 
