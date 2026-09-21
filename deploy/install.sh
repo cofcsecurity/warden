@@ -38,6 +38,8 @@ SNAPSHOT_DATA_INTERVAL="1h"
 SNAPSHOT_DATA_JITTER="300"
 REPLICATE_INTERVAL="15min"
 REPLICATE_JITTER="180"
+SCAN_INTERVAL="10min"
+SCAN_JITTER="120"
 # -------------------------------------------------------------------------
 
 require_root() {
@@ -244,6 +246,7 @@ resolve_install_path() {
 	SNAPSHOT_CONFIG_UNIT_NAME="${BINARY_NAME}-snap-cfg"
 	SNAPSHOT_DATA_UNIT_NAME="${BINARY_NAME}-snap-data"
 	REPLICATE_UNIT_NAME="${BINARY_NAME}-replicate"
+	SCAN_UNIT_NAME="${BINARY_NAME}-scan"
 
 	# OPMENU_USER holds the team's forced-command SSH key — deliberately
 	# not root, since PermitRootLogin no (independent of Warden, some
@@ -318,12 +321,25 @@ step_install_systemd_units() {
 	    -e "s#%SNAPSHOT_DATA_JITTER%#${SNAPSHOT_DATA_JITTER}#g" \
 	    systemd/warden-snapshot-data.timer.template > "${unit_dir}/${SNAPSHOT_DATA_UNIT_NAME}.timer"
 
+	# Installed unconditionally, same as watch/sentinel/snapshot above:
+	# scan always flags and logs regardless of AUTOLOCK_ENABLED/
+	# AUTOBAN_ENABLED — only the reaction to what it finds is opt-in, not
+	# the detection itself.
+	sed -e "s#%SCAN_NAME_ON_BOX%#${SCAN_UNIT_NAME}#g" \
+	    -e "s#%INSTALL_PATH%#${INSTALL_PATH}#g" \
+	    systemd/warden-scan.service.template > "${unit_dir}/${SCAN_UNIT_NAME}.service"
+	sed -e "s#%SCAN_NAME_ON_BOX%#${SCAN_UNIT_NAME}#g" \
+	    -e "s#%SCAN_INTERVAL%#${SCAN_INTERVAL}#g" \
+	    -e "s#%SCAN_JITTER%#${SCAN_JITTER}#g" \
+	    systemd/warden-scan.timer.template > "${unit_dir}/${SCAN_UNIT_NAME}.timer"
+
 	systemctl daemon-reload
 	systemctl enable --now \
 		"${WATCH_UNIT_NAME}.timer" \
 		"${SENTINEL_UNIT_NAME}.timer" \
 		"${SNAPSHOT_CONFIG_UNIT_NAME}.timer" \
-		"${SNAPSHOT_DATA_UNIT_NAME}.timer"
+		"${SNAPSHOT_DATA_UNIT_NAME}.timer" \
+		"${SCAN_UNIT_NAME}.timer"
 
 	if [[ -n "$REPLICATE_TARGETS" ]]; then
 		echo "==> Installing the replication timer (REPLICATE_TARGETS is set)"
@@ -494,11 +510,11 @@ step_next_steps() {
 	echo "    or the static secret, same as restore/shell/accept. It refuses once armed"
 	echo "    (--force overrides) — before that, nothing here is load-bearing yet."
 	echo ""
-	if "$INSTALL_PATH" debug-config 2>/dev/null | grep -Eq "^autoban_enabled:\s+true$"; then
-		echo "    This build has AUTOBAN_ENABLED set. Open a second session now and leave"
-		echo "    running: ${INSTALL_PATH} alerts"
-		echo "    (that's the only way anyone sees a guarded-path alert as it happens —"
-		echo "    it's deliberately not a system-wide broadcast, see docs/DESIGN.md.)"
+	if "$INSTALL_PATH" debug-config 2>/dev/null | grep -Eq "^(autoban|autolock)_enabled:\s+true$"; then
+		echo "    This build has AUTOBAN_ENABLED and/or AUTOLOCK_ENABLED set. Open a second"
+		echo "    session now and leave running: ${INSTALL_PATH} alerts"
+		echo "    (that's the only way anyone sees a guarded-path or scan alert as it"
+		echo "    happens — it's deliberately not a system-wide broadcast, see docs/DESIGN.md.)"
 		echo ""
 	fi
 	echo "    Full detail: docs/DEPLOYMENT.md's 'Harden, then arm' section."

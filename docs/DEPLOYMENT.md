@@ -15,12 +15,14 @@ Section numbers below match the headers exactly. Skip to any of them for full de
 **Part B — once per box:**
 - **Step 4, 5** — [fill in `install.sh`'s per-box values](#4-confirm-installshs-per-box-values) and [deploy](#5-deploy-to-each-box) (`scp` + `sudo ./install.sh`, which now prints its own next-steps summary when it finishes).
 - **Step 6** — [verify](#6-verify) the access layer and replication both actually work.
-- **Step 6.5** — [harden the box, then arm it](#65-harden-then-arm) (`warden detect` → harden → `warden arm`). **The box is unprotected against config drift until this step — a fresh install is not the same as a defended box.**
+- **Step 6.5** — [harden the box, then arm it](#65-harden-then-arm) (`warden detect` + `warden scan` → harden → `warden arm`). **The box is unprotected against config drift until this step — a fresh install is not the same as a defended box.**
 - **Step 7, 8** — keep [recovery](#7-recovery-pulling-a-boxs-own-backups-back) in mind for if a box gets wiped later, and repeat steps 3–6.5 [per box](#8-repeat-per-box).
 
 ## 0. Don't let Warden fight the scoring engine
 
 Before filling in `cmd/warden/config.go`'s watch list (Phase 1 of `docs/PLAN.md`), identify every account and credential the scoring engine itself uses to check the box — including its own SSH access. Never classify one of those as `SafeAutoRestore`: if the scoring engine rotates its own key or password and `watch` reverts it back to a stale snapshot, that's Warden causing a scoring outage that looks exactly like red team did it. If it needs watching at all, use `ConfirmFirst` (flag, never auto-revert) — see the warning comment above `configTierPaths` in `config.go`. This also means: don't add the scoring engine's own login path to `configTierPaths` at all unless there's a real reason to — watching something you never intend to act on just adds noise.
+
+The same identification matters for `SAFE_ACCOUNTS` (step 1 below, used by `warden scan`'s account-lock reaction — see `docs/USAGE.md`'s `warden scan`): list the **local account name(s)** the team itself operates through on this box, and the scoring engine's own account if it uses one, there too. Unlike `TEAM_FROM_IP`, there's no way to infer either automatically for a local-account lock — get this wrong and a false positive can lock your own team, or the scoring engine, out of the box.
 
 ## 1. Generate per-competition secrets
 
@@ -125,6 +127,8 @@ If there's no realistic second box this season at all, `REPLICATE_TARGETS` can i
 
 Add `AUTOBAN_ENABLED=1` to the same `make build` invocation to enable auto-banning an attacker's IP — see `docs/DESIGN.md`'s "Active Response" section. It's off (unset) by default; leaving it off still gets you the flagging and `warden alerts` visibility, just not the automatic firewall block.
 
+Add `AUTOLOCK_ENABLED=1` the same way to enable `warden scan`'s separate account-lock reaction (see `docs/DESIGN.md`'s "Anomaly Detection and Account Lockout" section) — off by default too, same reasoning. If it's on, also set `SAFE_ACCOUNTS="<your team's own account>,<scoring's account if it has one>"` — see step 0 above for why this can't be skipped the way `TEAM_FROM_IP` alone protects `AUTOBAN_ENABLED`.
+
 Produces `bin/warden` — a stripped, static binary with everything above baked in. Verify it actually captured the right values before going further, on a native build since `bin/warden` is cross-compiled for the target's `linux/amd64` and won't run here:
 
 ```
@@ -205,7 +209,7 @@ cd ~/build   # wherever it landed
 sudo ./scripts/build-and-install.sh
 ```
 
-Asks for the same things `install.sh` normally needs (team pubkey, team IP, install path), plus offers to generate a TOTP seed and, if wanted, a replication keypair. For team IP, it first guesses from who's actually connected to run this (`who`, not an environment variable — those get stripped by `sudo`'s default env reset) and offers a `/24` around that as a starting point, since a team's laptops typically share one subnet — confirm or correct it rather than typing one from scratch, unless there's a jump host between you and this box, in which case the guess is the jump host's IP, not correct at all, and needs to be typed by hand. Set any of `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED` as environment variables beforehand to skip that prompt.
+Asks for the same things `install.sh` normally needs (team pubkey, team IP, install path), plus offers to generate a TOTP seed and, if wanted, a replication keypair. For team IP, it first guesses from who's actually connected to run this (`who`, not an environment variable — those get stripped by `sudo`'s default env reset) and offers a `/24` around that as a starting point, since a team's laptops typically share one subnet — confirm or correct it rather than typing one from scratch, unless there's a jump host between you and this box, in which case the guess is the jump host's IP, not correct at all, and needs to be typed by hand. Set any of `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED`, `AUTOLOCK_ENABLED`, `SAFE_ACCOUNTS` as environment variables beforehand to skip that prompt.
 
 Builds, self-verifies with `debug-config`, hands off to the normal `install.sh`, and — once that succeeds — deletes the entire source tree it ran from. Set `KEEP_SOURCE=1` beforehand to keep the checkout instead.
 
@@ -242,12 +246,13 @@ Once the access-layer verification prompt near the end passes, `install.sh` dele
 The box comes up **disarmed**: `watch` runs on schedule and flags sensitive drift, but won't auto-revert anything yet. That's the window for the team's actual hardening work — get a shell (`ssh <opmenu-user>@<box> "shell <code>"` over opmenu, TOTP required) and:
 
 1. Run `warden detect` to see what's actually running on this box and which of its config files aren't yet in `configTierPaths` — add the ones that matter for this competition's scoring to `cmd/warden/config.go` and rebuild/redeploy if anything's missing (steps 3–5 again for just this box).
-2. Do the actual hardening: lock down `sshd_config`, tighten service configs, rotate anything default, whatever this box needs.
-3. Once that's done: `warden arm`. This snapshots the box's current (hardened) state and turns on auto-restore — from here on, drift in a watched file gets reverted, not just flagged.
+2. Run `warden scan` once too — it bootstraps its own baseline (SUID binaries, cron, `authorized_keys`, accounts, listening ports, packages) the same way the first `warden snapshot` does, so it needs to see this box's *already-hardened* state at least once before arming, same reasoning as step 3 below.
+3. Do the actual hardening: lock down `sshd_config`, tighten service configs, rotate anything default, whatever this box needs.
+4. Once that's done: `warden arm`. This snapshots the box's current (hardened) state and turns on auto-restore — from here on, drift in a watched file gets reverted, not just flagged.
 
-Don't skip straight to step 3 before steps 1–2: arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done. If a specific hardening edit needs to land on a `ConfirmFirst` path (which is never auto-reverted anyway, armed or not) without perpetually flagging, `warden accept <path> <totp-code>` marks just that one file's current state as known-good.
+Don't skip straight to step 4 before steps 1–3: arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done. If a specific hardening edit needs to land on a `ConfirmFirst` path (which is never auto-reverted anyway, armed or not) without perpetually flagging, `warden accept <path> <totp-code>` marks just that one file's current state as known-good.
 
-If this build has `AUTOBAN_ENABLED` set, open a second SSH session now (`ssh <opmenu-user>@<box> "shell <code>"`) and leave `warden alerts` running in it — see `docs/DESIGN.md`'s "Active Response" section.
+If this build has `AUTOBAN_ENABLED` and/or `AUTOLOCK_ENABLED` set, open a second SSH session now (`ssh <opmenu-user>@<box> "shell <code>"`) and leave `warden alerts` running in it — see `docs/DESIGN.md`'s "Active Response" and "Anomaly Detection and Account Lockout" sections.
 
 ### A note on shell history
 

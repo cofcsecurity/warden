@@ -79,6 +79,10 @@ func printAlert(e audit.Entry) {
 	ts := e.Time.Local().Format("15:04:05")
 	switch e.Action {
 	case "alert":
+		if source, _ := e.Fields["source"].(string); source == "anomaly" {
+			printAnomalyAlert(ts, e)
+			return
+		}
 		path, _ := e.Fields["path"].(string)
 		if suspectIP, ok := e.Fields["suspect_ip"].(string); ok && suspectIP != "" {
 			account, _ := e.Fields["account"].(string)
@@ -99,5 +103,42 @@ func printAlert(e audit.Entry) {
 	case "manual-unban":
 		ip, _ := e.Fields["ip"].(string)
 		fmt.Printf("[%s] manually unbanned %s\n", ts, ip)
+	case "manual-lock":
+		user, _ := e.Fields["user"].(string)
+		reason, _ := e.Fields["reason"].(string)
+		fmt.Printf("[%s] manually locked account %s: %s\n", ts, user, reason)
+	case "manual-unlock":
+		user, _ := e.Fields["user"].(string)
+		fmt.Printf("[%s] manually unlocked account %s\n", ts, user)
+	}
+}
+
+// printAnomalyAlert renders a scan.go finding — a distinct shape from the
+// guarded-file-change alert above (no single "path", possibly an account
+// lock in play alongside or instead of an IP ban).
+func printAnomalyAlert(ts string, e audit.Entry) {
+	check, _ := e.Fields["check"].(string)
+	desc, _ := e.Fields["description"].(string)
+	fmt.Printf("[%s] ⚠ [%s] %s\n", ts, check, desc)
+
+	if culprit, ok := e.Fields["culprit"].(string); ok && culprit != "" {
+		locked, _ := e.Fields["locked_account"].(bool)
+		status := "not locked"
+		if locked {
+			status = "LOCKED"
+		}
+		fmt.Printf("           account: %s (%s)\n", culprit, status)
+		if reason, ok := e.Fields["lock_skipped_reason"].(string); ok && reason != "" {
+			fmt.Printf("           %s\n", reason)
+		}
+	}
+
+	if suspectIP, ok := e.Fields["suspect_ip"].(string); ok && suspectIP != "" {
+		banned, _ := e.Fields["autobanned"].(bool)
+		bannedNote := "not banned"
+		if banned {
+			bannedNote = "BANNED"
+		}
+		fmt.Printf("           source IP: %s (%s)\n", suspectIP, bannedNote)
 	}
 }

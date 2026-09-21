@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"warden/internal/accountlock"
 	"warden/internal/audit"
 	"warden/internal/autoban"
 	"warden/internal/sentinel"
@@ -72,6 +73,29 @@ func runSentinelCheck() error {
 	}
 	if len(active) > 0 {
 		fmt.Printf("active ban(s) reasserted: %v\n", active)
+	}
+
+	// Account-lock reconciliation piggybacks on the same schedule — see
+	// accountlock.Reconcile's own doc comment for why this only lifts
+	// expired locks rather than also re-asserting active ones the way
+	// autoban.Reconcile does above (locking is a one-time state change,
+	// not something that needs reasserting every pass).
+	lockedAccounts, expiredLocks, err := accountlock.Reconcile(
+		accountlock.NewStore(p.accountLocksPath),
+		accountlock.OSAccounts{NologinShell: nologinShellPath()},
+		time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("sentinel-check: reconcile account locks: %w", err)
+	}
+	if len(expiredLocks) > 0 {
+		if err := log.Log("react", "lock-expired", map[string]any{"users": expiredLocks}); err != nil {
+			return err
+		}
+		fmt.Printf("account lock(s) expired: %v\n", expiredLocks)
+	}
+	if len(lockedAccounts) > 0 {
+		fmt.Printf("active account lock(s): %v\n", lockedAccounts)
 	}
 	return nil
 }

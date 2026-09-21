@@ -1,0 +1,6 @@
+[Unit]
+Description=%SCAN_NAME_ON_BOX%
+
+[Service]
+Type=oneshot
+ExecStart=%INSTALL_PATH% scan

@@ -121,6 +121,11 @@ type paths struct {
 	// Absent until `warden rotate-secret` is run at least once, which is
 	// the safe default: opmenu simply never matches on it until then.
 	staticSecretPath string
+	// anomalyDir holds every internal/anomaly check's own baseline file —
+	// see scan.go. accountLocksPath is accountlock's Store, the local-
+	// account equivalent of bannedIPsPath above.
+	anomalyDir       string
+	accountLocksPath string
 }
 
 // loadPaths resolves paths for the current box. configManifestPath and
@@ -151,6 +156,8 @@ func loadPaths() (paths, error) {
 		armedMarkerPath:    dir + "/armed",
 		bannedIPsPath:      dir + "/banned_ips.json",
 		staticSecretPath:   dir + "/second-factor",
+		anomalyDir:         dir + "/anomaly",
+		accountLocksPath:   dir + "/account_locks.json",
 	}, nil
 }
 

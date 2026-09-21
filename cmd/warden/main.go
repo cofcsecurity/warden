@@ -40,6 +40,25 @@ var (
 	// still always runs and always logs/flags regardless of this flag —
 	// only the actual ban is gated.
 	buildAutobanEnabled string
+
+	// buildAutolockEnabled gates scan.go's account-lock reaction, the
+	// same way buildAutobanEnabled gates the IP-ban one — separately,
+	// since locking a local account is a materially different risk (it
+	// can hit a legitimate teammate's own competition-issued account on
+	// a false positive, where IP-autoban structurally can't hit the
+	// team's own IP). Off (empty) unless a build deliberately sets it.
+	buildAutolockEnabled string
+
+	// buildSafeAccounts is a comma-separated list of local account names
+	// scan.go's auto-lock and the manual lock-account command both
+	// refuse to touch, on top of the always-hardcoded root/opmenu
+	// exclusion — the team's own operating account(s) on this box, and
+	// the scoring engine's account if it uses one. There's no way to
+	// infer either automatically (unlike TEAM_FROM_IP for IP-autoban):
+	// this extends the same manual, team-configured safety
+	// responsibility docs/DEPLOYMENT.md step 0 already asks for around
+	// configTierPaths/ConfirmFirst, to the account-lock surface.
+	buildSafeAccounts string
 )
 
 func main() {
@@ -77,6 +96,9 @@ func main() {
 	root.AddCommand(alertsCmd())
 	root.AddCommand(rotateSecretCmd())
 	root.AddCommand(uninstallCmd())
+	root.AddCommand(scanCmd())
+	root.AddCommand(lockAccountCmd())
+	root.AddCommand(unlockAccountCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

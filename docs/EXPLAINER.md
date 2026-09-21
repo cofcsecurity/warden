@@ -143,6 +143,37 @@ sees what it prints. Open a second connection just for this
 (`ssh <opmenu-user>@<box> "shell <code>"`, then run `warden alerts` inside
 it) and leave it running if you want a live feed while you work.
 
+## Catching tampering that isn't a watched file changing (opt-in)
+
+Everything above only ever notices a *watched* file's content changing.
+`warden scan` looks for a handful of other things red team does that
+`watch` structurally can't see at all: a new local user account showing
+up, a binary somewhere gaining the setuid bit (a classic way to sneak
+root access to an otherwise unprivileged account), a new line in
+*anyone's* cron jobs or *anyone's* `authorized_keys` (not just Warden's
+own), a new port suddenly listening, or a package that got installed
+without you doing it. It runs on its own schedule, same as `watch`, and
+always flags whatever it finds either way.
+
+If it can tell *whose* account is responsible — whose crontab changed,
+who owns a new setuid binary, whose key got added — and if your team has
+opted into it (`AUTOLOCK_ENABLED`, off by default, same as auto-ban
+above), Warden can lock that account out and kick its current session
+the moment it happens: no more logging in until a teammate deliberately
+un-locks it. Same "double check it isn't blue" carefulness as the guarded-
+file ban — it flatly refuses to ever lock root, the account Warden's own
+access layer uses, or any account your team explicitly listed as safe
+(your own operating account, or the scoring engine's, if it has one) — and
+if the account turns out to belong to your school's Active Directory
+rather than being a plain account on this box, Warden says so and leaves
+it alone, since a local lock wouldn't do anything to a domain account
+anyway — that has to be handled in Active Directory itself.
+
+Worth being precise about what "lock the account out" means here, since
+it's the most aggressive thing Warden does: it only ever affects *this
+box*. It never reaches out and does anything to a machine on red team's
+own side — see "What Warden deliberately does NOT do" below.
+
 ## How it survives being killed
 
 This is the part that makes Warden more than "a backup script." There's no
@@ -214,11 +245,13 @@ assume incorrectly:
   port, and the forced-command restriction means even someone who steals the
   team's key still can't get an open shell without the second-factor code.
 - **It does not fight back.** Warden can, if your team opts into it (see
-  "Reacting to a guarded file being touched" below), block an IP from
-  reaching *your own* box — the same thing fail2ban does. It never touches
-  red team's own infrastructure, and never does anything more aggressive
-  than that. "Survives an attack" here means resilience (and, optionally,
-  a locked door), not retaliation.
+  "Reacting to a guarded file being touched" and "Catching tampering that
+  isn't a watched file changing" above), block an IP from reaching *your
+  own* box — the same thing fail2ban does — or lock out a local account
+  on *this* box. It never touches red team's own infrastructure, and
+  never does anything more aggressive than that. "Survives an attack"
+  here means resilience (and, optionally, a locked door), not
+  retaliation.
 - **It does not scrub evidence or hide what it did.** Every single action —
   a restore, a flagged file, a rejected login attempt — gets written to a
   log file your team can show a judge if asked. Trying to look invisible by

@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"warden/internal/accountlock"
 )
 
 // uninstallCmd reverses everything install.sh set up, as a way back to a
@@ -117,7 +119,7 @@ func runUninstall(code string, force, assumeYes bool) error {
 	}
 
 	fmt.Println("==> Stopping and removing systemd timers")
-	for _, suffix := range []string{"-watch", "-sentinel", "-snap-cfg", "-snap-data", "-replicate"} {
+	for _, suffix := range []string{"-watch", "-sentinel", "-snap-cfg", "-snap-data", "-replicate", "-scan"} {
 		removeSystemdTimer(binName + suffix)
 	}
 	if err := runSystemctl("daemon-reload"); err != nil {
@@ -140,6 +142,24 @@ func runUninstall(code string, force, assumeYes bool) error {
 	fmt.Println("==> Removing access-layer account:", opUser)
 	if out, err := exec.Command("userdel", "-r", opUser).CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: userdel %s: %v: %s\n", opUser, err, out)
+	}
+
+	// Must happen before p.dataDir is removed below: accountLocksPath
+	// lives inside it, and it's the only record of which accounts are
+	// currently locked and what shell to restore. Removing it first
+	// would leave any currently-locked account locked out forever, with
+	// nothing left anywhere recording that it happened at all.
+	fmt.Println("==> Lifting any active account locks")
+	lockStore := accountlock.NewStore(p.accountLocksPath)
+	if locks, err := lockStore.Load(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: read %s: %v\n", p.accountLocksPath, err)
+	} else {
+		sys := accountlock.OSAccounts{NologinShell: nologinShellPath()}
+		for _, l := range locks {
+			if err := sys.Unlock(l.User, l.PreviousShell); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: unlock %s: %v\n", l.User, err)
+			}
+		}
 	}
 
 	// p.dataDir (/var/lib/<name>) already contains the spare binary

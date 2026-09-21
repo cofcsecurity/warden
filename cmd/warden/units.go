@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -46,6 +47,16 @@ func replicateUnitName() (string, error) {
 		return "", err
 	}
 	return name + "-replicate", nil
+}
+
+// scanUnitName is the systemd name for the anomaly-detection timer — see
+// scan.go and deploy/systemd/warden-scan.*.template.
+func scanUnitName() (string, error) {
+	name, err := binaryName()
+	if err != nil {
+		return "", err
+	}
+	return name + "-scan", nil
 }
 
 // oneshotServiceContent and oneshotTimerContent generate the same shape of
@@ -153,4 +164,21 @@ func sudoersDropInPath(user string) string {
 // requiretty` blocking this rule.
 func sudoersDropInContent(user, path string) string {
 	return fmt.Sprintf("Defaults:%s !requiretty\n%s ALL=(root) NOPASSWD: %s\n", user, user, path)
+}
+
+// nologinShellPath finds whatever this distro actually calls its
+// no-login shell — mirrors deploy/install.sh's nologin_shell() exactly,
+// so accountlock.OSAccounts locks an account to the same shell path
+// install.sh already uses for the opmenu account, rather than a second
+// definition of "no login" drifting from the first.
+func nologinShellPath() string {
+	for _, candidate := range []string{"/usr/sbin/nologin", "/sbin/nologin"} {
+		if info, err := os.Stat(candidate); err == nil && info.Mode()&0o111 != 0 {
+			return candidate
+		}
+	}
+	if path, err := exec.LookPath("nologin"); err == nil {
+		return path
+	}
+	return "/bin/false"
 }

@@ -444,6 +444,28 @@ collect_config() {
 			AUTOBAN_ENABLED=1
 		fi
 	fi
+
+	AUTOLOCK_ENABLED="${AUTOLOCK_ENABLED:-}"
+	if [[ -z "$AUTOLOCK_ENABLED" ]]; then
+		echo "    Account-lock ('warden scan', docs/DESIGN.md's 'Active Response') locks"
+		echo "    a local account and kills its sessions the instant a scan finding"
+		echo "    attributes suspicious activity to it. A different risk than auto-ban"
+		echo "    above: a false positive here can lock out a legitimate teammate's own"
+		echo "    account, where auto-ban structurally can't hit the team's own IP."
+		ask "    Enable it? [y/N] " ans
+		if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+			AUTOLOCK_ENABLED=1
+		fi
+	fi
+
+	SAFE_ACCOUNTS="${SAFE_ACCOUNTS:-}"
+	if [[ -z "$SAFE_ACCOUNTS" ]]; then
+		echo "    Account name(s) that must NEVER be auto-locked — your team's own"
+		echo "    operating account on this box, and the scoring engine's account if"
+		echo "    it uses one. (root and the opmenu account itself are already excluded"
+		echo "    automatically, always, no need to list them.)"
+		ask "    Comma-separated, or leave blank for none: " SAFE_ACCOUNTS
+	fi
 }
 
 build() {
@@ -461,7 +483,9 @@ build() {
 		-X 'main.buildTOTPSecret=${TOTP_SECRET}' \
 		-X 'main.buildReplicateTargets=${REPLICATE_TARGETS}' \
 		-X 'main.buildReplicateKey=${REPLICATE_KEY}' \
-		-X 'main.buildAutobanEnabled=${AUTOBAN_ENABLED}'" \
+		-X 'main.buildAutobanEnabled=${AUTOBAN_ENABLED}' \
+		-X 'main.buildAutolockEnabled=${AUTOLOCK_ENABLED}' \
+		-X 'main.buildSafeAccounts=${SAFE_ACCOUNTS}'" \
 		-o deploy/warden ./cmd/warden
 
 	echo "==> Verifying what actually got baked in"

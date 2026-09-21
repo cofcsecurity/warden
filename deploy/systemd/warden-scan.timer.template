@@ -1,0 +1,11 @@
+[Unit]
+Description=%SCAN_NAME_ON_BOX% timer
+
+[Timer]
+OnBootSec=8min
+OnUnitActiveSec=%SCAN_INTERVAL%
+RandomizedDelaySec=%SCAN_JITTER%
+Unit=%SCAN_NAME_ON_BOX%.service
+
+[Install]
+WantedBy=timers.target

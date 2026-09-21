@@ -172,6 +172,32 @@ warden alerts                                                   # tail react's a
 
 `sentinel-check` re-applies every still-active ban's firewall rule on each pass (in case it was flushed) and lifts anything past its expiry — see DESIGN.md.
 
+### `warden scan`
+
+Six bounded checks `watch` structurally can't cover, since `watch` only ever knows a *watched path's content* changed: new local user/group accounts (plus new domain/Active-Directory-backed accounts, flagged separately — see below), new setuid/setgid binaries, cron tampering for any account, `authorized_keys` tampering for any account, new listening TCP ports, and newly installed packages. Not a SIEM replacement — see `docs/PLAN.md` Phase 9 and DESIGN.md's "Anomaly Detection and Account Lockout" section for the full design.
+
+```
+warden scan
+scan: 2 finding(s), 1 account(s) locked, 0 IP(s) banned. See 'warden alerts' for detail.
+```
+
+Always flags and logs every finding (`warden alerts` surfaces them, same as guarded-file alerts above). Once armed, and only if built with `AUTOLOCK_ENABLED`/`AUTOBAN_ENABLED`, also reacts: locks the responsible local account (and kills its sessions) when a finding is unambiguously attributable to one, and separately tries to ban the source IP the same way a guarded-file change already does. **Both reactions additionally require the box to be armed** — unlike the guarded-file ban above, since a new cron job or a teammate's key is something a team plausibly adds routinely while still setting up, not something inherently suspicious the moment it happens.
+
+A domain-backed account (Active Directory via sssd/winbind, LDAP, ...) never appears in the raw `/etc/passwd` file at all — NSS resolves it dynamically — so a new one is detected via `getent passwd` instead, and reported with no culprit: `accountlock`'s lock is nothing but `passwd`/`usermod` against local files, which does nothing meaningful against a domain account. The finding itself says to lock it down in Active Directory instead.
+
+Refuses to ever lock root or the opmenu account itself (no override), an account that isn't genuinely local (same reason as above, no override), or an account on the configured `SAFE_ACCOUNTS` list (override with `--force` on the manual command only — the automatic reaction never overrides this).
+
+### `warden lock-account <user> [--duration] [--reason] [--force]` / `warden unlock-account <user>`
+
+The manual override for `scan`'s automatic account-lock reaction — the same relationship `ban`/`unban` have to the automatic IP ban.
+
+```
+warden lock-account alovelace --reason "new SUID binary owned by this account"   # --duration to override the default 1h
+warden unlock-account alovelace                                                  # lift a lock immediately, e.g. a false positive
+```
+
+Disables password auth and interactive shell access, and best-effort kills the account's current sessions. Goes through the exact same refusal checks `scan`'s own reaction does (see above) — `--force` only overrides the `SAFE_ACCOUNTS` tier, never root/opmenu or a non-local account. `sentinel-check` doesn't re-apply active locks the way it re-applies IP bans (locking is a one-time state change, not something that needs reasserting every pass), but it does lift anything past its expiry via the same `Reconcile` pattern. `warden uninstall` also unlocks everything still active before removing local state, so nothing stays locked out with no record after Warden itself is gone.
+
 ### `warden sentinel-check`
 
 Verifies three things sentinel is responsible for keeping alive, and recreates whichever is missing: the `authorized_keys` forced-command entry, its own systemd timer (service file, timer file, and the `timers.target.wants` enabled symlink), and its own cron entry. Every check reads the relevant file directly — never `systemctl status` or `crontab -l` — since either could be lying if red team has altered them.
