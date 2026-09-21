@@ -81,6 +81,8 @@ Generate a **distinct** replication keypair per box, not one shared team-wide ke
 
 (Each run also writes a fresh `totp_secret`; reuse one across boxes or generate per-box ones — see step 3's note.)
 
+Receiving replication also makes a box a vantage point: every box that replicates here leaves a heartbeat, so `warden fleet` run here reports on all of them. In the ring below that's two neighbours per box. If the team wants one box that sees the whole fleet at once, add it to every other box's `REPLICATE_TARGETS` as a third entry and run `warden fleet` there — it needs no other setup, and it isn't a single point of failure for recovery, since the ring's mutual copies are unchanged.
+
 ### Set up each box's receiving side
 
 On **every** box, before building anything, create a dedicated low-privilege account that only exists to receive backups — never the team's login account, never root:
@@ -249,6 +251,10 @@ The box comes up **disarmed**: `watch` runs on schedule and flags sensitive drif
 2. Run `warden scan` once too — it bootstraps its own baseline (SUID binaries, cron, `authorized_keys`, accounts, listening ports, packages) the same way the first `warden snapshot` does, so it needs to see this box's *already-hardened* state at least once before arming, same reasoning as step 3 below.
 3. Do the actual hardening: lock down `sshd_config`, tighten service configs, rotate anything default, whatever this box needs.
 4. Once that's done: `warden arm`. This snapshots the box's current (hardened) state and turns on auto-restore — from here on, drift in a watched file gets reverted, not just flagged.
+
+**Nothing arms the box for you.** `install.sh` finishes with the box monitored but not defended, and prints this same checklist as commands to run — deliberately, since arming an un-hardened box locks in exactly the state you were about to fix. `warden status` (locally, or over `opmenu`) is the quickest confirmation of which side of that line a box is currently on.
+
+Once more than one box is up, `warden fleet` on any of them shows that box plus every peer replicating to it — armed state, manifest generation, and how long since each one last reported. A box that has gone dark can't report that itself, so what you're looking for there is a heartbeat that's *overdue*; `sentinel-check` raises the same thing as an alert without anyone watching for it.
 
 Don't skip straight to step 4 before steps 1–3: arming locks in whatever's on disk *at that moment* as "known good," so arming before hardening just means watch will keep enforcing the pre-hardening state instead. If a later maintenance window needs to touch a watched file without watch fighting it, `warden disarm` first and `warden arm` again when done. If a specific hardening edit needs to land on a `ConfirmFirst` path (which is never auto-reverted anyway, armed or not) without perpetually flagging, `warden accept <path> <totp-code>` marks just that one file's current state as known-good.
 

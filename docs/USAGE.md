@@ -71,11 +71,13 @@ Dry run (the default) prints current vs. target hash for the path and does nothi
 
 ### `warden replicate`
 
-Pushes both tiers and the audit log, anything new since the last replication, to **every** peer baked in at build time (`REPLICATE_TARGETS` — one or more `ssh://` or `file://` targets; see DEPLOYMENT.md's "Replication topology" for running a mesh across several boxes). Additive-only on every destination: existing objects and manifest generations there are never touched, so a compromised source box can add junk but can't destroy prior backups. One peer being unreachable doesn't stop the push to the others — errors are collected and reported together.
+Pushes both tiers, the audit log, and this box's heartbeat, anything new since the last replication, to **every** peer baked in at build time (`REPLICATE_TARGETS` — one or more `ssh://` or `file://` targets; see DEPLOYMENT.md's "Replication topology" for running a mesh across several boxes). Additive-only on every destination: existing objects and manifest generations there are never touched, so a compromised source box can add junk but can't destroy prior backups. One peer being unreachable doesn't stop the push to the others — errors are collected and reported together.
 
 ```
 warden replicate
 ```
+
+Each push also leaves a heartbeat on every peer — a small record of this box being alive and how it was doing (see `warden fleet` above). It's the one signal that survives the box itself going dark, since its absence is what gets noticed.
 
 The audit log travels the same way as everything else — additive-only, as one immutable segment per push holding whatever was appended since that peer last heard from this box. That's what makes the evidence trail survive a box being wiped or someone with root deleting `audit.log` outright; `warden retrieve <peer> --audit` brings it back. Each entry carries its own `host` field, so several boxes replicating into one root give you a single combined, SIEM-ingestible JSON-lines log with no extra agent running anywhere.
 
@@ -210,6 +212,47 @@ warden unlock-account alovelace                                                 
 
 Disables password auth and interactive shell access, and best-effort kills the account's current sessions. Goes through the exact same refusal checks `scan`'s own reaction does (see above) — `--force` only overrides the `SAFE_ACCOUNTS` tier, never root/opmenu or a non-local account. `sentinel-check` doesn't re-apply active locks the way it re-applies IP bans (locking is a one-time state change, not something that needs reasserting every pass), but it does lift anything past its expiry via the same `Reconcile` pattern. `warden uninstall` also unlocks everything still active before removing local state, so nothing stays locked out with no record after Warden itself is gone.
 
+### `warden status`
+
+Read-only summary of this box: armed state, whether a static second factor is set, the manifest generation and when it was taken, and the last recorded pass of `watch`, `sentinel-check`, `scan` and `replicate`.
+
+```
+warden status
+armed: yes (auto-restore is on)
+static second factor: set (in addition to TOTP — run 'rotate-secret' to change it)
+manifest generation: 12
+last snapshot: 2026-09-21T14:05:11Z
+last watch pass: 2026-09-21T14:07:02Z (pass) map[armed:true auto_restored:0 flagged:0 suppressed:0]
+last sentinel check: 2026-09-21T14:06:40Z (pass) map[ok:10 recreated:0]
+last anomaly scan: 2026-09-21T14:02:18Z (pass) map[armed:true banned:0 findings:0 locked:0]
+last replication: 2026-09-21T13:58:03Z (pass) map[audit_bytes_pushed:2048 failed:0 peers:2]
+```
+
+A stale timestamp on any of those lines is the thing to act on: it means that component's timer has stopped firing, which looks exactly like a quiet box from every other angle. This is the same report `opmenu`'s `status` returns over SSH — one shared implementation, so the local and remote answers can't disagree.
+
+### `warden fleet [--from <dir>]`
+
+The same question, asked about every box at once. Prints this box's own state, then every peer that replicates *to* this box, oldest heartbeat flagged.
+
+```
+warden fleet
+==> This box
+  box1                     armed     gen 12   bans 1   locks 0   just now
+    last: watch=1m2s  sentinel=3m40s  scan=7m11s  replicate=4m9s
+
+==> Peers reporting to this box
+  box2                     armed     gen 9    bans 0   locks 0   4m1s ago
+    last: watch=2m3s  sentinel=5m1s  scan=9m8s  replicate=4m1s
+! box6                     armed     gen 5    bans 0   locks 2   3h0m1s ago  ** OVERDUE **
+    last: watch=3h0m1s  sentinel=never  scan=never  replicate=never
+```
+
+A box that has gone completely dark can't tell anyone — so what appears here is the *absence* of its heartbeat. Every `replicate` push leaves one on each peer (see DESIGN.md's heartbeat section); `sentinel-check` also logs an alert for any peer that goes past its own declared interval plus grace, so the same finding reaches `warden alerts` without anyone running this by hand.
+
+Which boxes appear depends on the topology: in the documented ring, each box sees its two neighbours. For one box that sees everything, add it to every other box's `REPLICATE_TARGETS` and run this there — no other change. `--from` points at the directory holding the peers' replication roots, for a receiving account that isn't in the usual place, or a `file://` target on removable media.
+
+Nothing here is authenticated: a heartbeat is written by whatever account receives replication, so anyone able to write in that directory can forge one. It's a report for a human, never an input to an automatic reaction.
+
 ### `warden sentinel-check`
 
 Verifies everything sentinel is responsible for keeping alive, and recreates whatever is missing: the `authorized_keys` forced-command entry, the sudoers rule it depends on, the hidden spare copy of the binary, its own cron entry, and **every timer on the box** — `watch`, both snapshot tiers, `scan`, its own, and `replicate` when one is configured. Each timer counts as present only if its service file, timer file, *and* `timers.target.wants` symlink all exist, since a timer missing that symlink never fires. Every check reads the relevant file directly — never `systemctl status` or `crontab -l` — since either could be lying if red team has altered them.
@@ -245,7 +288,7 @@ ssh -i <team private key> <opmenu-user>@<box>
 
 | You run | opmenu sees | Needs TOTP? |
 | --- | --- | --- |
-| `ssh <opmenu-user>@<box> status` | manifest generation, last snapshot time, last `watch`/`sentinel-check`/`scan`/`replicate` pass | No |
+| `ssh <opmenu-user>@<box> status` | the same report `warden status` prints locally: armed state, manifest generation, last snapshot, last `watch`/`sentinel-check`/`scan`/`replicate` pass | No |
 | `ssh <opmenu-user>@<box> "restore <code> /etc/nginx/nginx.conf"` | dry-run restore of that path | Yes |
 | `ssh <opmenu-user>@<box> "restore <code> /etc/nginx/nginx.conf apply"` | actually restores it (same as `restore --apply`) | Yes |
 | `ssh <opmenu-user>@<box> "shell <code>"` | drops into `/bin/bash` as root — the only path that leaves the Go binary | Yes |

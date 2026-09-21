@@ -105,6 +105,20 @@ Design steps:
 4. If no second box is available, point this package at a different local filesystem path (removable media) instead of a network destination. Same interface either way.
 5. The audit log goes off-box the same additive-only way, as immutable per-push segments under `<root>/audit/` (`Target.PutAudit`, `AuditSegmentName`). Evidence is the one thing replication used not to carry, which made the audit trail the single part of the design a root compromise could erase permanently — against a goal ("Auditable: show exactly what it did if questioned") that depends entirely on it surviving. Each pass sends only what was appended since that peer was last brought up to date, tracked per peer in `<dataDir>/audit-replicated.json` as an offset plus a digest of the bytes already sent; the digest is what makes a rotated log distinguishable from a grown one, so a rotation ships the old file's unsent tail rather than skipping it. `warden retrieve <peer> --audit` reassembles the segments back into one JSON-lines file. Since every entry carries its own `host` field, several boxes replicating into one root produce a usable fleet-wide log — and, being flat JSON lines, one a SIEM can ingest directly with no custom parser.
 
+## Component: heartbeat Package (Dead-Man's Switch)
+
+Purpose: make a box going *completely* dark produce a signal somewhere other than itself.
+
+Every other reporting path Warden has — the audit log, `warden alerts`, `warden status` — is written and read on the box being attacked. That's fine while the box is running, and worth nothing the moment it isn't: a box that's been powered off, cut off the network, or had every timer killed at once reports nothing at all, and *nothing at all* is indistinguishable from a quiet, healthy box. Absence is the one signal an attacker can't suppress from inside, as long as somebody else is expecting it.
+
+Design steps:
+
+1. Every `replicate` push leaves a small JSON record on each peer (`<root>/heartbeat/<host>-<nanos>.json`): hostname, when it was written, how often this box intends to write one, armed state, manifest generation, the last recorded pass of each timer, and active ban/lock counts. It rides the existing additive-only channel — no new port, no new transport, no new credential.
+2. The sender declares its own interval rather than the reader assuming one, so boxes replicating on different schedules judge each other correctly instead of the slowest one looking permanently dead.
+3. `sentinel-check` reads the beats that arrived *in this box's own receiving directory* (a local filesystem read — the boxes that report here are the ones replicating to this box, so there's nothing to fetch and nothing to authenticate) and logs a loud `react`/`alert` entry for any peer past its own interval plus grace. One alert per silence, not one per pass, plus a `peer-returned` entry when it comes back — a box dark for six hours should cost one line, not thirty-six.
+4. `warden fleet` is the human view of the same data: this box's own current state, then every peer that reports here, with anything overdue marked. In the documented ring topology each box sees its two neighbours; pointing every box's `REPLICATE_TARGETS` at one additional box makes that box a full fleet view, with no other change.
+5. **Nothing automatic ever acts on a heartbeat.** A missing beat has innocent explanations (a reboot, a network blip, a box taken down on purpose), and a beat is written by whatever account receives replication — so anyone who can write in that directory can forge one, including a compromised peer forging a healthy beat for a box that is in fact down. Heartbeats are evidence for a human, held to the same bar as the rest of Warden's reporting, never an input to a response.
+
 ## Component: watch Package (Integrity Checker)
 
 Purpose: this is the actual persistence mechanism, and the trigger for both auto-restore and alerting.

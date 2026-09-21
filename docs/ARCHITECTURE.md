@@ -70,6 +70,7 @@ flowchart TB
     replicate --> manifests
     replicate --> objects
     replicate <-- "push new entries" --> auditlog
+    replicate -- "leaves a heartbeat" --> peers
 
     scan --> auditlog
     scan <-- "baselines" --> anomalybaselines
@@ -111,6 +112,7 @@ flowchart LR
     SC -- "missing? append-only\nrecreate" --> R3
     SC -- "missing? visudo -cf,\nthen recreate" --> R4
 
+    SC -- "peer gone quiet?" --> HB["inbound heartbeats\n(peers replicating here)"]
     SC --> AL["audit.log"]
 
     style R1 fill:#2d3748,color:#fff

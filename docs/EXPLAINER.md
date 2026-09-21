@@ -174,6 +174,16 @@ it's the most aggressive thing Warden does: it only ever affects *this
 box*. It never reaches out and does anything to a machine on red team's
 own side — see "What Warden deliberately does NOT do" below.
 
+## Knowing when a whole box goes dark
+
+Everything above happens *on* the box being attacked, which leaves one gap: if a box is switched off, cut off the network, or has every one of Warden's timers killed in the same minute, it stops saying anything at all — and silence looks exactly like a calm, healthy box.
+
+So every time a box copies its backups to a neighbour, it also leaves a short note there: still here, still armed (or not), here's when each of my checks last ran. Neighbours know roughly when the next note is due. One that never arrives is itself the alarm — the one signal an attacker can't switch off from the box they're on, because it lives somewhere else.
+
+`warden fleet`, run on any box, shows that box plus everyone reporting to it, with anything overdue marked. In the normal ring setup that's each box's two neighbours; if your team wants one screen showing all of them, point every box at one extra box as well and run it there.
+
+Two honest limits. A late note usually means something dull — a reboot, a brief network problem, someone taking a box down on purpose — so this tells a person, and never reacts on its own. And the notes aren't proof of anything: they're written into the same place backups land, so anyone who can write there could fake one. It's a smoke alarm, not a lock.
+
 ## How it survives being killed
 
 This is the part that makes Warden more than "a backup script." There's no
@@ -263,6 +273,7 @@ assume incorrectly:
   someone deletes it here. Trying to look invisible by
   wiping logs would itself look exactly like what an attacker does after
   breaking in, which is its own way to lose points.
+- **It does not turn itself on.** Installing gets everything watching and reporting, but auto-restore stays off until a person runs `arm`, and the installer finishes by printing that command rather than running it. That's on purpose: arming an un-hardened box would lock in exactly the state you were about to fix, including anything an attacker may already have left there.
 - **It does not set itself up correctly for your specific competition.**
   Someone on the team still has to decide, ahead of time, which files matter
   enough to watch and back up, and generate the one-time secrets. None of
