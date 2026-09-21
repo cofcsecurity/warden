@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"warden/internal/manifest"
 	"warden/internal/store"
@@ -17,12 +19,49 @@ import (
 type fakeTarget struct {
 	objects          map[string][]byte
 	manifests        map[string]map[int][]byte
+	audit            map[string][]byte
 	putCalls         int
 	putManifestCalls int
+	putAuditCalls    int
 }
 
 func newFakeTarget() *fakeTarget {
-	return &fakeTarget{objects: map[string][]byte{}, manifests: map[string]map[int][]byte{}}
+	return &fakeTarget{
+		objects:   map[string][]byte{},
+		manifests: map[string]map[int][]byte{},
+		audit:     map[string][]byte{},
+	}
+}
+
+func (f *fakeTarget) HasAudit(name string) (bool, error) {
+	_, ok := f.audit[name]
+	return ok, nil
+}
+
+func (f *fakeTarget) PutAudit(name string, data []byte) error {
+	f.putAuditCalls++
+	if _, ok := f.audit[name]; ok {
+		return nil // additive-only, same as the real targets
+	}
+	f.audit[name] = data
+	return nil
+}
+
+func (f *fakeTarget) GetAudit(name string) ([]byte, error) {
+	data, ok := f.audit[name]
+	if !ok {
+		return nil, fmt.Errorf("fakeTarget: no audit segment %s", name)
+	}
+	return data, nil
+}
+
+func (f *fakeTarget) AuditSegments() ([]string, error) {
+	var names []string
+	for name := range f.audit {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (f *fakeTarget) Has(hash string) (bool, error) {
@@ -256,4 +295,112 @@ func mustMarshalManifest(t *testing.T, m *manifest.Manifest) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func TestPushAuditIsAdditiveAndDeduplicates(t *testing.T) {
+	target := newFakeTarget()
+	r := New(target)
+
+	name := AuditSegmentName("boxB", time.Unix(1700000000, 0), 0)
+	if err := r.PushAudit(name, []byte(`{"action":"pass"}`+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.PushAudit(name, []byte("different content entirely\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	if target.putAuditCalls != 1 {
+		t.Errorf("expected the second push of the same segment name to be skipped, got %d puts", target.putAuditCalls)
+	}
+	if got := string(target.audit[name]); got != `{"action":"pass"}`+"\n" {
+		t.Errorf("an existing segment must never be overwritten, got %q", got)
+	}
+
+	// Nothing to send is not an error, and writes nothing.
+	if err := r.PushAudit(AuditSegmentName("boxB", time.Unix(1700000001, 0), 17), nil); err != nil {
+		t.Fatal(err)
+	}
+	if target.putAuditCalls != 1 {
+		t.Errorf("an empty segment must not be pushed, got %d puts", target.putAuditCalls)
+	}
+}
+
+func TestPullAuditReassemblesInChronologicalOrder(t *testing.T) {
+	target := newFakeTarget()
+	r := New(target)
+
+	at := time.Unix(1700000000, 0)
+	if err := r.PushAudit(AuditSegmentName("boxB", at, 0), []byte("first\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.PushAudit(AuditSegmentName("boxB", at.Add(time.Minute), 6), []byte("second\n")); err != nil {
+		t.Fatal(err)
+	}
+	// A third segment written after a rotation restarts at offset 0, so
+	// only the timestamp keeps it in order.
+	if err := r.PushAudit(AuditSegmentName("boxB", at.Add(2*time.Minute), 0), []byte("third\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewRetriever(target).PullAudit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first\nsecond\nthird\n" {
+		t.Errorf("segments out of order: %q", got)
+	}
+}
+
+func TestAuditSegmentNameIsFilesystemSafe(t *testing.T) {
+	name := AuditSegmentName("box b/../..", time.Unix(1700000000, 0), 42)
+	for _, bad := range []string{"/", "..", " "} {
+		if strings.Contains(name, bad) {
+			t.Errorf("segment name %q contains %q", name, bad)
+		}
+	}
+}
+
+func TestFSTargetRejectsAnAuditNameWithAPathSeparator(t *testing.T) {
+	target, err := NewFSTarget(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := target.PutAudit("../escape.log", []byte("x")); err == nil {
+		t.Error("expected a segment name with a path separator to be refused")
+	}
+}
+
+func TestFSTargetAuditRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	target, err := NewFSTarget(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := target.AuditSegments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("expected no segments before anything is pushed, got %v", names)
+	}
+
+	name := AuditSegmentName("boxB", time.Unix(1700000000, 0), 0)
+	if err := target.PutAudit(name, []byte("line\n")); err != nil {
+		t.Fatal(err)
+	}
+	has, err := target.HasAudit(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Error("expected the pushed segment to be present")
+	}
+	data, err := target.GetAudit(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "line\n" {
+		t.Errorf("round trip mismatch: %q", data)
+	}
 }

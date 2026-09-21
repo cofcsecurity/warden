@@ -103,6 +103,39 @@ func (t *SSHTarget) GetManifest(namespace string, generation int) ([]byte, error
 func (t *SSHTarget) ManifestGenerations(namespace string) ([]int, error) {
 	dir := t.manifestsDir(namespace)
 
+	lines, err := t.listRemoteDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var gens []int
+	for _, line := range lines {
+		var g int
+		if _, err := fmt.Sscanf(line, "manifest-%d.json", &g); err == nil {
+			gens = append(gens, g)
+		}
+	}
+	sort.Ints(gens)
+	return gens, nil
+}
+
+// listRemoteDir returns the entry names in a remote directory, or no
+// names at all if the directory doesn't exist yet — matching
+// manifest.Generations' local-filesystem behavior. Existence is checked
+// separately rather than reading any non-zero ls exit as "empty": that
+// conflated "nothing has been pushed here yet" with a peer whose disk is
+// full, whose permissions are wrong, or whose directory we can't read,
+// and made retrieve report an empty peer that in fact holds every
+// generation this box owns.
+func (t *SSHTarget) listRemoteDir(dir string) ([]string, error) {
+	present, err := t.exists(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, nil
+	}
+
 	session, err := t.client.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("replicate: open session: %w", err)
@@ -111,24 +144,71 @@ func (t *SSHTarget) ManifestGenerations(namespace string) ([]int, error) {
 
 	var out bytes.Buffer
 	session.Stdout = &out
-	err = session.Run(fmt.Sprintf("ls -1 %s", shellQuote(dir)))
-	if err != nil {
-		var exitErr *ssh.ExitError
-		if errors.As(err, &exitErr) {
-			return nil, nil // directory doesn't exist (or is empty and ls errored)
-		}
+	if err := session.Run(fmt.Sprintf("ls -1 %s", shellQuote(dir))); err != nil {
 		return nil, fmt.Errorf("replicate: list %s: %w", dir, err)
 	}
 
-	var gens []int
+	var names []string
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		var g int
-		if _, err := fmt.Sscanf(strings.TrimSpace(line), "manifest-%d.json", &g); err == nil {
-			gens = append(gens, g)
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
 		}
 	}
-	sort.Ints(gens)
-	return gens, nil
+	return names, nil
+}
+
+func (t *SSHTarget) auditDir() string {
+	return path.Join(t.root, "audit")
+}
+
+// auditPath refuses a name containing a path separator, so a segment
+// name can only ever name a file directly inside the audit directory on
+// the peer.
+func (t *SSHTarget) auditPath(name string) (string, error) {
+	if name == "" || strings.Contains(name, "/") {
+		return "", fmt.Errorf("replicate: invalid audit segment name %q", name)
+	}
+	return path.Join(t.auditDir(), name), nil
+}
+
+func (t *SSHTarget) HasAudit(name string) (bool, error) {
+	p, err := t.auditPath(name)
+	if err != nil {
+		return false, err
+	}
+	return t.exists(p)
+}
+
+func (t *SSHTarget) PutAudit(name string, data []byte) error {
+	p, err := t.auditPath(name)
+	if err != nil {
+		return err
+	}
+	return t.writeOnceRemote(p, data)
+}
+
+func (t *SSHTarget) GetAudit(name string) ([]byte, error) {
+	p, err := t.auditPath(name)
+	if err != nil {
+		return nil, err
+	}
+	return t.readRemote(p)
+}
+
+func (t *SSHTarget) AuditSegments() ([]string, error) {
+	names, err := t.listRemoteDir(t.auditDir())
+	if err != nil {
+		return nil, err
+	}
+
+	var segments []string
+	for _, name := range names {
+		if strings.HasSuffix(name, ".log") {
+			segments = append(segments, name)
+		}
+	}
+	sort.Strings(segments)
+	return segments, nil
 }
 
 func (t *SSHTarget) exists(remotePath string) (bool, error) {

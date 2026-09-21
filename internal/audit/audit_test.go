@@ -136,3 +136,83 @@ func TestLastByComponentKeepsMostRecent(t *testing.T) {
 		t.Errorf("expected the later watch entry to win, got %+v", last["watch"])
 	}
 }
+
+func TestLogStampsTheHost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	log, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	if err := log.Log("watch", "pass", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, _ := os.Hostname()
+	if len(entries) != 1 || entries[0].Host != host {
+		t.Fatalf("expected the entry stamped with %q, got %+v", host, entries)
+	}
+}
+
+// TestRotationKeepsHistoryReadable pins both halves of the size cap: an
+// oversized log is moved aside rather than growing forever, and Read
+// still spans both files so alerts/status don't lose recent history the
+// moment it happens.
+func TestRotationKeepsHistoryReadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	log, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Log("watch", "before-rotation", nil); err != nil {
+		t.Fatal(err)
+	}
+	log.Close()
+
+	// Pad past the cap without writing 8 MiB of real entries.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(MaxLogBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	log, err = New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	if err := log.Log("watch", "after-rotation", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(RotatedPath(path)); err != nil {
+		t.Fatalf("expected the oversized log rotated aside: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() >= MaxLogBytes {
+		t.Errorf("expected a fresh log after rotation, got %d bytes", info.Size())
+	}
+
+	entries, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []string
+	for _, e := range entries {
+		actions = append(actions, e.Action)
+	}
+	if len(actions) != 2 || actions[0] != "before-rotation" || actions[1] != "after-rotation" {
+		t.Errorf("expected both sides of the rotation, oldest first, got %v", actions)
+	}
+}

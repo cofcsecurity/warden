@@ -6,6 +6,9 @@ package replicate
 
 import (
 	"fmt"
+	"sort"
+	"strings"
+	"time"
 
 	"warden/internal/manifest"
 	"warden/internal/store"
@@ -37,6 +40,60 @@ type Target interface {
 	// ManifestGenerations returns every generation number the target has
 	// for namespace, sorted oldest first.
 	ManifestGenerations(namespace string) ([]int, error)
+
+	// The audit log travels the same additive-only way: one immutable
+	// segment per push, holding whatever was appended to the log since
+	// the last one. Without this, the audit trail was the one thing
+	// replication didn't carry — a root compromise that deleted
+	// audit.log destroyed the entire evidence record, on a box whose
+	// backups were otherwise specifically built to survive exactly that.
+	// Segment names sort into chronological order (see
+	// AuditSegmentName), so concatenating them in order reconstructs the
+	// log.
+	HasAudit(name string) (bool, error)
+	PutAudit(name string, data []byte) error
+	GetAudit(name string) ([]byte, error)
+	AuditSegments() ([]string, error)
+}
+
+// AuditSegmentName builds the name for one pushed chunk of a box's audit
+// log: the box it came from, when it was pushed, and the byte offset it
+// starts at.
+//
+// Both numbers are fixed-width so the names sort chronologically as
+// plain strings (see PullAudit), and the timestamp is nanoseconds
+// rather than seconds specifically so two segments pushed in the same
+// pass can't collide: a collision isn't a duplicate, it's silent data
+// loss, since the write-once targets skip a name that already exists —
+// which is exactly what a log that rotated and restarted at offset 0
+// would produce.
+func AuditSegmentName(host string, at time.Time, offset int64) string {
+	if host == "" {
+		host = "unknown"
+	}
+	return fmt.Sprintf("%s-%019d-%012d.log", sanitizeHost(host), at.UTC().UnixNano(), offset)
+}
+
+// sanitizeHost keeps a hostname to characters that are safe in a
+// filename and in a remote shell command, so an odd hostname can't
+// become an injection or a path traversal on the peer. Dots go too,
+// even though they're legal in both: a name that can't contain "." can't
+// contain ".." either, which is one fewer thing to reason about at the
+// far end. An FQDN reads fine as box_example_com.
+func sanitizeHost(host string) string {
+	var b strings.Builder
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
 }
 
 // Replicator pushes store objects and manifest generations to a Target.
@@ -80,6 +137,27 @@ func (r *Replicator) Push(namespace string, m *manifest.Manifest, manifestData [
 	}
 	if err := r.target.PutManifest(namespace, m.Generation, manifestData); err != nil {
 		return fmt.Errorf("replicate: push manifest generation %d: %w", m.Generation, err)
+	}
+	return nil
+}
+
+// PushAudit writes one audit-log segment to the target, unless a segment
+// of that name is already there. Separate from Push: the audit log has
+// no manifest and no generation, and a peer being unable to take it must
+// not cost the snapshot push that already succeeded.
+func (r *Replicator) PushAudit(name string, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	has, err := r.target.HasAudit(name)
+	if err != nil {
+		return fmt.Errorf("replicate: check audit segment %s: %w", name, err)
+	}
+	if has {
+		return nil
+	}
+	if err := r.target.PutAudit(name, data); err != nil {
+		return fmt.Errorf("replicate: push audit segment %s: %w", name, err)
 	}
 	return nil
 }
@@ -139,4 +217,28 @@ func (r *Retriever) Pull(namespace string, generation int, st *store.Store) (*ma
 	}
 
 	return m, nil
+}
+
+// PullAudit reassembles every audit-log segment the target holds, in
+// name order — which is chronological order per box, since that's what
+// AuditSegmentName encodes. With several boxes replicating into one
+// root, this returns all of their logs interleaved by box then time;
+// each line carries its own host field (see internal/audit), so they
+// stay tellable apart.
+func (r *Retriever) PullAudit() ([]byte, error) {
+	names, err := r.target.AuditSegments()
+	if err != nil {
+		return nil, fmt.Errorf("retrieve: list audit segments: %w", err)
+	}
+	sort.Strings(names)
+
+	var out []byte
+	for _, name := range names {
+		data, err := r.target.GetAudit(name)
+		if err != nil {
+			return nil, fmt.Errorf("retrieve: fetch audit segment %s: %w", name, err)
+		}
+		out = append(out, data...)
+	}
+	return out, nil
 }

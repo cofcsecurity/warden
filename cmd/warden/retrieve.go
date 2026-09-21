@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -19,12 +20,16 @@ func retrieveCmd() *cobra.Command {
 	var tierFlag string
 	var generationFlag int
 	var apply bool
+	var auditOut string
 
 	cmd := &cobra.Command{
 		Use:   "retrieve <peer-url>",
 		Short: "Pull this box's own backups back from a replication peer",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if auditOut != "" {
+				return runRetrieveAudit(args[0], auditOut)
+			}
 			tier, err := parseTier(tierFlag)
 			if err != nil {
 				return err
@@ -32,6 +37,7 @@ func retrieveCmd() *cobra.Command {
 			return runRetrieve(args[0], tier, generationFlag, apply)
 		},
 	}
+	cmd.Flags().StringVar(&auditOut, "audit", "", "instead of a snapshot, reassemble the replicated audit log into this file (\"-\" for stdout)")
 	cmd.Flags().StringVar(&tierFlag, "tier", string(tierConfig), `snapshot tier to pull: "config" or "data"`)
 	cmd.Flags().IntVar(&generationFlag, "generation", 0, "generation to pull (default: latest available on the peer)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "adopt the pulled manifest as this box's live baseline (default: report what's available and stop)")
@@ -91,6 +97,46 @@ func runRetrieve(peerURL string, tier snapshotTier, generation int, apply bool) 
 	}
 
 	fmt.Printf("adopted as the live %s-tier baseline; 'warden watch'/'warden restore' will use it from here\n", tier)
+	return nil
+}
+
+// runRetrieveAudit reassembles the audit-log segments a peer holds back
+// into one JSON-lines file. This is the recovery half of the reason the
+// log is replicated at all: if red team deleted audit.log on this box (or
+// the box was rebuilt from scratch), the evidence of what happened is
+// still sitting on the peer, and this is how it comes back.
+//
+// The output is written somewhere the operator names, never over the live
+// audit log: mixing a peer's copy back into the file this box is actively
+// appending to would muddle the local record with a remote one.
+func runRetrieveAudit(peerURL, outPath string) error {
+	hostKey, err := hostKeyForConfiguredTarget(peerURL)
+	if err != nil {
+		return err
+	}
+
+	target, closeTarget, err := dialReplicateTarget(peerURL, hostKey)
+	if err != nil {
+		return err
+	}
+	defer closeTarget()
+
+	data, err := replicate.NewRetriever(target).PullAudit()
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("retrieve: %s holds no replicated audit log", peerURL)
+	}
+
+	if outPath == "-" {
+		_, err := os.Stdout.Write(data)
+		return err
+	}
+	if err := os.WriteFile(outPath, data, 0o600); err != nil {
+		return fmt.Errorf("retrieve: write %s: %w", outPath, err)
+	}
+	fmt.Printf("wrote %d bytes of replicated audit log from %s to %s\n", len(data), peerURL, outPath)
 	return nil
 }
 

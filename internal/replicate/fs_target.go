@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // FSTarget is a Target backed by a local (or removable-media) filesystem
@@ -66,6 +67,66 @@ func (t *FSTarget) GetManifest(namespace string, generation int) ([]byte, error)
 		return nil, fmt.Errorf("replicate: read manifest %s: %w", path, err)
 	}
 	return data, nil
+}
+
+func (t *FSTarget) auditDir() string {
+	return filepath.Join(t.root, "audit")
+}
+
+// auditPath refuses a name with any path separator in it, so a segment
+// name can only ever land inside the audit directory.
+func (t *FSTarget) auditPath(name string) (string, error) {
+	if name == "" || name != filepath.Base(name) {
+		return "", fmt.Errorf("replicate: invalid audit segment name %q", name)
+	}
+	return filepath.Join(t.auditDir(), name), nil
+}
+
+func (t *FSTarget) HasAudit(name string) (bool, error) {
+	path, err := t.auditPath(name)
+	if err != nil {
+		return false, err
+	}
+	return exists(path)
+}
+
+func (t *FSTarget) PutAudit(name string, data []byte) error {
+	path, err := t.auditPath(name)
+	if err != nil {
+		return err
+	}
+	return writeOnceLocal(path, data)
+}
+
+func (t *FSTarget) GetAudit(name string) ([]byte, error) {
+	path, err := t.auditPath(name)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("replicate: read audit segment %s: %w", name, err)
+	}
+	return data, nil
+}
+
+func (t *FSTarget) AuditSegments() ([]string, error) {
+	entries, err := os.ReadDir(t.auditDir())
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("replicate: list %s: %w", t.auditDir(), err)
+	}
+
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".log") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (t *FSTarget) ManifestGenerations(namespace string) ([]int, error) {
