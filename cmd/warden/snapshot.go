@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -58,14 +59,74 @@ func runSnapshot(tier snapshotTier) error {
 		return err
 	}
 
+	armed, err := isArmed(p)
+	if err != nil {
+		return err
+	}
+
+	// An armed box's config baseline is frozen: drift is something to
+	// revert, never something to absorb.
+	//
+	// Without this, the two timers raced for it. snapshot and watch both
+	// run every five minutes, jittered independently, so an attacker's
+	// edit was reverted if watch happened to fire first and *became the
+	// new known-good state* if snapshot did — roughly a coin flip, per
+	// edit, silently. A backdoor that won that toss was then defended by
+	// Warden rather than removed by it, and nothing in the audit log,
+	// `status` or `alerts` would ever say so, because from the next pass
+	// on there was no drift left to see.
+	//
+	// Config tier only. The data tier exists to back up service data
+	// that legitimately changes all day — freezing that would just stop
+	// taking backups.
+	if armed && tier == tierConfig {
+		var declined []string
+		next.Records, declined = keepBaseline(last, next)
+		if len(declined) > 0 {
+			if err := log.Log("snapshot", "declined-drift", map[string]any{
+				"tier":  string(tier),
+				"paths": declined,
+			}); err != nil {
+				return err
+			}
+			fmt.Printf("snapshot: kept the existing baseline for %d drifted path(s); watch handles those, not snapshot\n", len(declined))
+		}
+	}
+
 	for _, r := range next.Records {
+		// Skip anything already stored. While armed that's every record
+		// (the baseline's content was stored when it was taken), which
+		// also means this never reads a path that has since drifted or
+		// been deleted — the record is frozen, so reading the file back
+		// would either add an object nothing references or, for a
+		// deleted path, fail the whole snapshot.
+		if st.Has(r.Hash) {
+			continue
+		}
 		content, err := os.ReadFile(r.Path)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return fmt.Errorf("snapshot: read %s: %w", r.Path, err)
 		}
 		if _, err := st.Put(content); err != nil {
 			return fmt.Errorf("snapshot: store %s: %w", r.Path, err)
 		}
+	}
+
+	// Nothing moved, so there's nothing to record: a new generation per
+	// five minutes that's byte-identical to the last one is just a
+	// directory full of duplicates for restore --snapshot to wade
+	// through. This is the normal case on an armed, quiet box.
+	if sameRecords(last.Records, next.Records) {
+		if err := pruneOldObjects(p, st); err != nil {
+			return fmt.Errorf("snapshot: prune: %w", err)
+		}
+		return log.Log("snapshot", "unchanged", map[string]any{
+			"tier":       string(tier),
+			"generation": last.Generation,
+		})
 	}
 
 	if err := next.SaveAs(manifestPath); err != nil {
@@ -84,6 +145,64 @@ func runSnapshot(tier snapshotTier) error {
 		"generation": next.Generation,
 		"records":    len(next.Records),
 	})
+}
+
+// keepBaseline merges a freshly generated manifest onto an existing
+// baseline without letting anything new in: a path whose content changed
+// keeps its baseline record, a path that's gone keeps it too (so watch
+// still has known-good content to restore from), and a path that has
+// appeared since is left out entirely. It returns the merged records and
+// the paths whose current state was declined.
+//
+// The effect is that while armed, the only things that can change the
+// config baseline are the two commands a human runs deliberately:
+// 'warden accept' for one path, 'warden arm' for all of them.
+func keepBaseline(last, next *manifest.Manifest) (records []manifest.Record, declined []string) {
+	current := map[string]manifest.Record{}
+	for _, r := range next.Records {
+		current[r.Path] = r
+	}
+
+	baselined := map[string]bool{}
+	for _, old := range last.Records {
+		baselined[old.Path] = true
+		now, present := current[old.Path]
+		switch {
+		case !present:
+			declined = append(declined, old.Path) // deleted; watch restores it
+		case now.Hash != old.Hash || now.Symlink != old.Symlink:
+			declined = append(declined, old.Path)
+		}
+		records = append(records, old)
+	}
+
+	for _, r := range next.Records {
+		if !baselined[r.Path] {
+			declined = append(declined, r.Path) // new since the baseline
+		}
+	}
+
+	sort.Strings(declined)
+	return records, declined
+}
+
+// sameRecords reports whether two record sets describe identical state,
+// ignoring order.
+func sameRecords(a, b []manifest.Record) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	byPath := make(map[string]manifest.Record, len(a))
+	for _, r := range a {
+		byPath[r.Path] = r
+	}
+	for _, r := range b {
+		other, ok := byPath[r.Path]
+		if !ok || other.Hash != r.Hash || other.Mode != r.Mode || other.Class != r.Class || other.Symlink != r.Symlink {
+			return false
+		}
+	}
+	return true
 }
 
 // pruneOldObjects keeps every object referenced by the last
