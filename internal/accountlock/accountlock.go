@@ -9,6 +9,7 @@ package accountlock
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,6 +66,17 @@ func (o OSAccounts) Lock(user string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// If the account is *already* shut out — a lock this box's store no
+	// longer knows about (the JSON was deleted or restored from an older
+	// copy), or an account the team themselves disabled — then its
+	// current shell is not a shell worth restoring. Recording it would
+	// make the eventual Unlock "restore" the account to nologin
+	// permanently, which reads as Warden having silently kept it locked
+	// forever. Recording nothing instead means Unlock leaves the shell
+	// alone for a human to set, which is recoverable.
+	if isNoLoginShell(previous, o.NologinShell) {
+		previous = ""
+	}
 	if out, err := exec.Command("passwd", "-l", user).CombinedOutput(); err != nil {
 		return "", fmt.Errorf("accountlock: passwd -l %s: %w: %s", user, err, out)
 	}
@@ -95,6 +107,23 @@ func (o OSAccounts) KillSessions(user string) error {
 	// an error either way.
 	_ = exec.Command("pkill", "-KILL", "-u", user).Run()
 	return nil
+}
+
+// isNoLoginShell reports whether shell is one of the conventional "this
+// account cannot log in" shells, including whichever one this box uses
+// for locking (nologinShell, from units.go's nologinShellPath).
+func isNoLoginShell(shell, nologinShell string) bool {
+	if shell == "" {
+		return true
+	}
+	if nologinShell != "" && shell == nologinShell {
+		return true
+	}
+	switch shell {
+	case "/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/false":
+		return true
+	}
+	return false
 }
 
 // currentShell reads user's login shell straight out of /etc/passwd —
@@ -220,11 +249,19 @@ func Reconcile(store *Store, sys System, now time.Time) (active []string, expire
 		return nil, nil, err
 	}
 
+	// One account that won't unlock (a usermod that fails, an account
+	// deleted out from under us) must not strand every later lock in the
+	// list as still-locked: each is handled independently and the errors
+	// are reported together at the end. A lock whose Unlock failed stays
+	// in the store so the next pass tries it again.
 	var kept []Lock
+	var errs []error
 	for _, l := range locks {
 		if l.Expired(now) {
 			if err := sys.Unlock(l.User, l.PreviousShell); err != nil {
-				return active, expired, err
+				errs = append(errs, err)
+				kept = append(kept, l)
+				continue
 			}
 			expired = append(expired, l.User)
 			continue
@@ -234,7 +271,7 @@ func Reconcile(store *Store, sys System, now time.Time) (active []string, expire
 	}
 
 	if err := store.Save(kept); err != nil {
-		return active, expired, err
+		errs = append(errs, err)
 	}
-	return active, expired, nil
+	return active, expired, errors.Join(errs...)
 }

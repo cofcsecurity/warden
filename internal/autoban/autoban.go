@@ -8,6 +8,7 @@ package autoban
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -167,24 +168,35 @@ func Reconcile(store *Store, fw Firewall, now time.Time) (active []string, expir
 		return nil, nil, err
 	}
 
+	// Every ban is handled independently, and the errors are reported
+	// together at the end: a single flaky iptables call used to abort
+	// the whole pass, leaving every later ban in the list un-reasserted
+	// — exactly the state red team's `iptables -F` creates, and exactly
+	// the state this loop exists to repair.
 	var kept []Ban
+	var errs []error
 	for _, b := range bans {
 		if b.Expired(now) {
 			if err := fw.Unblock(b.IP); err != nil {
-				return active, expired, err
+				// Keep it, so the next pass retries the unblock rather
+				// than forgetting a rule that's still in the firewall.
+				errs = append(errs, err)
+				kept = append(kept, b)
+				continue
 			}
 			expired = append(expired, b.IP)
 			continue
 		}
 		if err := fw.Block(b.IP); err != nil {
-			return active, expired, err
+			errs = append(errs, err)
+		} else {
+			active = append(active, b.IP)
 		}
-		active = append(active, b.IP)
 		kept = append(kept, b)
 	}
 
 	if err := store.Save(kept); err != nil {
-		return active, expired, err
+		errs = append(errs, err)
 	}
-	return active, expired, nil
+	return active, expired, errors.Join(errs...)
 }

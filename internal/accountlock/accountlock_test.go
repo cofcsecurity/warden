@@ -1,6 +1,7 @@
 package accountlock
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -171,5 +172,69 @@ func TestKillSessionsCalledOnLock(t *testing.T) {
 	}
 	if !sys.killed["alovelace"] {
 		t.Fatal("expected KillSessions to record the call")
+	}
+}
+
+// TestLockDoesNotRecordAnAlreadyLockedShell covers a store/OS desync: if
+// the account is already shut out when Lock runs, recording its current
+// nologin shell as "previous" would make the eventual Unlock restore it
+// to nologin — locked forever, silently.
+func TestLockDoesNotRecordAnAlreadyLockedShell(t *testing.T) {
+	sys := OSAccounts{NologinShell: "/usr/sbin/nologin"}
+	for shell, wantEmpty := range map[string]bool{
+		"/bin/bash":         false,
+		"/usr/sbin/nologin": true,
+		"/sbin/nologin":     true,
+		"/bin/false":        true,
+		"":                  true,
+	} {
+		if got := isNoLoginShell(shell, sys.NologinShell); got != wantEmpty {
+			t.Errorf("isNoLoginShell(%q) = %v, want %v", shell, got, wantEmpty)
+		}
+	}
+}
+
+// failingSystem refuses to unlock one specific user.
+type failingSystem struct {
+	*fakeSystem
+	failOn string
+}
+
+func (f *failingSystem) Unlock(user, shell string) error {
+	if user == f.failOn {
+		return errors.New("usermod: user does not exist")
+	}
+	return f.fakeSystem.Unlock(user, shell)
+}
+
+func TestReconcileKeepsGoingPastAFailedUnlock(t *testing.T) {
+	store := newTestStore(t)
+	sys := &failingSystem{fakeSystem: newFakeSystem(), failOn: "bravo"}
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+
+	for _, user := range []string{"alpha", "bravo", "charlie"} {
+		if err := Add(store, sys.fakeSystem, user, "test", time.Minute, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, expired, err := Reconcile(store, sys, now.Add(time.Hour))
+	if err == nil {
+		t.Error("expected the failing unlock to be reported")
+	}
+	if len(expired) != 2 {
+		t.Errorf("expected the other two locks to still be lifted, got %v", expired)
+	}
+	if sys.locked["charlie"] {
+		t.Error("a lock after the failing one was never lifted — one failure stranded the rest")
+	}
+
+	// The one that failed stays in the store so the next pass retries it.
+	locks, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locks) != 1 || locks[0].User != "bravo" {
+		t.Errorf("expected only the failed unlock kept, got %+v", locks)
 	}
 }

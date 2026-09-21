@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -56,6 +57,12 @@ func runSentinelCheck() error {
 		fmt.Printf("recreated: %v\n", res.Recreated)
 	}
 
+	// Reconcile errors below are collected rather than returned straight
+	// away: each pass keeps going past a single failure internally (see
+	// autoban.Reconcile), so ending sentinel-check on the first error
+	// would undo that by skipping the other reconcile entirely.
+	var reconcileErrs []error
+
 	// Ban reconciliation piggybacks on sentinel-check's existing
 	// "reassert desired state every pass" schedule, rather than adding a
 	// third periodic invocation: reapply any active ban whose firewall
@@ -63,7 +70,7 @@ func runSentinelCheck() error {
 	// iptables -F), and lift anything past its expiry.
 	active, expired, err := autoban.Reconcile(autoban.NewStore(p.bannedIPsPath), autoban.IPTables{}, time.Now())
 	if err != nil {
-		return fmt.Errorf("sentinel-check: reconcile bans: %w", err)
+		reconcileErrs = append(reconcileErrs, fmt.Errorf("sentinel-check: reconcile bans: %w", err))
 	}
 	if len(expired) > 0 {
 		if err := log.Log("react", "ban-expired", map[string]any{"ips": expired}); err != nil {
@@ -86,7 +93,7 @@ func runSentinelCheck() error {
 		time.Now(),
 	)
 	if err != nil {
-		return fmt.Errorf("sentinel-check: reconcile account locks: %w", err)
+		reconcileErrs = append(reconcileErrs, fmt.Errorf("sentinel-check: reconcile account locks: %w", err))
 	}
 	if len(expiredLocks) > 0 {
 		if err := log.Log("react", "lock-expired", map[string]any{"users": expiredLocks}); err != nil {
@@ -97,5 +104,5 @@ func runSentinelCheck() error {
 	if len(lockedAccounts) > 0 {
 		fmt.Printf("active account lock(s): %v\n", lockedAccounts)
 	}
-	return nil
+	return errors.Join(reconcileErrs...)
 }

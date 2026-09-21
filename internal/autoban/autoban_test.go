@@ -1,6 +1,7 @@
 package autoban
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -144,5 +145,53 @@ func TestReconcileExpiresOldBansAndKeepsActiveOnesApplied(t *testing.T) {
 	}
 	if len(bans) != 1 || bans[0].IP != "198.51.100.5" {
 		t.Fatalf("expected only the still-active ban persisted, got %+v", bans)
+	}
+}
+
+// flakyFirewall fails on one specific IP and works for every other, to
+// prove one bad rule doesn't strand the rest of the list.
+type flakyFirewall struct {
+	*fakeFirewall
+	failOn string
+}
+
+func (f *flakyFirewall) Block(ip string) error {
+	if ip == f.failOn {
+		return errors.New("iptables: resource temporarily unavailable")
+	}
+	return f.fakeFirewall.Block(ip)
+}
+
+func TestReconcileKeepsGoingPastAFailedRule(t *testing.T) {
+	store := newTestStore(t)
+	fw := &flakyFirewall{fakeFirewall: newFakeFirewall(), failOn: "203.0.113.11"}
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+
+	for _, ip := range []string{"203.0.113.10", "203.0.113.11", "203.0.113.12"} {
+		if err := Add(store, fw.fakeFirewall, ip, "test", time.Hour, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Simulate red team flushing the chain out from under us.
+	fw.blocked = map[string]bool{}
+
+	active, _, err := Reconcile(store, fw, now.Add(time.Minute))
+	if err == nil {
+		t.Error("expected the failing rule to be reported")
+	}
+	if !fw.blocked["203.0.113.12"] {
+		t.Error("a ban after the failing one was never reasserted — one bad rule stranded the rest")
+	}
+	if len(active) != 2 {
+		t.Errorf("expected the two reasserted bans to be reported active, got %v", active)
+	}
+
+	// Nothing was dropped from the store, so the next pass retries.
+	bans, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bans) != 3 {
+		t.Errorf("expected all three bans kept for the next pass, got %d", len(bans))
 	}
 }
