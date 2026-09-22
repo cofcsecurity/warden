@@ -173,7 +173,7 @@ func cronLine(unitName, path string) string {
 }
 
 // authorizedKeysLine reproduces exactly what deploy/install.sh's
-// step_authorize_key appends, so sentinel can detect and restore it
+// step_authorize_key installs, so sentinel can detect and restore it
 // without a second definition of the format drifting from the first. The
 // forced command runs through sudo — see opmenuUser.
 func authorizedKeysLine(path string) (string, error) {
@@ -181,7 +181,7 @@ func authorizedKeysLine(path string) (string, error) {
 		return "", fmt.Errorf("sentinel: buildTeamPubKey/buildTeamFromIP not baked in at build time")
 	}
 	return fmt.Sprintf(
-		`command="sudo %s opmenu",from="%s",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s`,
+		`command="sudo %s opmenu",from="%s",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-user-rc,no-pty %s`,
 		path, buildTeamFromIP, buildTeamPubKey,
 	), nil
 }
@@ -206,19 +206,13 @@ func sudoersDropInPath(user string) string {
 	return "/etc/sudoers.d/" + user
 }
 
-// sudoersDropInContent grants running this one binary as root, without a
-// password — required since a forced-command session has no terminal.
-// Nothing broader. !requiretty guards against a box-wide `Defaults
-// requiretty` blocking this rule.
+// sudoersDropInContent permits only the second-factor gate. The SSH request
+// and source address must survive sudo's environment reset.
 func sudoersDropInContent(user, path string) string {
-	return fmt.Sprintf("Defaults:%s !requiretty\n%s ALL=(root) NOPASSWD: %s\n", user, user, path)
+	return fmt.Sprintf("Defaults:%s !requiretty\nDefaults:%s env_keep += \"SSH_ORIGINAL_COMMAND SSH_CLIENT\"\n%s ALL=(root) NOPASSWD: %s opmenu\n", user, user, user, path)
 }
 
-// nologinShellPath finds whatever this distro actually calls its
-// no-login shell — mirrors deploy/install.sh's nologin_shell() exactly,
-// so accountlock.OSAccounts locks an account to the same shell path
-// install.sh already uses for the opmenu account, rather than a second
-// definition of "no login" drifting from the first.
+// nologinShellPath locates the shell used to disable suspect accounts.
 func nologinShellPath() string {
 	for _, candidate := range []string{"/usr/sbin/nologin", "/sbin/nologin"} {
 		if info, err := os.Stat(candidate); err == nil && info.Mode()&0o111 != 0 {

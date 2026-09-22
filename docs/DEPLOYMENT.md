@@ -92,10 +92,25 @@ install -d -o warden-backup-box2 -g warden-backup-box2 -m 700 /home/warden-backu
 install -d -o root -g root -m 755 /home/warden-backup-box2/.ssh
 ```
 
-Create a root-owned `authorized_keys` file with mode 644 in that `.ssh` directory. Keep the account's home owned by root as well so the receiving account cannot replace `.ssh`. Install the receiving binary at a root-owned path. For a source with manifest signing enabled, use this key entry, replacing the placeholders:
+Create a root-owned `authorized_keys` file with mode 644 in that `.ssh` directory. Keep the account's home owned by root as well so the receiving account cannot replace `.ssh`. Build a separate receiver binary without host credentials. The main installed binary is mode 0700 and cannot be executed by this account; changing its mode would also expose its compiled credentials.
+
+On the build machine:
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o warden-receiver ./cmd/warden
+```
+
+Do not pass the main build's secret-bearing linker flags. Transfer this binary to the receiving host, then install it:
+
+```sh
+install -d -o root -g root -m 755 /usr/local/libexec
+install -o root -g root -m 755 warden-receiver /usr/local/libexec/warden-receiver
+```
+
+ For a source with manifest signing enabled, use this key entry, replacing the placeholders:
 
 ```text
-restrict,from="<box2 IP>",command="/usr/local/sbin/warden receive --root /home/warden-backup-box2/from-box2 --source box2 --public-key <base64 manifest public key>" <box2 replication SSH public key>
+restrict,from="<box2 IP>",command="/usr/local/libexec/warden-receiver receive --root /home/warden-backup-box2/from-box2 --source box2 --public-key <base64 manifest public key>" <box2 replication SSH public key>
 ```
 
 Configure the source target as `ssh+receiver://warden-backup-box2@box1/from-box2`, with the receiver's pinned SSH host key. The forced command chooses the storage root; the URL path does not choose or change it. Each source needs its own account/key restriction and root. The receiver permits verified object writes, immutable manifest writes, audit segments, heartbeats, and reads. It exposes no shell, delete, rename, or retention operation. Requests are limited to 256 MiB of JSON, including base64 overhead. Large individual data files need a different backup method until chunked transfers are supported.
@@ -242,6 +257,10 @@ Once the access-layer verification prompt near the end passes, `install.sh` dele
 
 - `ssh -i <team's own login private key> <opmenu-user>@<box> status` (over the opmenu forced command) reports a manifest generation and recent watch/sentinel passes. `<opmenu-user>` is `INSTALL_PATH`'s basename (`docs/DESIGN.md`'s opmenu section). This is the team's own key from step 3/`TEAM_PUBKEY`, not a `secrets/<box>/replicate_key`, which authenticates the *box* to its replication peers, not an operator to the box.
 - Run `warden replicate` by hand once (don't wait for the timer) and confirm objects landed on **both** neighbors: `ssh <neighbor> 'find /home/warden-backup/from-<box> -type f'` should show `manifests-config/`, `manifests-data/`, and `objects/`.
+
+The dedicated operator account uses `/bin/sh` so sshd can execute its forced command. Its home and `.ssh` directory are root-owned mode 0755, and `authorized_keys` is root-owned mode 0644. The file contains only the configured team key; installation and sentinel repair replace extra entries. The public key is readable, but the account cannot edit it. The sudo rule permits only `<INSTALL_PATH> opmenu` and preserves the two SSH request variables used by that handler. User SSH startup scripts are disabled on the managed key.
+
+For existing installations, replacing the binary does not migrate the account shell or directory ownership. From an existing trusted root session, set the dedicated account's shell to `/bin/sh`, apply the ownership and modes above, and run `sentinel-check` to update the key and sudo rules. Verify `status`, rejection of an incorrect second factor, and authenticated `shell` from the allowed team address before closing that session. Review effective sshd configuration for alternate key files, certificate authorities, password authentication, and account restrictions. Those host-wide settings remain administrator-controlled. Do not grant the dedicated account broader sudo privileges through another rule or group.
 
 Save the static second factor printed during installation. Restore and shell accept it as an alternative to TOTP. Run `<INSTALL_PATH> rotate-secret` from an existing shell to replace it.
 

@@ -1,5 +1,7 @@
 # Review findings
 
+The [September 22 deployment review](REVIEW-2026-09-22.md) records six additional open findings against `8e45fe5`. The review below describes the preceding implementation.
+
 Reviewed recovery, replication, snapshots, restore, watch, and account locks at commit `92834c8` on 2026-09-21. Eight isolated probes reproduced the failures below using temporary files, a fake account backend, and a fake systemctl command. No real accounts or services were changed. The implementation following this review addresses these findings; the original reproductions below describe the reviewed version.
 
 Fixed in this pass:

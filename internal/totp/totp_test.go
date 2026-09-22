@@ -3,7 +3,10 @@ package totp
 import (
 	"encoding/base32"
 	"errors"
+	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -126,5 +129,46 @@ func TestValidateAtReportsTheMatchedStep(t *testing.T) {
 	}
 	if want := at.Unix() / int64(DefaultPeriod.Seconds()); counter != want {
 		t.Errorf("expected step %d, got %d", want, counter)
+	}
+}
+
+func TestConsumeCounterRejectsCorruptState(t *testing.T) {
+	for _, data := range []string{"", "broken", "-1"} {
+		path := filepath.Join(t.TempDir(), "spent")
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := ConsumeCounter(path, 100); err == nil {
+			t.Fatalf("accepted corrupt state %q", data)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != data {
+			t.Fatalf("changed corrupt state: %q, %v", got, err)
+		}
+	}
+}
+
+func TestConsumeCounterConcurrentRequests(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spent")
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var accepted atomic.Int32
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if ConsumeCounter(path, 100) == nil {
+				accepted.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := accepted.Load(); got != 1 {
+		t.Fatalf("accepted %d concurrent uses, want 1", got)
+	}
+	if err := ConsumeCounter(path, 100); !errors.Is(err, ErrCodeAlreadyUsed) {
+		t.Fatalf("accepted replay after contention: %v", err)
 	}
 }

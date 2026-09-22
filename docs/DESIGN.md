@@ -2,7 +2,7 @@
 
 Design notes for the persistence and backup/restoration system.
 
-Sep 20, 2026
+Updated September 22, 2026
 
 ## Project Description
 
@@ -19,6 +19,84 @@ Core constraints:
 3. Retains access to status, restore, and authenticated repair commands.
 4. Team-only: access is restricted to the defense team's key and source IP, not a general-purpose backdoor.
 5. Auditable: every action Warden takes is logged, so the team can show exactly what it did if questioned.
+
+## Deployment layout
+
+Each defended host runs the same short-lived Warden commands. Systemd timers schedule checks and snapshots; cron provides a second trigger for sentinel. There is no central Warden server. The diagram expands host A and shows its two backup neighbors.
+
+```mermaid
+flowchart TB
+    Team["Team workstation<br/>Builds host-specific binary and holds second factors"]
+
+    subgraph A["Defended host A"]
+        Access["Existing sshd<br/>Restricted opmenu account"]
+        Schedule["Systemd timers<br/>Cron sentinel fallback"]
+        Agent["Warden commands as root<br/>watch · snapshot · scan · sentinel<br/>restore · replicate · verify-backups"]
+        Profile["Host profile<br/>Paths, service mappings, validators"]
+        Config["Configuration files<br/>Auto-restore and confirm-first paths"]
+        Data["Service data files<br/>Snapshots and explicit restore"]
+        State[("Own backup state<br/>Config and data manifests<br/>Content-addressed objects")]
+        Logs[("Audit log and response state<br/>Pending reloads and backup health")]
+        Auth["sshd auth log or journal"]
+        Response["Local firewall bans<br/>Local account locks"]
+        ReceiverA["Separate receive binary<br/>Forced SSH command per source"]
+        Inbound[("Incoming peer backups<br/>Separate per-source roots")]
+    end
+
+    subgraph B["Neighbor B"]
+        AgentB["B's Warden commands"]
+        ReceiverB["Restricted receiver for A"]
+        CopyB[("A's objects and signed manifests<br/>Audit segments and heartbeats")]
+    end
+
+    subgraph C["Neighbor C"]
+        AgentC["C's Warden commands"]
+        ReceiverC["Restricted receiver for A"]
+        CopyC[("A's objects and signed manifests<br/>Audit segments and heartbeats")]
+    end
+
+    Local[("Optional local replica<br/>Mounted storage via file URL")]
+
+    Team -->|"Deploy binary and profile"| Agent
+    Team -->|"Team SSH key and source restriction"| Access
+    Access -->|"Second factor; scoped sudo"| Agent
+    Schedule --> Agent
+    Profile -.-> Agent
+    Config -->|"Snapshot and integrity checks"| Agent
+    Data -->|"Snapshot"| Agent
+    Agent -->|"Armed auto-restore or explicit repair"| Config
+    Agent -->|"Explicit restore"| Data
+    Agent <--> State
+    Agent --> Logs
+    Auth -->|"Attribution evidence"| Agent
+    Agent -->|"Opt-in response"| Response
+    Agent -->|"Pinned SSH: ssh+receiver"| ReceiverB
+    Agent -->|"Pinned SSH: ssh+receiver"| ReceiverC
+    ReceiverB --> CopyB
+    ReceiverC --> CopyC
+    CopyB -.->|"Verified recovery through receiver"| Agent
+    CopyC -.->|"Verified recovery through receiver"| Agent
+    Agent -->|"Replication"| Local
+    Local -.->|"Verified recovery"| Agent
+    AgentB -->|"B's backups and heartbeat"| ReceiverA
+    AgentC -->|"C's backups and heartbeat"| ReceiverA
+    ReceiverA --> Inbound
+    Inbound -->|"Received heartbeats: fleet and sentinel"| Agent
+```
+
+The solid replication arrows carry objects, manifests, audit segments, and heartbeats. Dotted recovery arrows show reads of A's own copies through configured receivers or local storage. Recovery verifies object hashes before caching bytes. Signature enforcement requires the source's manifest public key to be configured; the signature labels show that deployment option.
+
+The main host binary is root-only and contains its compiled credentials. Receiving accounts execute a separate, root-owned receiver binary built without those credentials. Each receiving SSH key is forced into one storage root; the protocol provides no delete, rename, shell, or retention command. The receiving administrator controls retention and quotas. Legacy `ssh://` targets use a shell transport and do not provide this receiver boundary.
+
+B and C also maintain their own local baselines and replicate to their neighbors. Incoming copies on A are separate from A's own object store. `fleet` and sentinel read received heartbeats, but a heartbeat does not establish backup integrity. `verify-backups` checks the configured backup copies; its default mode only reports results.
+
+## Access boundaries
+
+Operator SSH access uses the team's key and configured source address. Restore and shell also require a second factor. The dedicated account's managed key file contains only that restricted key; installation and sentinel repair replace additional entries. Its sudo rule permits only `opmenu`, so access to that Unix account does not grant unauthenticated use of other root commands. Concurrent TOTP requests share a process lock, and unreadable or malformed replay state rejects authentication.
+
+The local CLI trusts root. An attacker who controls root on a defended host can replace the binary, read its compiled secrets, or change SSH and sudo policy. Warden cannot enforce blue-team-only access against that attacker. Keep the team's private login key off defended hosts, use separate receiving credentials for each source, and keep recovery copies on machines outside the compromised host's control. Stronger authorization requires an external signing or approval service whose private keys never reside on defended hosts; that service is not implemented.
+
+Receiver credentials authorize backup protocol operations only. They do not authorize an operator shell. A stolen receiving key can still read backups in its assigned root and consume its storage quota. Use per-source filesystem quotas and restrict network access; protocol-level quotas are a follow-up.
 
 ## Architecture Decision: Separate Binary
 
@@ -125,7 +203,7 @@ compare watched files with the approved baseline and restore or flag changes.
 
 handle the restricted SSH command menu.
 
-1. Store the key in a dedicated non-root account with `command="sudo /usr/local/sbin/warden opmenu",from="<team IP>",no-port-forwarding,no-X11-forwarding,no-pty <key>`. The account name derives from the installed binary. `/etc/sudoers.d/<name>` grants passwordless sudo for that binary only. This works with `PermitRootLogin no`.
+1. Store the key in a dedicated non-root account with `command="sudo /usr/local/sbin/warden opmenu",from="<team IP>",no-port-forwarding,no-X11-forwarding,no-pty <key>`. The account name derives from the installed binary. `/etc/sudoers.d/<name>` grants passwordless sudo for the exact `opmenu` invocation only and preserves `SSH_ORIGINAL_COMMAND` and `SSH_CLIENT`. This works with `PermitRootLogin no`.
 2. Read `$SSH_ORIGINAL_COMMAND` to see what the operator asked for (status, restore nginx, shell). Whitelist a small fixed set of accepted commands and reject everything else.
 3. Require a second factor for restore and shell. TOTP uses `crypto/hmac` and `crypto/sha1`. A static passphrase in `StaticSecretPath` is accepted as an alternative and read on every check. The installer generates it; `rotate-secret` changes it without rebuilding. TOTP is checked first and remains available when a static factor is set.
 4. Only the shell command, after the TOTP check passes, execs an actual shell (`syscall.Exec` into `/bin/bash`). Every other path stays inside the Go binary. Since `opmenu` itself is invoked via `sudo`, it's already running as root by the time this runs, so the resulting shell is a real root shell.

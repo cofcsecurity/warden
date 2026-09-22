@@ -33,7 +33,7 @@ func TestAuthorizedKeysFileCheckAndRecreate(t *testing.T) {
 	}
 }
 
-func TestAuthorizedKeysFilePreservesOtherKeys(t *testing.T) {
+func TestAuthorizedKeysFileRemovesOtherKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "authorized_keys")
 	otherKey := "ssh-ed25519 AAAAOTHER someone-else@laptop\n"
 	if err := os.WriteFile(path, []byte(otherKey), 0o600); err != nil {
@@ -49,8 +49,8 @@ func TestAuthorizedKeysFilePreservesOtherKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "someone-else@laptop") {
-		t.Errorf("recreate must not disturb existing keys, got:\n%s", got)
+	if strings.Contains(string(got), "someone-else@laptop") {
+		t.Errorf("dedicated account must not retain other keys, got:\n%s", got)
 	}
 	if !strings.Contains(string(got), line) {
 		t.Errorf("expected our line to be appended, got:\n%s", got)
@@ -390,5 +390,19 @@ func TestTimerRegistrationChecksAllThreeFiles(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("expected present once all three exist")
+	}
+}
+
+func TestAuthorizedKeysRejectsCommentedOrAdditionalEntries(t *testing.T) {
+	line := `command="sudo /usr/local/sbin/warden opmenu" ssh-ed25519 AAAA team`
+	for _, content := range []string{"# " + line, line + "\nssh-ed25519 OTHER attacker", line + " extra"} {
+		path := filepath.Join(t.TempDir(), "authorized_keys")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		ok, err := checkAuthorizedKeysFile(path, line)
+		if err != nil || ok {
+			t.Fatalf("accepted %q: %v, %v", content, ok, err)
+		}
 	}
 }

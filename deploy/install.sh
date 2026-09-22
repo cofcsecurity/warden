@@ -376,50 +376,45 @@ step_install_cron_entry() {
 	( { crontab -l 2>/dev/null | grep -vF "$marker" || true; }; echo "$line" ) | crontab -
 }
 
-# nologin_shell finds whatever this distro actually calls its no-login
-# shell — /usr/sbin/nologin covers most current Debian- and RHEL-family
-# boxes (usrmerge means /sbin/nologin is the same file), but older or
-# minimal images can differ, so check rather than assume.
-nologin_shell() {
-	local candidate
-	for candidate in /usr/sbin/nologin /sbin/nologin; do
-		[[ -x "$candidate" ]] && { echo "$candidate"; return; }
-	done
-	command -v nologin 2>/dev/null && return
-	echo "/bin/false"
-}
-
 step_create_opmenu_user() {
 	echo "==> Creating the dedicated account for the access layer ($OPMENU_USER)"
 	if id "$OPMENU_USER" >/dev/null 2>&1; then
 		echo "    $OPMENU_USER already exists — leaving it as-is"
 		return
 	fi
-	useradd -r -m -d "$OPMENU_USER_HOME" -s "$(nologin_shell)" "$OPMENU_USER"
+	useradd -r -m -d "$OPMENU_USER_HOME" -s /bin/sh "$OPMENU_USER"
 }
 
 step_authorize_key() {
-	echo "==> Appending restricted authorized_keys entry"
+	echo "==> Installing the dedicated account's restricted authorized_keys entry"
+	if [[ -L "$OPMENU_USER_HOME" || -L "$(dirname "$AUTHORIZED_KEYS")" || -L "$AUTHORIZED_KEYS" ]]; then
+		echo "install.sh: refusing symlink in operator access paths" >&2
+		exit 1
+	fi
 	mkdir -p "$(dirname "$AUTHORIZED_KEYS")"
-	touch "$AUTHORIZED_KEYS"
-	chmod 700 "$(dirname "$AUTHORIZED_KEYS")"
-	chmod 600 "$AUTHORIZED_KEYS"
+	chown root:root "$OPMENU_USER_HOME" "$(dirname "$AUTHORIZED_KEYS")"
+	chmod 755 "$OPMENU_USER_HOME"
+	chmod 755 "$(dirname "$AUTHORIZED_KEYS")"
 
 	# The forced command runs through sudo, not directly — this key lives
 	# in OPMENU_USER's own authorized_keys, not root's, so it needs
 	# step_configure_sudoers' rule to actually reach root-level access.
-	local entry="command=\"sudo ${INSTALL_PATH} opmenu\",from=\"${TEAM_FROM_IP}\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ${TEAM_PUBKEY}"
-	if ! grep -qF "$TEAM_PUBKEY" "$AUTHORIZED_KEYS" 2>/dev/null; then
-		echo "$entry" >> "$AUTHORIZED_KEYS"
-	fi
+	local entry="command=\"sudo ${INSTALL_PATH} opmenu\",from=\"${TEAM_FROM_IP}\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-user-rc,no-pty ${TEAM_PUBKEY}"
+	local key_tmp
+	key_tmp="$(mktemp "${AUTHORIZED_KEYS}.XXXXXX")"
+	printf '%s\n' "$entry" > "$key_tmp"
+	chown root:root "$key_tmp"
+	chmod 644 "$key_tmp"
+	mv -f "$key_tmp" "$AUTHORIZED_KEYS"
 }
 
 step_configure_sudoers() {
-	echo "==> Granting $OPMENU_USER passwordless sudo for exactly this binary"
+	echo "==> Granting $OPMENU_USER passwordless sudo for the second-factor gate"
 	local tmp="${SUDOERS_PATH}.install-tmp"
 	{
 		echo "Defaults:${OPMENU_USER} !requiretty"
-		echo "${OPMENU_USER} ALL=(root) NOPASSWD: ${INSTALL_PATH}"
+		echo "Defaults:${OPMENU_USER} env_keep += \"SSH_ORIGINAL_COMMAND SSH_CLIENT\""
+		echo "${OPMENU_USER} ALL=(root) NOPASSWD: ${INSTALL_PATH} opmenu"
 	} > "$tmp"
 	chmod 0440 "$tmp"
 	# Never trust a hand-generated sudoers file without checking it first —

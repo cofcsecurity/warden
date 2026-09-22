@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"warden/internal/fsutil"
 )
 
 const (
@@ -139,17 +141,27 @@ func ConsumeCounter(path string, counter int64) error {
 		return nil // replay protection disabled (tests only)
 	}
 
-	data, err := os.ReadFile(path)
+	release, err := fsutil.Lock(path + ".lock")
+	if err != nil {
+		return fmt.Errorf("totp: lock replay state: %w", err)
+	}
+	defer release()
+
+	data, err := fsutil.ReadFile(path)
 	switch {
 	case err == nil:
-		if last, convErr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); convErr == nil && counter <= last {
+		last, convErr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if convErr != nil || last < 0 {
+			return fmt.Errorf("totp: invalid replay state in %s", path)
+		}
+		if counter <= last {
 			return ErrCodeAlreadyUsed
 		}
 	case !os.IsNotExist(err):
 		return fmt.Errorf("totp: read %s: %w", path, err)
 	}
 
-	if err := os.WriteFile(path, []byte(strconv.FormatInt(counter, 10)), 0o600); err != nil {
+	if err := fsutil.WriteFile(path, []byte(strconv.FormatInt(counter, 10)), 0o600); err != nil {
 		return fmt.Errorf("totp: record used code in %s: %w", path, err)
 	}
 	return nil

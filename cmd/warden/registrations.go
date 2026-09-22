@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"warden/internal/fsutil"
 	"warden/internal/sentinel"
 )
 
@@ -161,24 +162,15 @@ func checkAuthorizedKeysFile(path, expectedLine string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("sentinel: read %s: %w", path, err)
 	}
-	return strings.Contains(string(content), expectedLine), nil
+	return strings.TrimSpace(string(content)) == expectedLine, nil
 }
 
-// recreateAuthorizedKeysFile appends, never rewrites: any other key already
-// in the file is left exactly as it was.
+// The dedicated operator account permits only the configured restricted key.
 func recreateAuthorizedKeysFile(path, line string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("sentinel: mkdir for %s: %w", path, err)
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("sentinel: open %s: %w", path, err)
-	}
-	defer f.Close()
-	if _, err := f.WriteString(line + "\n"); err != nil {
-		return fmt.Errorf("sentinel: append to %s: %w", path, err)
-	}
-	return nil
+	return fsutil.WriteFile(path, []byte(line+"\n"), 0o644)
 }
 
 // checkSystemdTimerFiles requires the service file, the timer file, and the

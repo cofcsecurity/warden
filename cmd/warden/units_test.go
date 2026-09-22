@@ -62,7 +62,8 @@ func TestSudoersDropInContent(t *testing.T) {
 	content := sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper")
 	for _, want := range []string{
 		"Defaults:svchelper !requiretty",
-		"svchelper ALL=(root) NOPASSWD: /usr/local/sbin/svchelper",
+		"svchelper ALL=(root) NOPASSWD: /usr/local/sbin/svchelper opmenu\n",
+		`Defaults:svchelper env_keep += "SSH_ORIGINAL_COMMAND SSH_CLIENT"`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("sudoers content missing %q: %s", want, content)
