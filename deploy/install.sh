@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# One-shot deploy script for a single box. Run once, during the team's
-# setup window, after confirming the box is clean of any existing
-# compromise. See docs/DESIGN.md ("Install Sequence", "Footprint and
-# Evidence Policy") for the reasoning behind each step.
+# Install Warden on a host during incident response. Normally invoked by
+# scripts/build-and-install.sh after an on-host build. The host may still
+# be compromised; baseline review and arming remain separate steps.
 #
 # This is a template: fill in the CHANGE-ME values for the target box
 # before running it, then delete it (step 8 does this automatically on
 # success). Every value below can also be overridden by exporting the
 # same-named environment variable before running this script instead of
-# editing the file — hand-editing is still the normal path, but this
-# means another script (see scripts/build-and-install.sh, the single-box
-# build-then-install path) can drive this one without touching it.
+# editing the file. The primary on-host workflow in
+# scripts/build-and-install.sh supplies these values automatically.
 
 set -euo pipefail
 
@@ -268,9 +266,10 @@ resolve_install_path() {
 }
 
 step_confirm_clean() {
-	echo "==> Confirm this box is clean before continuing."
-	echo "    Enumerate it for beacons, keyloggers, and altered binaries, and eliminate anything found first."
-	ask "    Box confirmed clean? [y/N] " ans
+	echo "==> Review the incident before deploying Warden."
+	echo "    Contain known malicious access where practical. This host may still capture credentials."
+	echo "    Installation leaves auto-restore disarmed; review and repair the baseline before arming."
+	ask "    Incident reviewed; proceed on this potentially compromised host? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting"; exit 1; }
 }
 

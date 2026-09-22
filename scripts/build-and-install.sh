@@ -1,18 +1,6 @@
 #!/usr/bin/env bash
-# The single-box path: build Warden directly on the box being defended,
-# then install it immediately — for when there's no separate machine
-# available to build on first (PCDC-style events with only a locked-down
-# provided laptop and no permission to install a toolchain on it), or
-# when there is one but coordinating a separate build-then-transfer dance
-# is more overhead than it's worth for how many boxes there are.
-#
-# The normal path (build on a machine the team controls, transfer just
-# the finished binary — see docs/DEPLOYMENT.md steps 1-5) stays the
-# default recommendation when it's available: it never exposes
-# per-competition secrets to the target box's own process table, and
-# never puts the source tree anywhere red team might reach it first. This
-# script exists for when that path genuinely isn't practical, not as a
-# universal replacement for it.
+# Primary deployment path: build and install directly on the affected host
+# during incident response. A separate build machine is optional.
 #
 # Read before running:
 #
@@ -20,17 +8,14 @@
 #    -ldflags -X ...` passes the TOTP seed and replication key as literal
 #    command-line arguments to the linker, visible via `ps`/
 #    /proc/<pid>/cmdline to anyone who can already read root's process
-#    table on this box for the few seconds the build runs. That's a
-#    materially different exposure than building on a machine red team
-#    has never touched. Run this as early as possible in the box's
-#    clean-first window (step_confirm_clean, below, still runs first,
-#    same as install.sh's own) to minimize who's in a position to see it.
+#    table while the build runs. Review known compromise and contain what
+#    you can; the confirmation does not certify a clean host.
 # 2. If there's no Go toolchain on this box, this offers to download the
 #    official upstream release from go.dev (not a distro package — those
 #    vary in name and are often outdated or absent) and install it to
 #    /usr/local/go. Needs this box to reach go.dev over HTTPS; if it
 #    can't, and there's no toolchain already staged some other way, this
-#    path isn't available — fall back to docs/DEPLOYMENT.md's normal one.
+#    path isn't available — supply a toolchain or use a separate-machine build.
 # 3. Fully offline needs a pre-vendored module cache: run `make vendor`
 #    on any internet-connected machine first and bring the whole tree
 #    here (including the resulting vendor/ directory), or this script
@@ -40,7 +25,7 @@
 #    checkout) after a successful install, the same reasoning as
 #    install.sh deleting itself: a full repo checkout sitting on the box
 #    is a far bigger, more identifiable footprint than the three files
-#    the normal path leaves behind, and none of it is needed once the
+#    a separate-machine build leaves behind, and none of it is needed once the
 #    binary is running from INSTALL_PATH. Set KEEP_SOURCE=1 to skip that
 #    if there's a real reason to keep it around.
 
@@ -96,10 +81,10 @@ ask() {
 }
 
 step_confirm_clean() {
-	echo "==> Confirm this box is clean before continuing."
-	echo "    Enumerate it for beacons, keyloggers, and altered binaries, and eliminate anything found first."
-	echo "    (install.sh will ask this again in a moment — that's its own gate, not a bug.)"
-	ask "    Box confirmed clean? [y/N] " ans
+	echo "==> Review the incident before deploying Warden."
+	echo "    Contain known malicious access where practical. This host may still capture credentials."
+	echo "    Installation leaves auto-restore disarmed; review and repair the baseline before arming."
+	ask "    Incident reviewed; proceed on this potentially compromised host? [y/N] " ans
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborting"; exit 1; }
 }
 

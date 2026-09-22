@@ -1,14 +1,12 @@
 # What Warden Does
 
-Warden helps a CCDC defense team retain access to its servers
-and recover damaged configuration files and service data. This page explains
-the main features. See [USAGE.md](USAGE.md) for commands and
-[DESIGN.md](DESIGN.md) for implementation details.
+Warden supports incident response on hosts with known active incursions. The IR team first locks down a box to a sufficient state and reviews the files it wants to preserve. The team then arms Warden to help maintain that state, retain repair access, and recover selected files if they are changed again.
 
-Your team inherits servers running services such as web, mail, and databases.
-Red team attempts to compromise them while the scoring engine checks that
-services remain available and work correctly. Warden backs up selected files,
-restores approved configurations, and maintains a restricted SSH access path.
+The goal is to buy time when responders have very little of it. Warden handles some repeated recovery work while blue-team operators and threat hunters continue investigating, containing access, and repairing services. It cannot replace those roles or establish that an intrusion has been eradicated. Its setup and operational overhead make it impractical for routine use outside an active incident.
+
+The usual deployment is to fetch the source, build, and install directly on the affected box. The team rarely has a separate machine available for building binaries. Deployment does not establish that the host is clean, and saved files need review before they become an approved recovery baseline.
+
+This page explains the main features. See [DEPLOYMENT.md](DEPLOYMENT.md) for setup, [USAGE.md](USAGE.md) for commands, and [DESIGN.md](DESIGN.md) for implementation details.
 
 ## Access, backups, and file monitoring
 
@@ -165,8 +163,8 @@ host is rebuilt, `warden retrieve` recovers its backup history from a peer.
   provide general malware detection or network traffic analysis.
 - Warden uses the existing SSH service and does not open a new listening port.
 - Bans and account locks affect the defended host only.
-- Actions are recorded in the audit log, which is copied to peers when
-  replication is configured. Local log retention is bounded.
+- Response history helps diagnose changes and failed repairs. Its audit log
+  is copied to peers when replication is configured; local retention is bounded.
 - Installation does not enable auto-restore. An operator must review the
   baseline and run `arm`.
 - Scored paths, service mappings, safe accounts, and credentials need to be

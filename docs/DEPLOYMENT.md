@@ -1,20 +1,16 @@
 # Deployment Checklist
 
-Prepare credentials and replication targets, then build, install, verify, harden, and arm each host.
+Warden is deployed during incident response on hosts with known active incursions. The IR team locks down each box to a sufficient state, reviews its baseline, and then arms Warden to help maintain that state and buy time for continued response and threat hunting.
 
-If no separate build machine is available, use [the on-host build procedure](#alternative-build-directly-on-the-target-box). It replaces the build and installation steps.
+Build and install directly on the affected box. A team laptop with a build toolchain is rarely available. Installation can precede hardening; arming follows the team's review.
 
 ## Quick reference
 
-**Part A, once per competition, build machine only:**
-- **Step 0, 1, 2**: [decide what to watch without fighting the scoring engine](#0-dont-let-warden-fight-the-scoring-engine), [generate secrets](#1-generate-per-competition-secrets) (`generate-keys.sh`), [plan replication topology](#2-replication-topology) if defending multiple boxes.
-- **Step 3**: [build](#3-build) one binary per box (`make build`), and verify it with `debug-config` before trusting it. *(No build machine? See [the alternative](#alternative-build-directly-on-the-target-box) instead.)*
-
-**Part B, once per box:**
-- **Step 4, 5**: [fill in `install.sh`'s per-box values](#4-confirm-installshs-per-box-values) and [deploy](#5-deploy-to-each-box) (`scp` + `sudo ./install.sh`, which now prints its own next-steps summary when it finishes).
-- **Step 6**: [verify](#6-verify) the access layer and replication both work.
-- **Step 6.5**: [harden the box, then arm it](#65-harden-then-arm) (`warden detect` + `warden scan` → harden → `warden arm`). **The box is unprotected against config drift until this step, a fresh install is not the same as a defended box.**
-- **Step 7, 8**: keep [recovery](#7-recovery-pulling-a-boxs-own-backups-back) in mind for if a box gets wiped later, and repeat steps 3–6.5 [per box](#8-repeat-per-box).
+1. Triage the incident and contain known malicious access where practical. Assume the host may still be compromised.
+2. [Choose watched paths and account exclusions](#0-dont-let-warden-fight-the-scoring-engine). Review [credentials](#1-generate-per-competition-secrets) and [replication targets](#2-replication-topology).
+3. [Build and install on the affected host](#build-directly-on-the-target-box). The wizard collects configuration and can generate the required keys. Manual build and transfer steps are optional alternatives.
+4. [Verify access and replication](#6-verify), then [repair and review the baseline before arming](#65-harden-then-arm). Initial snapshots may contain attacker changes; installation leaves automatic restore disarmed.
+5. Repeat for each affected host. Use [peer recovery](#7-recovery-pulling-a-boxs-own-backups-back) when local backups are lost.
 
 ## 0. Don't let Warden fight the scoring engine
 
@@ -22,9 +18,86 @@ Identify the scoring engine's accounts and credentials before configuring watche
 
 Include the team's local operating accounts and the scoring account in `SAFE_ACCOUNTS`. IP exclusions do not protect these accounts from the separate account-lock response.
 
+## Build directly on the target box
+
+`scripts/build-and-install.sh` builds Warden on the affected box and installs it in the same run. This is the primary deployment path. It handles the manual build and install steps 3 through 5; continue with verification in step 6 afterward.
+
+The host may still be compromised. Compiled secrets appear in linker arguments during the build, and privileged malware may capture them. The script asks you to acknowledge this exposure and review known compromise before proceeding; it does not certify the host as clean. Leave automatic restore disarmed until the selected baseline has been repaired and reviewed.
+
+If Go is missing, `build-and-install.sh` offers to download the upstream release to `/usr/local/go`. This requires HTTPS access to go.dev.
+
+The script uses `apt-get`, `dnf`, or `yum` to install missing dependencies where possible. Optional tools such as `qrencode` have fallbacks. The standalone installer also checks for cron and sudo.
+
+The script does not install `python3`. If Python is unavailable for TOTP generation, provide an existing seed or use the static second factor.
+
+### Step 1: get the source code onto the box
+
+This needs the whole repository on the target box, not just the finished binary.
+
+The examples use `~/build`. The checkout remains on disk during installation and is removed after success unless `KEEP_SOURCE=1` is set.
+
+**Clone directly on the box**
+
+Needs `git` already present on the box (`command -v git`) and outbound access to wherever this repo is hosted. If either isn't true, copy a source bundle from another host or use removable media instead:
+
+```bash
+ssh <user>@<box>
+git clone https://github.com/cofcsecurity/warden.git ~/build
+cd ~/build
+```
+
+If the repo is private, cloning needs credentials (a deploy key or access token) on the box temporarily, treat those like any other secret. `build-and-install.sh`'s cleanup step removes the whole checkout, credentials included, once installation succeeds.
+
+**Copy from another accessible host**
+
+Copy over SSH using the account provided for the host. The target needs no internet access if Go is already available and dependencies are vendored:
+
+```bash
+# from the machine that has this repo, at ./warden:
+scp -r ./warden <user>@<box>:~/build
+```
+
+For zero internet access on the target box, run this once first, on whatever machine you're copying *from*:
+
+```bash
+make vendor   # downloads every dependency into ./vendor, once, on a machine with internet
+```
+
+**Removable media**
+
+```bash
+# on your own machine, with this repo at ./warden:
+tar czf build.tar.gz --exclude=.git -C . warden
+# copy build.tar.gz to a USB drive, plug it into the box's console, then on the box:
+mkdir ~/build && tar xzf build.tar.gz -C ~/build --strip-components=1
+```
+
+**One-line setup (`scripts/bootstrap.sh`)**
+
+Combines fetching the repo and running `build-and-install.sh` into one command, if the box can reach GitHub directly:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/cofcsecurity/warden/main/scripts/bootstrap.sh)"
+```
+
+Use `bash -c` so Bash receives the script as an argument and leaves stdin available for prompts. Piping the script into Bash can consume the input needed by those prompts. Private repositories still require credentials on the target.
+
+### Step 2: run it
+
+```bash
+cd ~/build   # wherever it landed
+sudo ./scripts/build-and-install.sh
+```
+
+The wizard collects team key, team IP, and install path, and offers TOTP and replication-key generation. It suggests a `/24` based on the connected client shown by `who`; verify this, especially when using a jump host. Export `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED`, `AUTOLOCK_ENABLED`, or `SAFE_ACCOUNTS` to supply those values without prompts.
+
+The script builds, checks `debug-config`, and invokes `install.sh`. After success it removes the source tree unless `KEEP_SOURCE=1` is set.
+
+Continue with step 6.
+
 ## 1. Generate per-competition secrets
 
-For a single box:
+The on-host wizard offers secret generation. For manual setup on a single box:
 
 ```
 ./scripts/generate-keys.sh
@@ -39,21 +112,13 @@ For multiple boxes (see step 2 if defending several), pass a distinct output dir
 
 Either way it writes (gitignored): a replication-only SSH keypair (`replicate_key`/`replicate_key.pub`) and a TOTP seed (`totp_secret`). None of this belongs in this repo or anywhere else public. Distribute each TOTP seed to teammates who'll need to generate opmenu codes, out-of-band (e.g. a QR code shown once, not pasted into Slack).
 
-This does **not** generate the team's own login keypair (`TEAM_PUBKEY`), use whatever key a team member already holds the private half of, or generate one now, **on your own machine, never on a target box**:
+The team's login key (`TEAM_PUBKEY`) is separate from replication credentials. Reuse an existing team key when available. Otherwise the on-host wizard offers:
 
-```
-./scripts/generate-team-key.sh
-```
-
-Prints the public key to use as `TEAM_PUBKEY`. Generate this once per competition, not once per box, every box uses the same value, and every teammate who'll operate a box needs a copy of the private half, shared out-of-band.
-
-If a separate machine is unavailable, generate the team key on a host with:
-
-```
+```bash
 ./scripts/generate-team-key.sh --on-box
 ```
 
-This generates the keypair on the host and guides you through saving the private key elsewhere before removing its local file. Share it with authorized teammates through a private channel. Reuse the team key across hosts. The build-and-install script offers this step and removes the leftover public-key file after building.
+Save the private key in the team's SSH client and share it only with authorized teammates before the script removes its host copy. Reuse the team login key across hosts. If a separate machine is available, `./scripts/generate-team-key.sh` can generate it there instead. Neither removing the host copy nor later cleanup reverses exposure to malware already on the host.
 
 ## 2. Replication topology
 
@@ -94,13 +159,13 @@ install -d -o root -g root -m 755 /home/warden-backup-box2/.ssh
 
 Create a root-owned `authorized_keys` file with mode 644 in that `.ssh` directory. Keep the account's home owned by root as well so the receiving account cannot replace `.ssh`. Build a separate receiver binary without host credentials. The main installed binary is mode 0700 and cannot be executed by this account; changing its mode would also expose its compiled credentials.
 
-On the build machine:
+On the receiving host, from the source checkout:
 
 ```sh
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o warden-receiver ./cmd/warden
 ```
 
-Do not pass the main build's secret-bearing linker flags. Transfer this binary to the receiving host, then install it:
+Do not pass the main build's secret-bearing linker flags. Install the resulting binary on that receiving host:
 
 ```sh
 install -d -o root -g root -m 755 /usr/local/libexec
@@ -127,7 +192,7 @@ box1$ ssh-keyscan -t ed25519 box2   # run this from box1, to pin box2's key in b
 
 **Path matters**: use a path under `/home/warden-backup/`, e.g. `/home/warden-backup/from-box1`, an absolute root-level path like `/from-box1` will fail with a permission error, since the receiving account isn't root and can't create directories outside its own home.
 
-## 3. Build
+## 3. Manual build (optional)
 
 Each box's `REPLICATE_TARGETS` lists both neighbors, `<url>||<hostkey>` pairs separated by `;;`:
 
@@ -148,7 +213,7 @@ Add `AUTOBAN_ENABLED=1` to the same `make build` invocation to enable auto-banni
 
 Add `AUTOLOCK_ENABLED=1` the same way to enable `warden scan`'s separate account-lock reaction (see `docs/DESIGN.md`'s "Anomaly Detection and Account Lockout" section), off by default too, same reasoning. If it's on, also set `SAFE_ACCOUNTS="<your team's own account>,<scoring's account if it has one>"`, see step 0 above for why this can't be skipped the way `TEAM_FROM_IP` alone protects `AUTOBAN_ENABLED`.
 
-Produces `bin/warden`, a stripped, static binary with everything above baked in. Verify it captured the right values before going further, on a native build since `bin/warden` is cross-compiled for the target's `linux/amd64` and won't run here:
+Produces `bin/warden`, targeting Linux amd64 by default. When building on a different operating system or architecture, use a native build to inspect configuration:
 
 ```
 GOOS=$(go env GOHOSTOS) GOARCH=$(go env GOHOSTARCH) make build TEAM_PUBKEY=... TOTP_SECRET=... ...   # same args as above
@@ -157,92 +222,15 @@ GOOS=$(go env GOHOSTOS) GOARCH=$(go env GOHOSTARCH) make build TEAM_PUBKEY=... T
 
 `debug-config` is a hidden command (not shown in `--help`) meant for exactly this, it prints every baked-in value except the TOTP secret and replication private key, which it only reports as set/not-set. Rebuild for `linux/amd64` (drop the `GOOS`/`GOARCH` override) before deploying.
 
-## Alternative: build directly on the target box
-
-For events with no separate build machine (e.g. PCDC-style, a locked-down provided laptop with no permission to install a toolchain). `scripts/build-and-install.sh` builds Warden directly on the box being defended and installs it in the same run, **replacing steps 3 through 5 below entirely.** Steps 0, 6, 6.5, 7, and 8 still apply as written; come back to step 6 once this is done.
-
-Read the tradeoff at the top of that script's own comments first: per-competition secrets get passed to `go build` as command-line flags, so they're briefly visible in this box's own process list (`ps`) while the build runs. Do this as early as possible in the box's clean-first window (the script asks you to confirm that, same as `install.sh`).
-
-If Go is missing, `build-and-install.sh` offers to download the upstream release to `/usr/local/go`. This requires HTTPS access to go.dev.
-
-The script uses `apt-get`, `dnf`, or `yum` to install missing dependencies where possible. Optional tools such as `qrencode` have fallbacks. The standalone installer also checks for cron and sudo.
-
-The script does not install `python3`. If Python is unavailable for TOTP generation, provide an existing seed or use the static second factor.
-
-### Step 1: get the source code onto the box
-
-This needs the whole repository on the target box, not just the finished binary.
-
-The examples use `~/build`. The checkout remains on disk during installation and is removed after success unless `KEEP_SOURCE=1` is set.
-
-**A. Copy it from a machine that already has it checked out (recommended)**
-
-Copy over SSH using the account provided for the host. The target needs no internet access if dependencies are vendored:
-
-```bash
-# from the machine that has this repo, at ./warden:
-scp -r ./warden <user>@<box>:~/build
-```
-
-For zero internet access on the target box, run this once first, on whatever machine you're copying *from*:
-
-```bash
-make vendor   # downloads every dependency into ./vendor, once, on a machine with internet
-```
-
-**B. Clone it directly on the box**
-
-Needs `git` already present on the box (`command -v git`) and outbound access to wherever this repo is hosted. If either isn't true, use option A or C instead:
-
-```bash
-ssh <user>@<box>
-git clone https://github.com/cofcsecurity/warden.git ~/build
-cd ~/build
-```
-
-If the repo is private, cloning needs credentials (a deploy key or access token) on the box temporarily, treat those like any other secret. `build-and-install.sh`'s cleanup step removes the whole checkout, credentials included, once installation succeeds.
-
-**C. USB drive (no network needed on the box at all)**
-
-```bash
-# on your own machine, with this repo at ./warden:
-tar czf build.tar.gz --exclude=.git -C . warden
-# copy build.tar.gz to a USB drive, plug it into the box's console, then on the box:
-mkdir ~/build && tar xzf build.tar.gz -C ~/build --strip-components=1
-```
-
-**D. One-line setup (`scripts/bootstrap.sh`)**
-
-Combines fetching the repo and running `build-and-install.sh` into one command, if the box can reach GitHub directly:
-
-```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/cofcsecurity/warden/main/scripts/bootstrap.sh)"
-```
-
-Use `bash -c` so Bash receives the script as an argument and leaves stdin available for prompts. Piping the script into Bash can consume the input needed by those prompts. Private repositories still require credentials on the target.
-
-### Step 2: run it
-
-```bash
-cd ~/build   # wherever it landed
-sudo ./scripts/build-and-install.sh
-```
-
-The wizard collects team key, team IP, and install path, and offers TOTP and replication-key generation. It suggests a `/24` based on the connected client shown by `who`; verify this, especially when using a jump host. Export `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED`, `AUTOLOCK_ENABLED`, or `SAFE_ACCOUNTS` to supply those values without prompts.
-
-The script builds, checks `debug-config`, and invokes `install.sh`. After success it removes the source tree unless `KEEP_SOURCE=1` is set.
-
-Continue with step 6.
-
-## 4. Confirm `install.sh`'s per-box values
+## 4. Manual installer configuration (optional)
 
 Set `TEAM_PUBKEY` and `TEAM_FROM_IP`. Leave `INSTALL_PATH` empty for automatic selection or set it explicitly. Automatic selection checks for collisions with binaries, accounts, units, and sudoers files. The account and sudoers rule use the selected name. Unfilled team placeholders or a missing binary stop installation.
 
 Also set `REPLICATE_TARGETS` to any non-empty value (e.g. `"1"`) if this box's binary was built with real replication targets, that's just the switch this script uses to decide whether to schedule the replication timer; the real target list lives in the binary, not here.
 
-## 5. Deploy to each box
+## 5. Transfer a prebuilt binary (optional)
 
-Once the box has been swept clean of any existing compromise (see `docs/DESIGN.md`'s "No Clean Window: Assume Compromise"). Log in as whatever account the competition gave you, not root:
+Use this path when a separate machine is available to build the binary. Log in with the team's existing response account:
 
 ```
 scp bin/warden deploy/install.sh -r deploy/systemd <user>@<box>:~/
@@ -279,14 +267,14 @@ Installation leaves auto-restore disabled. Open a shell with `ssh <opmenu-user>@
 
 1. Run `warden detect` and configure scored paths, tiers, classes, service mappings, and custom detection entries in `/etc/warden/profile.json`.
 2. Review the host's accounts, SUID binaries, cron jobs, SSH keys, ports, and packages.
-3. Harden the host and run `warden scan` to establish the anomaly baseline before arming.
+3. Lock down the host to a state the IR team judges sufficient to preserve. Run `warden scan` to establish the anomaly baseline before arming.
 4. Run `warden arm`, review the changes, then confirm the new baseline.
 
    Resolve unexplained changes before confirming. Arming accepts the current files, including any tampering that occurred during setup.
 
    With no interactive input, use `arm --yes` after reading the review. The review is still printed and logged.
 
-The installer leaves arming to the operator. Check armed state with `warden status`.
+The installer leaves arming to the operator. Check armed state with `warden status`. Continue threat hunting, containment, and blue-team operations after arming. Warden buys time by maintaining the selected state; it does not finish the incident response.
 
 Use `warden fleet` to view local state and reporting peers. Sentinel logs overdue heartbeats.
 
@@ -325,7 +313,7 @@ Each box gets its own install, its own replication keypair, and (per the ring to
 
 ### Sign manifests
 
-Generate one manifest key pair per source on the build machine:
+Generate one manifest key pair per source during host setup:
 
 ```sh
 umask 077

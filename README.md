@@ -1,6 +1,8 @@
 # warden
 
-Persistence and backup/restore for a host under active attack, built for the CofC Cybersecurity Club's SECCDC/PCDC defense team.
+Incident-response tooling for hosts with known active incursions, built for the CofC Cybersecurity Club's SECCDC/PCDC defense team.
+
+The IR team locks down a box to a sufficient state, reviews its baseline, then arms Warden to help keep it in that state. Warden maintains repair access, restores approved files, and keeps recovery copies available to buy responders time when time is scarce. Blue-team operations and threat hunting continue alongside it. Its setup and operational overhead make it impractical for routine use outside an active incident.
 
 [EXPLAINER.md](docs/EXPLAINER.md) covers the main features.
 
@@ -16,20 +18,19 @@ scripts/       generate-keys.sh, one-time per-competition secret generation
 docs/          design notes, usage reference, deployment checklist, implementation plan
 ```
 
-## Building
+## Deploy on the affected host
 
+Build and install directly on the box being defended. A separate build laptop is rarely available and is not required for the normal workflow.
+
+```bash
+git clone https://github.com/cofcsecurity/warden.git ~/build
+cd ~/build
+sudo ./scripts/build-and-install.sh
 ```
-./scripts/generate-keys.sh   # once per competition; writes to ./secrets/ (gitignored)
 
-make build TEAM_PUBKEY="ssh-ed25519 AAAA... team@ccdc" TEAM_FROM_IP=203.0.113.10 \
-           TOTP_SECRET=$(cat secrets/totp_secret) REPLICATE_URL=ssh://warden@backup-box/warden \
-           REPLICATE_KEY=$(base64 < secrets/replicate_key | tr -d '\n') \
-           REPLICATE_HOST_KEY="$(ssh-keyscan -t ed25519 backup-box 2>/dev/null | cut -d' ' -f2-)"
-```
+The script collects host configuration, builds Warden, and runs the installer. See [deployment](docs/DEPLOYMENT.md) for bootstrap, offline source delivery, credentials, and replication setup. A separate-machine build is an optional alternative when available.
 
-`REPLICATE_URL` can be `file:///path` instead (removable media) if there's no second team-controlled box; in that case `REPLICATE_KEY`/`REPLICATE_HOST_KEY` aren't needed.
-
-Produces a stripped, static `bin/warden` for `linux/amd64` with no build-time config file, see DESIGN.md's "Configuration" section for why.
+Assume the host may still be compromised. Review the incident and contain what you can before introducing credentials. Installation leaves automatic restore disarmed: inspect the host profile, repair the selected files, and approve that baseline before arming. An initial snapshot is not proof of a clean host.
 
 ## Testing
 

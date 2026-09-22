@@ -1,12 +1,14 @@
 # Warden
 
-Design notes for the persistence and backup/restoration system.
+Design notes for incident response on hosts under active attack.
 
 Updated September 22, 2026
 
 ## Project Description
 
-Warden is a Go binary for the CofC Cybersecurity Club's SECCDC/PCDC defense team. It maintains restricted SSH access and backs up and restores selected configuration files and service data.
+Warden is an incident-response tool for the CofC Cybersecurity Club's SECCDC/PCDC defense team, used when active incursions are known to be underway. The IR team locks down a box to a sufficient state, reviews the baseline, and then arms Warden to help maintain that state.
+
+Warden aims to buy time through restricted repair access, file restoration, and backup recovery. Blue-team operations, threat hunting, containment, and service repair remain ongoing human work. Arming records an operator-approved state; it does not establish that the host is free of compromise. The tool's setup and operational overhead are impractical for routine administration outside this setting.
 
 ## Overview and Goals
 
@@ -17,8 +19,8 @@ Core constraints:
 1. Survives kill attempts: no single point of failure. Killing one process or removing one config entry should not permanently cut access.
 2. No new attack surface: prefer piggybacking on services already running rather than opening new listeners.
 3. Retains access to status, restore, and authenticated repair commands.
-4. Team-only: access is restricted to the defense team's key and source IP, not a general-purpose backdoor.
-5. Auditable: every action Warden takes is logged, so the team can show exactly what it did if questioned.
+4. Team access: restrict the operator entry point to the defense team's key and source IP, with a second factor for restore and shell.
+5. Useful response history: record changes, restore attempts, and failures so responders can diagnose problems and decide what to do next.
 
 ## Deployment layout
 
@@ -26,12 +28,14 @@ Each defended host runs the same short-lived Warden commands. Systemd timers sch
 
 ```mermaid
 flowchart TB
-    Team["Team workstation<br/>Builds host-specific binary and holds second factors"]
+    Team["Blue-team operator<br/>SSH access and second factors"]
 
     subgraph A["Defended host A"]
+        Setup["On-host source and Go toolchain<br/>build-and-install.sh"]
         Access["Existing sshd<br/>Restricted opmenu account"]
         Schedule["Systemd timers<br/>Cron sentinel fallback"]
         Agent["Warden commands as root<br/>watch · snapshot · scan · sentinel<br/>restore · replicate · verify-backups"]
+        Baseline["IR team locks down host<br/>Reviews baseline, then arms Warden"]
         Profile["Host profile<br/>Paths, service mappings, validators"]
         Config["Configuration files<br/>Auto-restore and confirm-first paths"]
         Data["Service data files<br/>Snapshots and explicit restore"]
@@ -57,9 +61,12 @@ flowchart TB
 
     Local[("Optional local replica<br/>Mounted storage via file URL")]
 
-    Team -->|"Deploy binary and profile"| Agent
+    Team -->|"Existing incident-response session"| Setup
+    Setup -->|"Build and install on this host"| Agent
     Team -->|"Team SSH key and source restriction"| Access
     Access -->|"Second factor; scoped sudo"| Agent
+    Team --> Baseline
+    Baseline -->|"Approved state to maintain"| Agent
     Schedule --> Agent
     Profile -.-> Agent
     Config -->|"Snapshot and integrity checks"| Agent
@@ -109,10 +116,10 @@ Keeping Warden separate from enumeration and monitoring tools isolates its crede
 Go, for reasons specific to this use case:
 
 1. Static binaries. `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build` produces one file with zero runtime dependencies: no Python interpreter mismatch, no missing packages, nothing that relies on the target box's own tooling being intact.
-2. Cross-compilation. Warden is built ahead of the competition wherever the team has a machine and permission to run `go build`, whether or not that's an official team laptop. If no such machine exists, see the build-location contingency later in this section. No compiler and no internet access are needed on the box itself.
+2. On-host builds. The normal workflow uses `scripts/build-and-install.sh` directly on the affected box. It requires Go and access to dependencies, either downloaded or supplied locally. Cross-compiling elsewhere and transferring a binary remains an option when a separate machine is available.
 3. No trust in system binaries for core logic. Given the team's own threat model (altered binaries, misconfigs), Warden's snapshot store and replication channel are pure Go, using only the standard library plus one vetted dependency (`golang.org/x/crypto/ssh`) for the off-host push. It never shells out to git, rsync, or tar, since any of those could be the exact binary red team has already altered.
 4. Stripped binaries. Build with `-ldflags="-s -w"` to strip debug symbols, keeping the binary small and slightly harder to reverse casually.
-5. Vendor dependencies (`go mod vendor`) before the competition, so a build never needs internet access.
+5. Offline builds need a supplied Go toolchain and vendored dependencies. Otherwise the host needs network access to obtain them.
 
 ## Repository and Package Structure
 
@@ -173,7 +180,7 @@ versioned, content-addressed storage for file contents, without depending on ext
 
 get snapshots off the box so a root compromise doesn't take the backups with it.
 
-1. Use `golang.org/x/crypto/ssh` directly to push new objects and the manifest to a second team-controlled box. This is a deliberate exception to the no-external-dependencies rule, since implementing SSH from scratch isn't a good use of competition prep time and this library is widely used and auditable. Vendor it ahead of time.
+1. Use `golang.org/x/crypto/ssh` to push new objects and manifests to another team-controlled box. Vendor dependencies when an offline build is needed.
 2. Authenticate with a key generated only for this purpose, not a personal or team login key.
 3. Push is additive-only from the source box's perspective: it can write new objects, never delete or overwrite existing ones on the destination. This is client behavior. The SSH receiving account can delete writable files; protecting backups from a stolen key requires server-side restrictions or independent retention.
 4. If no second box is available, point this package at a different local filesystem path (removable media) instead of a network destination. Same interface either way.
@@ -279,32 +286,21 @@ Each check stores JSON under `<dataDir>/anomaly/`. Account and SUID records incl
 
 ## Build and Deployment
 
-Warden reaches the box by push, during the team's own initial setup window, not by pull from the box itself.
+Build and install directly on the host being defended. A separate team laptop or build machine is rarely available, so on-host deployment is the primary workflow.
 
-### No Clean Window: Assume Compromise
+### Deployment during an incident
 
-Check for existing compromise before installing credentials or approving a baseline. An implant already on the host may capture key material during setup.
+Assume compromise may still be present. Triage the host and contain known malicious access where practical before introducing credentials. A local sweep cannot certify the host as clean. Keep automatic restore disarmed until the selected files have been reviewed and repaired; an installation snapshot may contain attacker changes.
 
-### Delivery Mechanism
+`scripts/build-and-install.sh` collects configuration, builds natively, and invokes the installer. Fetch the source on the host with Git or `scripts/bootstrap.sh`. If outbound access is unavailable, copy a source bundle from another accessible host or use removable media. See [DEPLOYMENT.md](DEPLOYMENT.md#build-directly-on-the-target-box).
 
-For the built *binary*, ruled out:
+On-host compilation uses the host's toolchain and exposes compiled secrets through linker arguments during the build. Existing privileged malware may capture those secrets. Removing setup artifacts afterward does not undo that exposure. Warden's access and recovery controls help the response; they do not establish trust in a compromised operating system.
 
-- `git clone` on the target: needs outbound access the box may not have, leaves the clone URL and a `.git` directory as an obvious artifact, and depends on the box's own git binary being intact, which the whole threat model assumes it might not be.
-- `curl`/`wget` on the target: same egress and history problems, plus depends on curl/wget being present and un-tampered.
+If Go is missing, the build script offers to install it. Offline installation requires a supplied toolchain and vendored dependencies. After successful installation, the script removes its checkout and build artifacts unless `KEEP_SOURCE=1` is set.
 
-Instead: `scp` (or the team's own jump host, if the competition provides one) pushes the built binary onto each box once, during whatever grace period exists at the start of the competition, and only after the sweep above has confirmed the box is clean, not before.
+### Optional separate-machine build
 
-### Build Location Contingency
-
-Prefer building on a separate team-controlled machine. If none is available, use the on-host build procedure below.
-
-`scripts/build-and-install.sh` builds and installs on the target. See DEPLOYMENT.md's "Alternative: build directly on the target box" section.
-
-- Transfer the source with scp, clone it on the host, or use removable media. Vendored dependencies allow an offline build.
-- `go build -ldflags -X` exposes compiled secrets in the host's process command line during the build.
-- A vendored module cache (`make vendor`, run once on any internet-connected machine, brought along as part of the tree) lets the build run with zero network access from the target box at all; without it, `go build` needs the box itself to reach Go's module proxy or a configured mirror.
-- After a successful install, the build script removes its checkout, dependencies, generated secrets, and build artifacts. `KEEP_SOURCE=1` retains them.
-- On-host compilation requires a Go toolchain or a way to install one.
+When another build machine is available, compile a host-specific binary there and transfer it with the installer and systemd templates. This avoids compiling on the affected host, but the installed binary still contains credentials readable by host root. It is an alternative delivery path, not a prerequisite for incident response.
 
 ### Configuration
 
@@ -318,21 +314,21 @@ Changing a compiled value requires rebuilding and redeploying. Watched paths and
 
 One script, run once, does the entire setup:
 
-1. Confirm the box is clean of known beacons, keyloggers, and altered binaries. Assume compromise by default, not a clean starting point, and eliminate anything found before continuing.
+1. Review the incident, contain known malicious access where practical, and acknowledge that the host may still capture deployment credentials.
 2. Place the binary at a path and name that match conventions already on that box (check what's there before choosing).
 3. Set restrictive permissions (0700, root-owned).
 4. Write the systemd timer and unit files for the watch loop and the sentinel pair, and the cron entry for the sentinel's second trigger.
-5. Create the dedicated, low-privilege account the access layer uses (same name as the binary), append the restricted authorized_keys line to its own `authorized_keys`, and grant it a `visudo`-validated `NOPASSWD` sudo rule scoped to exactly this binary.
-6. Generate the initial manifest and take the first snapshot.
+5. Create the dedicated, low-privilege account the access layer uses (same name as the binary), install its restricted `authorized_keys` entry, and grant it a `visudo`-validated `NOPASSWD` sudo rule scoped to the exact `opmenu` invocation.
+6. Generate the initial manifest and take the first snapshot. Leave automatic restore disarmed until the baseline has been reviewed and repaired.
 7. Generate a static second factor with `warden rotate-secret` and save the value printed during installation.
 8. Verify by calling `warden opmenu status` once over loopback, confirming the access layer works before walking away from the box.
 9. Delete the install script itself. It's a one-time-use file, and leaving it behind leaves a trace for red to find.
 
-### Footprint and Evidence Policy
+### Setup cleanup and logs
 
-Warden does not scrub shell history or system logs.
+Installation removes its setup files after verification. Shell history remains subject to the operator's shell configuration. Warden does not clear system logs.
 
-Installation removes its setup files after verification. Shell history remains subject to the operator's shell configuration.
+Response logs help explain what changed, which repairs ran, and what failed. They support troubleshooting and recovery during the incident.
 
 The audit log rotates at 8 MiB (`audit.MaxLogBytes`) and retains one previous file, `audit.log.1`. Readers include both files. Older entries require a replicated copy for recovery.
 

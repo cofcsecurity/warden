@@ -19,10 +19,8 @@
 # Needs this box to reach wherever the repo is hosted. If the repo is
 # private, that means git credentials (a deploy key or token) already
 # configured on this box — same requirement as cloning it by hand; see
-# docs/DEPLOYMENT.md's "Clone it directly on the box". The normal path
-# (build on a machine the team controls, transfer just the finished
-# binary) stays the default recommendation when a separate build machine
-# is available — this exists for when it isn't.
+# docs/DEPLOYMENT.md's "Clone directly on the box". On-host build and
+# installation is the primary incident-response deployment workflow.
 
 set -euo pipefail
 
