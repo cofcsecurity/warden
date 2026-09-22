@@ -1,6 +1,6 @@
 # Review findings
 
-Reviewed recovery, replication, snapshots, restore, watch, and account locks at commit `92834c8` on 2026-09-21. Eight isolated probes reproduced the failures below using temporary files, a fake account backend, and a fake systemctl command. No real accounts or services were changed. These are open findings, not completed fixes.
+Reviewed recovery, replication, snapshots, restore, watch, and account locks at commit `92834c8` on 2026-09-21. Eight isolated probes reproduced the failures below using temporary files, a fake account backend, and a fake systemctl command. No real accounts or services were changed. The implementation following this review addresses these findings; the original reproductions below describe the reviewed version.
 
 Fixed in this pass:
 
@@ -84,4 +84,6 @@ P1 findings can break recovery, leave services running altered configuration, or
 
 Fix active-baseline retention, archive generation allocation, and service reload ordering before adding automated repair schedules. Otherwise a scheduled verifier can repair content that the next prune deletes, or report healthy backups while services still use altered configuration.
 
-The eight probes intentionally failed their correctness assertions against `92834c8`; they were temporary review tests and were removed after recording the results. Existing passing tests do not cover these failures. A scored-image deployment test was not run.
+The eight probes failed against `92834c8`. They are now permanent regression tests in `cmd/warden/review_regression_test.go` and pass with the fixes. Additional tests cover receiver confinement and SSH transport, signed manifests, mode-only repairs, service rollback, pending reload retry, backup verification/repair, explicit rollback, process locking, and non-regular files. A scored-image deployment test has not been run.
+
+Implemented commands: `verify-backups`, `profile validate`, `restore --preflight`, `arm --strict`, `receive`, and `manifest-keygen`. Status includes backup verification and pending reloads. Receiver restrictions and signature verification require the deployment configuration in DEPLOYMENT.md; existing shell targets remain compatible. Service syntax validation requires explicit validator commands in the host profile. Default verification is read-only. There is no new repair timer; verification runs when invoked by an operator or their existing scheduler.

@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+	"warden/internal/fsutil"
 
 	"github.com/spf13/cobra"
 
@@ -12,6 +14,7 @@ import (
 	"warden/internal/manifest"
 	"warden/internal/opmenu"
 	"warden/internal/restore"
+	"warden/internal/store"
 )
 
 func opmenuCmd() *cobra.Command {
@@ -147,6 +150,27 @@ func runStatus(p paths) (string, error) {
 		fmt.Fprintf(&b, "last replication: %s\n", summarizeEntry(last["replicate"]))
 	}
 
+	fmt.Fprintf(&b, "backup health: %s\n", backupHealthSummary(p))
+	if q, err := loadReloadQueue(p); err != nil {
+		fmt.Fprintf(&b, "pending reloads: %v\n", err)
+	} else {
+		fmt.Fprintf(&b, "pending reloads: %d\n", len(q.Units))
+	}
+	local := store.Open(p.storeRoot)
+	for _, tier := range []snapshotTier{tierConfig, tierData} {
+		m, err := manifest.New(p.manifestPathForTier(tier))
+		if err != nil {
+			fmt.Fprintf(&b, "%s snapshot: invalid: %v\n", tier, err)
+			continue
+		}
+		missing := 0
+		for _, rec := range m.Records {
+			if !local.Has(rec.Hash) {
+				missing++
+			}
+		}
+		fmt.Fprintf(&b, "%s snapshot: generation %d, unavailable local objects=%d\n", tier, m.Generation, missing)
+	}
 	return strings.TrimRight(b.String(), "\n"), nil
 }
 
@@ -163,6 +187,13 @@ func summarizeEntry(e audit.Entry) string {
 // already spent, not a two-step CLI flag a human can reconsider.
 func runOpmenuRestore(p paths, target string, args []string) (string, error) {
 	apply := len(args) > 0 && args[0] == "apply"
+	if apply {
+		release, err := fsutil.Lock(filepath.Join(p.storeRoot, "operation.lock"))
+		if err != nil {
+			return "", err
+		}
+		defer release()
+	}
 
 	m, err := loadSnapshot(p, "")
 	if err != nil {

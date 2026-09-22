@@ -3,6 +3,7 @@
 package manifest
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+	"warden/internal/fsutil"
 )
 
 // Class controls how the watch loop responds to a change in a Record.
@@ -47,6 +49,9 @@ type Record struct {
 // Manifest is one generation of known-good state.
 type Manifest struct {
 	Generation int       `json:"generation"`
+	Source     string    `json:"source,omitempty"`
+	Tier       string    `json:"tier,omitempty"`
+	Signature  string    `json:"signature,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	Records    []Record  `json:"records"`
 
@@ -94,7 +99,7 @@ func (m *Manifest) Save() error {
 	if err != nil {
 		return fmt.Errorf("manifest: encode: %w", err)
 	}
-	if err := os.WriteFile(m.path, data, 0o600); err != nil {
+	if err := fsutil.WriteFile(m.path, data, 0o600); err != nil {
 		return fmt.Errorf("manifest: write %s: %w", m.path, err)
 	}
 	return nil
@@ -125,8 +130,28 @@ func (m *Manifest) Archive(dir string) error {
 		return fmt.Errorf("manifest: encode: %w", err)
 	}
 	path := ArchivePath(dir, m.Generation)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("manifest: archive %s: %w", path, err)
+	tmp, err := fsutil.Stage(path, data, 0600)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if err := os.Link(tmp, path); err != nil {
+		if !os.IsExist(err) {
+			return err
+		}
+		previous, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		var a, b any
+		if json.Unmarshal(previous, &a) != nil || json.Unmarshal(data, &b) != nil {
+			return fmt.Errorf("invalid archive %s", path)
+		}
+		left, _ := json.Marshal(a)
+		right, _ := json.Marshal(b)
+		if !bytes.Equal(left, right) {
+			return fmt.Errorf("manifest: conflicting generation %d", m.Generation)
+		}
 	}
 	return nil
 }
@@ -158,7 +183,7 @@ func Generations(dir string) ([]int, error) {
 	var gens []int
 	for _, e := range entries {
 		var g int
-		if _, err := fmt.Sscanf(e.Name(), "manifest-%d.json", &g); err == nil {
+		if _, err := fmt.Sscanf(e.Name(), "manifest-%d.json", &g); err == nil && g > 0 && e.Name() == fmt.Sprintf("manifest-%d.json", g) && !e.IsDir() {
 			gens = append(gens, g)
 		}
 	}
@@ -208,6 +233,10 @@ func Generate(paths []string, classify Classify, generation int) (*Manifest, err
 			continue
 		}
 
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("manifest: unsupported file type at %s", p)
+		}
+
 		hash, err := hashFile(p)
 		if err != nil {
 			return nil, err
@@ -227,7 +256,7 @@ func Generate(paths []string, classify Classify, generation int) (*Manifest, err
 }
 
 func hashFile(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := fsutil.OpenRegular(path)
 	if err != nil {
 		return "", fmt.Errorf("manifest: open %s: %w", path, err)
 	}
@@ -285,7 +314,7 @@ func Diff(old, new *Manifest) []Change {
 			// swapping a watched file for a link to /etc/shadow is
 			// exactly the tamper that would otherwise read as "no
 			// drift" right up until something wrote through it.
-			if oldRec.Hash != newRec.Hash || oldRec.Symlink != newRec.Symlink {
+			if oldRec.Hash != newRec.Hash || oldRec.Symlink != newRec.Symlink || oldRec.Mode != newRec.Mode {
 				changes = append(changes, Change{Kind: Modified, Path: path, Old: &oldRec, New: &newRec})
 			}
 		} else {
@@ -319,4 +348,21 @@ func IsSymlink(path string) (bool, error) {
 		return false, fmt.Errorf("manifest: lstat %s: %w", path, err)
 	}
 	return info.Mode()&os.ModeSymlink != 0, nil
+}
+
+// NextGeneration never reuses an archived number after adopting an older baseline.
+func NextGeneration(dir string, current int) (int, error) {
+	gens, err := Generations(dir)
+	if err != nil {
+		return 0, err
+	}
+	for _, g := range gens {
+		if g > current {
+			current = g
+		}
+	}
+	if current == int(^uint(0)>>1) {
+		return 0, fmt.Errorf("manifest generation exhausted")
+	}
+	return current + 1, nil
 }

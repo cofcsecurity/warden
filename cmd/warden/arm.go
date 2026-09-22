@@ -22,7 +22,7 @@ import (
 // them every few minutes. Arm once hardening is actually done; disarm again
 // before any planned maintenance window that touches a watched file.
 func armCmd() *cobra.Command {
-	var assumeYes bool
+	var assumeYes, strict bool
 
 	cmd := &cobra.Command{
 		Use:   "arm",
@@ -50,9 +50,20 @@ Run this once, after hardening is done. Before that point watch still
 runs and still flags anything sensitive, it just won't overwrite a
 SafeAutoRestore path out from under someone still editing it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if strict {
+				p, err := loadPaths()
+				if err != nil {
+					return err
+				}
+				report := validateProfile(p)
+				if len(report.Issues) > 0 {
+					return fmt.Errorf("pre-arm validation: %v", report.Issues)
+				}
+			}
 			return runArm(assumeYes)
 		},
 	}
+	cmd.Flags().BoolVar(&strict, "strict", false, "Require profile validation to pass before arming")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "acknowledge the listed changes without being prompted")
 	return cmd
 }

@@ -14,11 +14,12 @@
 package watch
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 
 	"warden/internal/audit"
+	"warden/internal/fsutil"
 	"warden/internal/manifest"
 	"warden/internal/store"
 )
@@ -45,6 +46,7 @@ type Watcher struct {
 	store        *store.Store
 	log          *audit.Logger
 	reload       Reload
+	Baseline     *manifest.Manifest
 }
 
 // New builds a Watcher. manifestPath is where the last known-good manifest
@@ -96,6 +98,10 @@ func (w *Watcher) Check() (*Result, error) {
 		return nil, fmt.Errorf("watch: load last-known-good manifest: %w", err)
 	}
 
+	if w.Baseline != nil {
+		last = w.Baseline
+	}
+
 	// The generation number here is never persisted, so it's not
 	// meaningful — Diff only compares records, not generations.
 	next, err := manifest.Generate(w.paths, w.classify, last.Generation)
@@ -104,6 +110,7 @@ func (w *Watcher) Check() (*Result, error) {
 	}
 
 	res := &Result{}
+	var restoreErrors []error
 
 	watched := map[string]bool{}
 	for _, path := range w.paths {
@@ -161,21 +168,11 @@ func (w *Watcher) Check() (*Result, error) {
 				continue
 			}
 			if err := w.restore(change); err != nil {
-				return res, fmt.Errorf("watch: restore %s: %w", change.Path, err)
+				restoreErrors = append(restoreErrors, fmt.Errorf("watch: restore %s: %w", change.Path, err))
+				continue
 			}
 			res.AutoRestored = append(res.AutoRestored, change.Path)
 			w.logChange("auto-restored", change)
-
-			// A failed reload must not abort the pass: the file is
-			// already back to known-good, which is the load-bearing
-			// part, and the remaining drifted paths still need
-			// restoring. It's recorded either way.
-			if w.reload != nil {
-				if err := w.reload(change.Path); err != nil {
-					res.ReloadErrors = append(res.ReloadErrors, err)
-					w.logChange("reload-failed", change)
-				}
-			}
 
 		case change.Kind == manifest.Added:
 			// No known-good content exists for a new path, so it can only
@@ -185,7 +182,14 @@ func (w *Watcher) Check() (*Result, error) {
 		}
 	}
 
-	return res, nil
+	for _, path := range res.AutoRestored {
+		if w.reload != nil {
+			if err := w.reload(path); err != nil {
+				res.ReloadErrors = append(res.ReloadErrors, err)
+			}
+		}
+	}
+	return res, errors.Join(restoreErrors...)
 }
 
 func (w *Watcher) restore(change manifest.Change) error {
@@ -210,7 +214,7 @@ func (w *Watcher) logChange(action string, change manifest.Change) {
 }
 
 func writeFile(path string, content []byte, mode fs.FileMode) error {
-	if err := os.WriteFile(path, content, mode); err != nil {
+	if err := fsutil.WriteFile(path, content, mode); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

@@ -263,3 +263,28 @@ func TestIndefiniteLockPersistsUntilRemoved(t *testing.T) {
 		t.Fatal("negative duration accepted")
 	}
 }
+
+func TestOverlayKeepsLocksWithoutChangingUnrelatedAccounts(t *testing.T) {
+	input := []byte("blocked:x:123:123::/home/blocked:/bin/bash\nteam:x:124:124::/home/team:/bin/bash\n")
+	locks := []Lock{{User: "blocked", PreviousShell: "/bin/bash"}}
+	got, err := Overlay("/etc/passwd", input, locks, "/usr/sbin/nologin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "blocked:x:123:123::/home/blocked:/usr/sbin/nologin\nteam:x:124:124::/home/team:/bin/bash\n"
+	if string(got) != want {
+		t.Fatalf("got %q", got)
+	}
+	shadow := []byte("blocked:hash:1:0:99999:7:::\n")
+	got, err = Overlay("/etc/shadow", shadow, locks, "/usr/sbin/nologin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := Overlay("/etc/shadow", got, locks, "/usr/sbin/nologin")
+	if err != nil || string(again) != string(got) {
+		t.Fatal("overlay is not idempotent")
+	}
+	if locks[0].PreviousShell != "/bin/bash" {
+		t.Fatal("lost original shell")
+	}
+}

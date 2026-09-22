@@ -17,8 +17,10 @@ import (
 const hostProfilePath = "/etc/warden/profile.json"
 
 type hostProfile struct {
-	Paths    []profilePath    `json:"paths"`
-	Services []detect.Service `json:"services,omitempty"`
+	Paths            []profilePath       `json:"paths"`
+	Services         []detect.Service    `json:"services,omitempty"`
+	Validators       map[string][]string `json:"validators,omitempty"`
+	IgnoredProcesses []string            `json:"ignored_processes,omitempty"`
 }
 type profilePath struct {
 	Path     string   `json:"path"`
@@ -76,6 +78,19 @@ func loadHostProfile(path string) error {
 		confirm[p.Path] = p.Class == "confirm-first"
 		services[p.Path] = p.Services
 	}
+	for unit, args := range profile.Validators {
+		if unit == "" || len(args) == 0 || !filepath.IsAbs(args[0]) {
+			return fmt.Errorf("host profile: validator requires unit and absolute executable")
+		}
+	}
+	ignoredProcesses = map[string]bool{}
+	for _, name := range profile.IgnoredProcesses {
+		if name == "" {
+			return fmt.Errorf("host profile: ignored process name cannot be empty")
+		}
+		ignoredProcesses[name] = true
+	}
+	serviceValidators = profile.Validators
 	configTierPaths, watchedPaths, dataTierPaths = configs, configs, dataPaths
 	confirmFirstPaths, pathServices = confirm, services
 	detect.KnownServices = append(detect.KnownServices, profile.Services...)

@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"warden/internal/fsutil"
 )
 
 // Lock is one active or expired account lockout.
@@ -174,7 +175,7 @@ func (s *Store) Save(locks []Lock) error {
 	if err != nil {
 		return fmt.Errorf("accountlock: encode: %w", err)
 	}
-	if err := os.WriteFile(s.path, data, 0o600); err != nil {
+	if err := fsutil.WriteFile(s.path, data, 0o600); err != nil {
 		return fmt.Errorf("accountlock: write %s: %w", s.path, err)
 	}
 	return nil
@@ -200,6 +201,9 @@ func Add(store *Store, sys System, user, reason string, duration time.Duration, 
 
 	for i := range locks {
 		if locks[i].User == user {
+			if _, err := sys.Lock(user); err != nil {
+				return err
+			}
 			locks[i].Reason = reason
 			locks[i].LockedAt = now
 			locks[i].ExpiresAt = expires
@@ -244,13 +248,7 @@ func Remove(store *Store, sys System, user string) error {
 	return store.Save(kept)
 }
 
-// Reconcile lifts every expired lock (restoring the recorded shell) and
-// leaves active ones as they are — locking is a one-time state change
-// (unlike a firewall rule, it doesn't need re-asserting every pass if
-// nothing else could have silently reverted it), so unlike
-// autoban.Reconcile this doesn't re-apply active locks, only expires
-// them. Meant to be called on sentinel-check's schedule, same as
-// autoban.Reconcile.
+// Reconcile expires timed locks and reasserts active restrictions.
 func Reconcile(store *Store, sys System, now time.Time) (active []string, expired []string, err error) {
 	locks, err := store.Load()
 	if err != nil {
@@ -274,7 +272,11 @@ func Reconcile(store *Store, sys System, now time.Time) (active []string, expire
 			expired = append(expired, l.User)
 			continue
 		}
-		active = append(active, l.User)
+		if _, err := sys.Lock(l.User); err != nil {
+			errs = append(errs, err)
+		} else {
+			active = append(active, l.User)
+		}
 		kept = append(kept, l)
 	}
 
@@ -282,4 +284,38 @@ func Reconcile(store *Store, sys System, now time.Time) (active []string, expire
 		errs = append(errs, err)
 	}
 	return active, expired, errors.Join(errs...)
+}
+
+// Overlay applies recorded locks to approved account files before publication.
+// Keep even expired records restricted until Reconcile successfully unlocks them.
+func Overlay(path string, data []byte, locks []Lock, shell string) ([]byte, error) {
+	if path != "/etc/passwd" && path != "/etc/shadow" {
+		return data, nil
+	}
+	users := map[string]bool{}
+	for _, l := range locks {
+		users[l.User] = true
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		fields := strings.Split(line, ":")
+		if !users[fields[0]] {
+			continue
+		}
+		if path == "/etc/passwd" {
+			if len(fields) != 7 {
+				return nil, fmt.Errorf("invalid passwd record")
+			}
+			fields[6] = shell
+		} else {
+			if len(fields) != 9 {
+				return nil, fmt.Errorf("invalid shadow record")
+			}
+			if !strings.HasPrefix(fields[1], "!") {
+				fields[1] = "!" + fields[1]
+			}
+		}
+		lines[i] = strings.Join(fields, ":")
+	}
+	return []byte(strings.Join(lines, "\n")), nil
 }

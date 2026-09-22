@@ -83,22 +83,26 @@ Generate a separate replication keypair for each host so a stolen key grants acc
 
 ### Set up each box's receiving side
 
-The current SSH transport executes shell commands on the receiver. It requires a dedicated account with a working shell. A `nologin` shell or `command="/usr/bin/false"` in authorized_keys blocks replication.
+Use a separate receiving account and directory for each source. The account needs a working shell because sshd uses it to start the forced command, but the replication key must be restricted to `warden receive`.
 
 ```sh
-useradd -m -s /bin/sh warden-backup
-install -d -o warden-backup -g warden-backup -m 700 /home/warden-backup/.ssh
-install -o warden-backup -g warden-backup -m 600 /dev/null /home/warden-backup/.ssh/authorized_keys
+useradd -m -s /bin/sh warden-backup-box2
+chown root:root /home/warden-backup-box2
+install -d -o warden-backup-box2 -g warden-backup-box2 -m 700 /home/warden-backup-box2/from-box2
+install -d -o root -g root -m 755 /home/warden-backup-box2/.ssh
 ```
 
-Use the file-creation command only for a new account; it replaces an existing authorized_keys file. Append the allowed peers' public keys, restricting each to that peer's address:
+Create a root-owned `authorized_keys` file with mode 644 in that `.ssh` directory. Keep the account's home owned by root as well so the receiving account cannot replace `.ssh`. Install the receiving binary at a root-owned path. For a source with manifest signing enabled, use this key entry, replacing the placeholders:
 
 ```text
-from="<box2 IP>",no-pty,no-port-forwarding,no-X11-forwarding,no-agent-forwarding <box2 replication public key>
-from="<box6 IP>",no-pty,no-port-forwarding,no-X11-forwarding,no-agent-forwarding <box6 replication public key>
+restrict,from="<box2 IP>",command="/usr/local/sbin/warden receive --root /home/warden-backup-box2/from-box2 --source box2 --public-key <base64 manifest public key>" <box2 replication SSH public key>
 ```
 
-These options disable PTYs and forwarding, but still allow commands as the receiving account. Warden's client avoids overwriting existing backups; the server does not enforce that policy. A stolen replication key can modify or delete anything writable by that account. For stronger isolation, use a separate receiving account per source and backup snapshots or storage retention that those accounts cannot alter. A restricted receiver protocol is not implemented yet.
+Configure the source target as `ssh+receiver://warden-backup-box2@box1/from-box2`, with the receiver's pinned SSH host key. The forced command chooses the storage root; the URL path does not choose or change it. Each source needs its own account/key restriction and root. The receiver permits verified object writes, immutable manifest writes, audit segments, heartbeats, and reads. It exposes no shell, delete, rename, or retention operation. Requests are limited to 256 MiB of JSON, including base64 overhead. Large individual data files need a different backup method until chunked transfers are supported.
+
+The receiving host's administrator controls storage quotas and retention. Keep manifest files to preserve generation history, including after removing old objects. Sources cannot request pruning. A receiver administrator or a compromised receiving host can still delete backups, so keep copies on multiple hosts.
+
+Existing `ssh://` targets retain the shell transport for compatibility. They do not enforce server-side immutability. Migrate the authorized key and URL together; a forced receiver rejects legacy shell commands. For unsigned existing builds, omit `--source` and `--public-key` temporarily, then enable signing as described below.
 
 Inspect and verify the receiving host's public key through a trusted channel before pinning it. `ssh-keyscan` collects a candidate key but does not authenticate it:
 
@@ -299,3 +303,26 @@ The destination must differ from the live audit log. Recovered entries retain th
 ## 8. Repeat per box
 
 Each box gets its own install, its own replication keypair, and (per the ring topology above) its own pair of `REPLICATE_TARGETS` entries; only the team's login key is shared across all of them.
+
+### Sign manifests
+
+Generate one manifest key pair per source on the build machine:
+
+```sh
+umask 077
+warden manifest-keygen > box2-manifest-key.json
+```
+
+Supply the JSON's `private_key` and `public_key` as `MANIFEST_KEY` and `MANIFEST_PUBLIC_KEY`, and use a stable source name such as `MANIFEST_SOURCE=box2` when building with Make or the build-and-install script. These are separate from SSH replication keys. Put only the public key and source name in the receiver's forced command. Keep the private key out of receiving accounts and version control.
+
+With a public key configured, recovered manifests must have a valid signature for that source and tier. Existing unsigned archives are not accepted under the new pin. During a controlled migration, disarm and take a new approved snapshot with the signing-enabled binary, replicate it, verify the backups, then arm. Keep older unsigned backups available separately if needed.
+
+The source binary contains the signing key. Its signature authenticates manifests against modification on a replica; it cannot prove that a compromised source approved honest content. The receiver retains immutable generation files outside the source host. Recovery checks their highest generation and requires `retrieve --allow-rollback` to adopt an older generation or override an incomplete lineage check. Losing every independently held copy also loses that external history.
+
+### Validate deployment
+
+Run `warden profile validate` for coverage, unit mappings, attribution logs, and replica connectivity. `--strict` returns failure for reported issues, and `warden arm --strict` makes the same checks a prerequisite. The broad default profile includes paths absent on many hosts; tailor it before expecting strict validation to pass. The optional `ignored_processes` array acknowledges unknown process names that do not need service coverage, such as local desktop utilities. It only suppresses those unknown-process findings; it does not suppress missing watched files or known service coverage failures.
+
+Configure service validators in the profile as argument arrays, for example `"validators": {"nginx": ["/usr/sbin/nginx", "-t"], "sshd": ["/usr/sbin/sshd", "-t"]}`. Use the actual unit names from the profile. Commands run without a shell, with a 15-second limit, after all files are published and before service restart or reload. A failed explicit restore validation rolls the files back. Units without a configured validator receive content and mode verification only.
+
+Use `warden verify-backups --record` to save a verification report for `status`. Use `--repair` to recover local objects from verified copies. The default command only reads and prints JSON; it does not save a report. A successful heartbeat is independent of backup health.

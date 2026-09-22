@@ -158,13 +158,16 @@ func (r *backupRecovery) manifest(tier snapshotTier, generation int) (*manifest.
 	if generation > 0 {
 		// The live pointer may be the last local copy of this generation.
 		if data, err := os.ReadFile(r.p.manifestPathForTier(tier)); err == nil {
-			if m, err := manifest.Parse(data); err == nil && validateRecoveryManifest(m, generation) == nil {
+			if m, err := manifest.Parse(data); err == nil && validateRecoveryManifest(m, generation) == nil && verifyManifest(m, tier) == nil {
 				return m, nil
 			}
 		}
 		m, err := manifest.LoadGeneration(r.p.manifestsDirForTier(tier), generation)
 		if err == nil {
 			err = validateRecoveryManifest(m, generation)
+			if err == nil {
+				err = verifyManifest(m, tier)
+			}
 		}
 		if err == nil {
 			return m, nil
@@ -208,6 +211,9 @@ func (r *backupRecovery) manifest(tier snapshotTier, generation int) (*manifest.
 		}
 		if err == nil {
 			err = validateRecoveryManifest(m, candidate.generation)
+			if err == nil {
+				err = verifyManifest(m, tier)
+			}
 		}
 		if err == nil {
 			r.record("manifest-found", source, map[string]any{"tier": tier, "generation": m.Generation})
@@ -232,7 +238,7 @@ func (r *backupRecovery) loadManifest(tier snapshotTier, id string) (*manifest.M
 	data, err := os.ReadFile(r.p.manifestPathForTier(tier))
 	if err == nil {
 		m, parseErr := manifest.Parse(data)
-		if parseErr == nil && validateRecoveryManifest(m, 0) == nil {
+		if parseErr == nil && validateRecoveryManifest(m, 0) == nil && verifyManifest(m, tier) == nil {
 			return m, nil
 		}
 	}
@@ -249,6 +255,13 @@ func (r *backupRecovery) ensureManifest(tier snapshotTier) error {
 	m, err := r.manifest(tier, 0)
 	if err != nil {
 		return err
+	}
+	highest, err := r.highestGeneration(tier)
+	if err != nil {
+		return fmt.Errorf("automatic manifest recovery cannot verify lineage; use retrieve --allow-rollback for an explicit override: %w", err)
+	}
+	if m.Generation < highest {
+		return fmt.Errorf("automatic manifest recovery would roll back from generation %d to %d; use retrieve --allow-rollback", highest, m.Generation)
 	}
 	if err := m.Archive(r.p.manifestsDirForTier(tier)); err != nil {
 		return err

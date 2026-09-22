@@ -21,9 +21,10 @@ type testSSHServer struct {
 	hostSigner ssh.Signer
 	clientKey  ssh.PublicKey
 	listener   net.Listener
+	receiver   *Receiver
 }
 
-func startTestSSHServer(t *testing.T, clientKey ssh.PublicKey) *testSSHServer {
+func startTestSSHServer(t *testing.T, clientKey ssh.PublicKey, receiver ...*Receiver) *testSSHServer {
 	t.Helper()
 
 	hostSigner := generateSigner(t)
@@ -40,6 +41,9 @@ func startTestSSHServer(t *testing.T, clientKey ssh.PublicKey) *testSSHServer {
 		listener:   listener,
 	}
 
+	if len(receiver) > 0 {
+		srv.receiver = receiver[0]
+	}
 	config := &ssh.ServerConfig{
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			if bytes.Equal(key.Marshal(), clientKey.Marshal()) {
@@ -81,11 +85,11 @@ func (s *testSSHServer) handleConn(conn net.Conn, config *ssh.ServerConfig) {
 		if err != nil {
 			continue
 		}
-		go handleSession(channel, requests)
+		go handleSession(channel, requests, s.receiver)
 	}
 }
 
-func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
+func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, receiver *Receiver) {
 	defer channel.Close()
 
 	for req := range requests {
@@ -101,6 +105,16 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 		}
 		req.Reply(true, nil)
 
+		if receiver != nil {
+			code := uint32(0)
+			if payload.Command != ReceiverCommand {
+				code = 1
+			} else if err := receiver.Serve(channel, channel); err != nil {
+				code = 1
+			}
+			channel.SendRequest("exit-status", false, ssh.Marshal(&struct{ Status uint32 }{code}))
+			return
+		}
 		cmd := exec.Command("sh", "-c", payload.Command)
 		cmd.Stdin = channel
 		var stdout, stderr bytes.Buffer

@@ -130,6 +130,9 @@ func New(target Target) *Replicator {
 // objects and generations are left untouched.
 func (r *Replicator) Push(namespace string, m *manifest.Manifest, manifestData []byte, st *store.Store) error {
 	for _, rec := range m.Records {
+		if !store.ValidHash(rec.Hash) {
+			return fmt.Errorf("replicate: invalid object hash %q", rec.Hash)
+		}
 		has, err := r.target.Has(rec.Hash)
 		if err != nil {
 			return fmt.Errorf("replicate: check %s: %w", rec.Hash, err)

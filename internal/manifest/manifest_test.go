@@ -253,3 +253,14 @@ func TestIsSymlink(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerationAllocationAfterRollback(t *testing.T) {
+	dir := t.TempDir()
+	if err := (&Manifest{Generation: 7}).Archive(dir); err != nil {
+		t.Fatal(err)
+	}
+	next, err := NextGeneration(dir, 1)
+	if err != nil || next != 8 {
+		t.Fatalf("next=%d err=%v", next, err)
+	}
+}

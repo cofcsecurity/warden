@@ -216,7 +216,7 @@ func TestPushAuditLogWithNoLogYetIsNotAnError(t *testing.T) {
 func TestAuditPushStateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit-replicated.json")
 	if err := saveAuditPushState(path, auditPushState{
-		"ssh://peer/root": {Offset: 42, Digest: "abc"},
+		"ssh://peer/root": {Offset: 42, Digest: strings.Repeat("a", 64)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestAuditPushStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state["ssh://peer/root"].Offset != 42 || state["ssh://peer/root"].Digest != "abc" {
+	if state["ssh://peer/root"].Offset != 42 || state["ssh://peer/root"].Digest != strings.Repeat("a", 64) {
 		t.Errorf("expected the offset to survive a round trip, got %+v", state)
 	}
 

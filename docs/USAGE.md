@@ -399,3 +399,26 @@ warden restore /srv/example/score.dat --tier data --snapshot 7 --apply
 ```
 
 See `docs/PLAN.md` for the full phased build history and what's still open.
+
+## Backup verification and restore checks
+
+```sh
+warden verify-backups
+warden verify-backups --record
+warden verify-backups --repair
+warden restore /etc/nginx/nginx.conf --preflight
+warden profile validate --strict
+warden arm --strict
+```
+
+Verification covers active and retained generations across local storage and configured replicas. It reports missing, corrupt, unreadable, and unreachable copies separately. `--repair` caches verified remote objects locally; it does not replace remote copies or silently adopt another generation. `--record` saves the latest result for status. Without either flag, verification makes no filesystem changes.
+
+Restore preflight checks object availability, destination types, parent directories, and write access without writing files. Apply stages all files before stopping services. It preserves which services were running, publishes all files, checks content and modes, and runs configured validators before starting those services. On a write or validation failure it restores the previous files before restarting. If rollback itself fails, the error identifies that services need operator recovery.
+
+Watch applies recorded account locks to the expected passwd/shadow content without changing approved archives. It finishes repairs before reloading services and retries pending reloads on later successful armed passes. Explicit unlock restores the recorded original shell. Zero-duration bans and locks remain indefinite.
+
+`status` shows the last recorded backup verification, usable replica count, pending reload count, and unavailable local objects in each active snapshot. Reports are timestamped; they are not a guarantee that a previously verified peer is still available.
+
+Mutating commands share a process lock. An overlapping timer or manual command returns a busy error and can be retried. Archived generation numbers are not reused after rollback. Pruning retains active-baseline objects in both tiers in addition to the newest ten generations.
+
+When adopting backups, `retrieve --allow-rollback` is required if the selected generation is older than recorded history or some lineage checks cannot complete. Automatic recovery refuses a known rollback. See DEPLOYMENT.md for `ssh+receiver://` targets and signed manifests.

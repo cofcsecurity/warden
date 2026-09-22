@@ -6,6 +6,8 @@ package main
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
+	"warden/internal/fsutil"
 
 	"github.com/spf13/cobra"
 )
@@ -75,11 +77,18 @@ func main() {
 			if verbose {
 				logLevel.Set(slog.LevelDebug)
 			}
+			if cmd.Name() == "receive" {
+				return nil
+			}
 			return loadHostProfile(hostProfilePath)
 		},
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")
 
+	root.AddCommand(manifestKeygenCmd())
+	root.AddCommand(profileCmd())
+	root.AddCommand(receiverCmd())
+	root.AddCommand(verifyBackupsCmd())
 	root.AddCommand(snapshotCmd())
 	root.AddCommand(replicateCmd())
 	root.AddCommand(retrieveCmd())
@@ -103,6 +112,41 @@ func main() {
 	root.AddCommand(lockAccountCmd())
 	root.AddCommand(unlockAccountCmd())
 
+	// Serialize mutations across timer, manual, and response commands.
+	for _, cmd := range root.Commands() {
+		switch cmd.Name() {
+		case "snapshot", "accept", "arm", "disarm", "retrieve", "restore", "watch", "replicate", "scan", "sentinel-check", "ban", "unban", "lock-account", "unlock-account", "verify-backups":
+			run := cmd.RunE
+			cmd.RunE = func(c *cobra.Command, args []string) error {
+				if c.Name() == "verify-backups" {
+					repair, _ := c.Flags().GetBool("repair")
+					record, _ := c.Flags().GetBool("record")
+					if !repair && !record {
+						return run(c, args)
+					}
+				}
+				if c.Name() == "restore" || c.Name() == "retrieve" {
+					apply, _ := c.Flags().GetBool("apply")
+					if !apply {
+						return run(c, args)
+					}
+				}
+				p, err := loadPaths()
+				if err != nil {
+					return err
+				}
+				if err := os.MkdirAll(p.storeRoot, 0700); err != nil {
+					return err
+				}
+				release, err := fsutil.Lock(filepath.Join(p.storeRoot, "operation.lock"))
+				if err != nil {
+					return err
+				}
+				defer release()
+				return run(c, args)
+			}
+		}
+	}
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}

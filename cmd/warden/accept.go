@@ -2,12 +2,12 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"warden/internal/audit"
+	"warden/internal/fsutil"
 	"warden/internal/manifest"
 	"warden/internal/store"
 )
@@ -91,8 +91,12 @@ func runAccept(path, code string) error {
 	}
 	records = append(records, fresh.Records...) // 0 or 1 entries
 
+	generation, err := allocateGeneration(p, tierConfig, last.Generation)
+	if err != nil {
+		return err
+	}
 	next := &manifest.Manifest{
-		Generation: last.Generation + 1,
+		Generation: generation,
 		CreatedAt:  time.Now().UTC(),
 		Records:    records,
 	}
@@ -102,19 +106,25 @@ func runAccept(path, code string) error {
 		return err
 	}
 	for _, r := range fresh.Records {
-		content, err := os.ReadFile(r.Path)
+		content, err := fsutil.ReadFile(r.Path)
 		if err != nil {
 			return fmt.Errorf("accept: read %s: %w", r.Path, err)
+		}
+		if err := store.Verify(r.Hash, content); err != nil {
+			return fmt.Errorf("accept: file changed while reading: %w", err)
 		}
 		if _, err := st.Put(content); err != nil {
 			return fmt.Errorf("accept: store %s: %w", r.Path, err)
 		}
 	}
 
-	if err := next.SaveAs(p.configManifestPath); err != nil {
+	if err := signManifest(next, tierConfig); err != nil {
 		return err
 	}
 	if err := next.Archive(p.configManifestsDir); err != nil {
+		return err
+	}
+	if err := next.SaveAs(p.configManifestPath); err != nil {
 		return err
 	}
 

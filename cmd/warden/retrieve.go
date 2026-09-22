@@ -20,7 +20,7 @@ import (
 func retrieveCmd() *cobra.Command {
 	var tierFlag string
 	var generationFlag int
-	var apply bool
+	var apply, allowRollback bool
 	var auditOut string
 
 	cmd := &cobra.Command{
@@ -42,17 +42,18 @@ func retrieveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runRetrieve(peer, tier, generationFlag, apply)
+			return runRetrieve(peer, tier, generationFlag, apply, allowRollback)
 		},
 	}
 	cmd.Flags().StringVar(&auditOut, "audit", "", "instead of a snapshot, reassemble the replicated audit log into this file (\"-\" for stdout)")
 	cmd.Flags().StringVar(&tierFlag, "tier", string(tierConfig), `snapshot tier to pull: "config" or "data"`)
 	cmd.Flags().IntVar(&generationFlag, "generation", 0, "generation to pull (default: selected peer's latest, otherwise the local baseline or newest backup)")
+	cmd.Flags().BoolVar(&allowRollback, "allow-rollback", false, "Explicitly permit adopting an older generation or an incomplete lineage check")
 	cmd.Flags().BoolVar(&apply, "apply", false, "adopt the pulled manifest as this box's live baseline (default: report what's available and stop)")
 	return cmd
 }
 
-func runRetrieve(peerURL string, tier snapshotTier, generation int, apply bool) error {
+func runRetrieve(peerURL string, tier snapshotTier, generation int, apply bool, allowRollback ...bool) error {
 	if generation < 0 {
 		return fmt.Errorf("retrieve: generation must be nonnegative")
 	}
@@ -65,10 +66,10 @@ func runRetrieve(peerURL string, tier snapshotTier, generation int, apply bool) 
 	if err != nil {
 		return err
 	}
-	return retrieveWithRecovery(p, peerURL, tier, generation, apply)
+	return retrieveWithRecovery(p, peerURL, tier, generation, apply, allowRollback...)
 }
 
-func retrieveWithRecovery(p paths, peerURL string, tier snapshotTier, generation int, apply bool) error {
+func retrieveWithRecovery(p paths, peerURL string, tier snapshotTier, generation int, apply bool, allowRollback ...bool) error {
 	recovery := newBackupRecovery(p, nil)
 	defer recovery.Close()
 	var m *manifest.Manifest
@@ -93,6 +94,9 @@ func retrieveWithRecovery(p paths, peerURL string, tier snapshotTier, generation
 				}
 				if readErr == nil {
 					readErr = validateRecoveryManifest(m, g)
+					if readErr == nil {
+						readErr = verifyManifest(m, tier)
+					}
 				}
 				if readErr != nil {
 					m = nil
@@ -116,6 +120,11 @@ func retrieveWithRecovery(p paths, peerURL string, tier snapshotTier, generation
 	if !apply {
 		fmt.Println("dry run: pass --apply to recover objects and adopt the baseline")
 		return nil
+	}
+	highest, lineageErr := recovery.highestGeneration(tier)
+	permitted := len(allowRollback) > 0 && allowRollback[0]
+	if (lineageErr != nil || m.Generation < highest) && !permitted {
+		return fmt.Errorf("retrieve requires --allow-rollback: selected %d, highest %d, lineage check: %v", m.Generation, highest, lineageErr)
 	}
 	log, err := audit.New(p.auditLogPath)
 	if err != nil {

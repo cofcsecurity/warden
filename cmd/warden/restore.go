@@ -12,7 +12,7 @@ import (
 
 func restoreCmd() *cobra.Command {
 	var snapshotID, tier string
-	var apply bool
+	var apply, preflight bool
 
 	cmd := &cobra.Command{
 		Use:   "restore <target>",
@@ -23,11 +23,30 @@ func restoreCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if preflight {
+				p, err := loadPaths()
+				if err != nil {
+					return err
+				}
+				m, err := loadSnapshotTier(p, snapshotID, t)
+				if err != nil {
+					return err
+				}
+				entries, err := restore.Plan(m, args[0])
+				if err != nil {
+					return err
+				}
+				if err := preflightRestore(p, entries); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "preflight passed")
+			}
 			return runRestoreTier(args[0], snapshotID, apply, t)
 		},
 	}
 	cmd.Flags().StringVar(&tier, "tier", "config", "snapshot tier: config or data")
 	cmd.Flags().StringVar(&snapshotID, "snapshot", "", "snapshot generation to restore from (default: latest)")
+	cmd.Flags().BoolVar(&preflight, "preflight", false, "Read-only check of backup availability and restore destinations")
 	cmd.Flags().BoolVar(&apply, "apply", false, "apply the restore instead of only showing what would change")
 	return cmd
 }
@@ -110,7 +129,20 @@ func applyPlan(p paths, entries []restore.PlanEntry, log *audit.Logger) ([]strin
 		return nil, err
 	}
 
+	m := &manifest.Manifest{}
+	for _, e := range entries {
+		m.Records = append(m.Records, manifest.Record{Path: e.Path, Hash: e.TargetHash, Mode: e.TargetMode})
+	}
+	effective, err := accountBaseline(p, m, st)
+	if err != nil {
+		return nil, err
+	}
+	entries, err = restore.Plan(effective, "")
+	if err != nil {
+		return nil, err
+	}
 	r := restore.New(st, serviceForPath)
+	r.Validate = validateService
 	results := r.Apply(entries)
 
 	var lines []string

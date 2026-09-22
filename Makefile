@@ -36,6 +36,9 @@ REPLICATE_TARGETS ?=
 REPLICATE_KEY ?=
 AUTOBAN_ENABLED ?=
 AUTOLOCK_ENABLED ?=
+MANIFEST_KEY ?=
+MANIFEST_PUBLIC_KEY ?=
+MANIFEST_SOURCE ?=
 SAFE_ACCOUNTS ?=
 
 LDFLAGS := -s -w \
@@ -46,7 +49,10 @@ LDFLAGS := -s -w \
 	-X 'main.buildReplicateKey=$(REPLICATE_KEY)' \
 	-X 'main.buildAutobanEnabled=$(AUTOBAN_ENABLED)' \
 	-X 'main.buildAutolockEnabled=$(AUTOLOCK_ENABLED)' \
-	-X 'main.buildSafeAccounts=$(SAFE_ACCOUNTS)'
+	-X 'main.buildSafeAccounts=$(SAFE_ACCOUNTS)' \
+	-X 'main.buildManifestKey=$(MANIFEST_KEY)' \
+	-X 'main.buildManifestPublicKey=$(MANIFEST_PUBLIC_KEY)' \
+	-X 'main.buildManifestSource=$(MANIFEST_SOURCE)'
 
 .PHONY: build test vet fmt vendor clean
 

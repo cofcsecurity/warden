@@ -485,7 +485,10 @@ build() {
 		-X 'main.buildReplicateKey=${REPLICATE_KEY}' \
 		-X 'main.buildAutobanEnabled=${AUTOBAN_ENABLED}' \
 		-X 'main.buildAutolockEnabled=${AUTOLOCK_ENABLED}' \
-		-X 'main.buildSafeAccounts=${SAFE_ACCOUNTS}'" \
+		-X 'main.buildSafeAccounts=${SAFE_ACCOUNTS}' \
+		-X 'main.buildManifestKey=${MANIFEST_KEY:-}' \
+		-X 'main.buildManifestPublicKey=${MANIFEST_PUBLIC_KEY:-}' \
+		-X 'main.buildManifestSource=${MANIFEST_SOURCE:-}'" \
 		-o deploy/warden ./cmd/warden
 
 	echo "==> Verifying what actually got baked in"

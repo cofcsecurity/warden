@@ -268,6 +268,11 @@ The audit log rotates at 8 MiB (`audit.MaxLogBytes`) and retains one previous fi
 
 `cmd/warden/recovery.go` manages fallback across configured targets. Store reads verify decompressed bytes and recover missing or corrupt objects through a callback. Recovery tries local replicas before SSH peers, validates the expected hash, caches the recovered object, and records its source. Connections are reused for one operation and closed afterward.
 
-Missing live manifests are recovered from local archives and replicas. Explicit generations stay exact; automatic selection chooses the newest readable generation. Recovery validates generation numbers, absolute unique paths, and object hashes. Metadata is not independently signed.
+Missing live manifests are recovered from local archives and replicas. Explicit generations stay exact; automatic selection chooses the newest readable generation. Recovery validates generation numbers, absolute unique paths, and object hashes. Builds configured with an Ed25519 manifest public key require signed source and tier metadata. Restricted receivers retain immutable generation records outside the source host; adoption of an older generation requires an explicit rollback override.
 
 Restore and watch share this recovery store. Replication can refill its local store from another peer, and can reconstruct a missing archive from the live manifest. Armed snapshots attempt recovery before reading a changed live file and reject content that does not match the baseline. Retrieve dry runs read metadata only.
+
+
+Mutating CLI operations share an advisory process lock. Manifests and response state publish through temporary files; archives reject conflicting writes. Object retention includes both active manifests. Account lock overlays are computed for restoration without altering the approved archive.
+
+The restricted receiver accepts one JSON request through a forced SSH command and confines file operations with Go's directory-root API. Its protocol has no shell execution, deletion, or pruning operation. Source-specific receiver credentials and roots provide isolation; retention belongs to the receiving administrator. Legacy shell transport remains available for migration only.

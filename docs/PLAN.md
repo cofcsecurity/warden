@@ -232,3 +232,11 @@ Arming now shows changes since the previous baseline before accepting the curren
 - SSH handshakes, session opens, and commands have timeouts. Remote writes quote paths correctly and use unique temporary files with no-overwrite publication. Local replica publication also avoids overwrites during concurrent writes.
 - Watch honors the current profile for removed paths and deleted-file classifications.
 - Remaining findings and feature candidates are recorded in [REVIEW.md](REVIEW.md).
+
+
+### Review implementation
+
+- Fixed active-baseline retention, generation reuse, mode drift, early service reload, restore failure cleanup, account-lock overlays, and audit cursor validation.
+- Added atomic state publication and a shared mutation lock; accept verifies content before recording a new baseline; non-regular file reads fail without blocking.
+- Added backup verification and local repair, restricted receivers, signed manifests, explicit rollback checks, profile validation, restore preflight, and backup health in status.
+- Deployment options and migration steps are in DEPLOYMENT.md. No scheduled repair is enabled by default.

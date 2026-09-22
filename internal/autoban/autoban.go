@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"time"
+	"warden/internal/fsutil"
 )
 
 // Ban is one active or expired IP ban.
@@ -102,7 +103,7 @@ func (s *Store) Save(bans []Ban) error {
 	if err != nil {
 		return fmt.Errorf("autoban: encode: %w", err)
 	}
-	if err := os.WriteFile(s.path, data, 0o600); err != nil {
+	if err := fsutil.WriteFile(s.path, data, 0o600); err != nil {
 		return fmt.Errorf("autoban: write %s: %w", s.path, err)
 	}
 	return nil

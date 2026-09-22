@@ -82,11 +82,8 @@ func runSentinelCheck() error {
 		fmt.Printf("active ban(s) reasserted: %v\n", active)
 	}
 
-	// Account-lock reconciliation piggybacks on the same schedule — see
-	// accountlock.Reconcile's own doc comment for why this only lifts
-	// expired locks rather than also re-asserting active ones the way
-	// autoban.Reconcile does above (locking is a one-time state change,
-	// not something that needs reasserting every pass).
+	// Reassert active account restrictions and lift successfully expired locks.
+
 	lockedAccounts, expiredLocks, err := accountlock.Reconcile(
 		accountlock.NewStore(p.accountLocksPath),
 		accountlock.OSAccounts{NologinShell: nologinShellPath()},

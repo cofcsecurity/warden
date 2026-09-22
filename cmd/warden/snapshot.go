@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"warden/internal/audit"
+	"warden/internal/fsutil"
 	"warden/internal/manifest"
 	"warden/internal/store"
 )
@@ -61,7 +62,7 @@ func runSnapshot(tier snapshotTier) error {
 		if listErr != nil {
 			return listErr
 		}
-		if armed || len(generations) > 0 {
+		if armed && tier == tierConfig || len(generations) > 0 {
 			if err := recovery.ensureManifest(tier); err != nil {
 				return err
 			}
@@ -72,7 +73,11 @@ func runSnapshot(tier snapshotTier) error {
 		return err
 	}
 
-	next, err := manifest.Generate(pathsForTier(tier), classifyPath, last.Generation+1)
+	generation, err := allocateGeneration(p, tier, last.Generation)
+	if err != nil {
+		return err
+	}
+	next, err := manifest.Generate(pathsForTier(tier), classifyPath, generation)
 	if err != nil {
 		return err
 	}
@@ -124,7 +129,7 @@ func runSnapshot(tier snapshotTier) error {
 				continue
 			}
 		}
-		content, err := os.ReadFile(r.Path)
+		content, err := fsutil.ReadFile(r.Path)
 		if err != nil {
 			return fmt.Errorf("snapshot: read %s: %w", r.Path, err)
 		}
@@ -141,7 +146,7 @@ func runSnapshot(tier snapshotTier) error {
 	// five minutes that's byte-identical to the last one is just a
 	// directory full of duplicates for restore --snapshot to wade
 	// through. This is the normal case on an armed, quiet box.
-	if sameRecords(last.Records, next.Records) {
+	if sameRecords(last.Records, next.Records) && verifyManifest(last, tier) == nil {
 		if err := pruneOldObjects(p, st); err != nil {
 			return fmt.Errorf("snapshot: prune: %w", err)
 		}
@@ -152,10 +157,13 @@ func runSnapshot(tier snapshotTier) error {
 		})
 	}
 
-	if err := next.SaveAs(manifestPath); err != nil {
+	if err := signManifest(next, tier); err != nil {
 		return err
 	}
 	if err := next.Archive(manifestsDir); err != nil {
+		return err
+	}
+	if err := next.SaveAs(manifestPath); err != nil {
 		return err
 	}
 
@@ -195,7 +203,7 @@ func keepBaseline(last, next *manifest.Manifest) (records []manifest.Record, dec
 		switch {
 		case !present:
 			declined = append(declined, old.Path) // deleted; watch restores it
-		case now.Hash != old.Hash || now.Symlink != old.Symlink:
+		case now.Hash != old.Hash || now.Symlink != old.Symlink || now.Mode != old.Mode:
 			declined = append(declined, old.Path)
 		}
 		records = append(records, old)
@@ -236,6 +244,20 @@ func sameRecords(a, b []manifest.Record) bool {
 // both lineages or it'll prune objects the other tier still needs.
 func pruneOldObjects(p paths, st *store.Store) error {
 	keep := map[string]bool{}
+	for _, path := range []string{p.configManifestPath, p.dataManifestPath} {
+		m, err := manifest.New(path)
+		if err != nil {
+			return err
+		}
+		if _, statErr := os.Stat(path); statErr == nil {
+			if err := validateRecoveryManifest(m, 0); err != nil {
+				return fmt.Errorf("prune: invalid active manifest: %w", err)
+			}
+		}
+		for _, rec := range m.Records {
+			keep[rec.Hash] = true
+		}
+	}
 
 	for _, dir := range []string{p.configManifestsDir, p.dataManifestsDir} {
 		gens, err := manifest.Generations(dir)

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"warden/internal/fsutil"
 )
 
 // Store is a content-addressed object store rooted at a directory.
@@ -126,7 +127,7 @@ func (s *Store) Get(hash string) ([]byte, error) {
 }
 
 func (s *Store) readObject(hash string) ([]byte, error) {
-	f, err := os.Open(s.objectPath(hash))
+	f, err := fsutil.OpenRegular(s.objectPath(hash))
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", hash, err)
 	}
@@ -190,3 +191,6 @@ func (s *Store) Prune(keep map[string]bool) error {
 	}
 	return nil
 }
+
+// Open reads an existing store without creating directories.
+func Open(root string) *Store { return &Store{root: root} }

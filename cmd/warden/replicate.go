@@ -5,11 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
 	"time"
+	"warden/internal/fsutil"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -156,36 +159,42 @@ func pushToTarget(p paths, st *store.Store, t replicateTarget, state auditPushSt
 	recovery := newBackupRecovery(p, nil)
 	defer recovery.Close()
 	pushed := 0
+	var failures []error
 	for _, tier := range []snapshotTier{tierConfig, tierData} {
-		m, err := manifest.New(p.manifestPathForTier(tier))
-		if err != nil {
-			return 0, err
-		}
-		if m.Generation == 0 && len(m.Records) == 0 {
-			recovered, recoveryErr := recovery.manifest(tier, 0)
-			if recoveryErr != nil {
-				if tier == tierData && len(dataTierPaths) == 0 {
-					continue
-				}
-				return 0, recoveryErr
-			}
-			m = recovered
-		}
-
-		manifestData, err := readArchivedManifest(p.manifestsDirForTier(tier), m.Generation)
-		if err != nil {
-			// The live manifest is another local copy of the same generation.
-			manifestData, err = json.Marshal(m)
+		tierErr := func() error {
+			m, err := manifest.New(p.manifestPathForTier(tier))
 			if err != nil {
-				return 0, err
+				return err
 			}
-		}
-		if err := r.Push(string(tier), m, manifestData, st); err != nil {
-			return 0, fmt.Errorf("push %s tier: %w", tier, err)
-		}
-		pushed++
-	}
+			if m.Generation == 0 && len(m.Records) == 0 {
+				recovered, recoveryErr := recovery.manifest(tier, 0)
+				if recoveryErr != nil {
+					if tier == tierData && len(dataTierPaths) == 0 {
+						return nil
+					}
+					return recoveryErr
+				}
+				m = recovered
+			}
 
+			manifestData, err := readArchivedManifest(p.manifestsDirForTier(tier), m.Generation)
+			if err != nil {
+				// The live manifest is another local copy of the same generation.
+				manifestData, err = json.Marshal(m)
+				if err != nil {
+					return err
+				}
+			}
+			if err := r.Push(string(tier), m, manifestData, st); err != nil {
+				return fmt.Errorf("push %s tier: %w", tier, err)
+			}
+			pushed++
+			return nil
+		}()
+		if tierErr != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", tier, tierErr))
+		}
+	}
 	// The audit log and the heartbeat both go even if neither tier has
 	// been snapshotted yet: a box that hasn't been snapshotted has still
 	// been logging and is still either alive or not, and both of those
@@ -198,15 +207,16 @@ func pushToTarget(p paths, st *store.Store, t replicateTarget, state auditPushSt
 	// beating is indistinguishable from being dead.
 	beatErr := r.PushHeartbeat(beatName, beatData)
 
-	switch {
-	case auditErr != nil:
-		return auditBytes, auditErr
-	case beatErr != nil:
-		return auditBytes, beatErr
-	case pushed == 0:
-		return auditBytes, fmt.Errorf("no local manifest yet for either tier; run 'warden snapshot' first")
+	if auditErr != nil {
+		failures = append(failures, auditErr)
 	}
-	return auditBytes, nil
+	if beatErr != nil {
+		failures = append(failures, beatErr)
+	}
+	if pushed == 0 && len(failures) == 0 {
+		failures = append(failures, fmt.Errorf("no snapshot available"))
+	}
+	return auditBytes, errors.Join(failures...)
 }
 
 // auditPushState maps a replication target URL to what was last pushed to
@@ -239,6 +249,9 @@ func auditPrefixDigest(data []byte, n int64) string {
 // offset/digest came from, simply grown — rather than a different file
 // that happens to be at least that long.
 func (rec auditPushRecord) continuesFrom(data []byte) bool {
+	if rec.Offset < 0 {
+		return false
+	}
 	if rec.Offset == 0 {
 		return true
 	}
@@ -265,6 +278,14 @@ func loadAuditPushState(path string) (auditPushState, error) {
 		// the box at all.
 		return auditPushState{}, nil
 	}
+	if state == nil {
+		state = auditPushState{}
+	}
+	for key, rec := range state {
+		if rec.Offset < 0 || rec.Offset > 0 && !store.ValidHash(rec.Digest) {
+			delete(state, key)
+		}
+	}
 	return state, nil
 }
 
@@ -273,7 +294,7 @@ func saveAuditPushState(path string, state auditPushState) error {
 	if err != nil {
 		return fmt.Errorf("replicate: encode audit push state: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := fsutil.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("replicate: write %s: %w", path, err)
 	}
 	return nil
@@ -352,7 +373,7 @@ func dialReplicateTarget(rawURL, hostKey string) (replicate.Target, func() error
 		}
 		return target, func() error { return nil }, nil
 
-	case "ssh":
+	case "ssh", "ssh+receiver":
 		return dialSSHReplicateTarget(u, hostKey)
 
 	default:
@@ -387,14 +408,18 @@ func dialSSHReplicateTarget(u *url.URL, hostKeyStr string) (replicate.Target, fu
 		user = u.User.Username()
 	}
 
-	addr := u.Host
-	if !strings.Contains(addr, ":") {
-		addr += ":22"
+	port := u.Port()
+	if port == "" {
+		port = "22"
 	}
+	addr := net.JoinHostPort(u.Hostname(), port)
 
 	target, err := replicate.DialSSH(addr, user, signer, hostKey, u.Path)
 	if err != nil {
 		return nil, nil, err
+	}
+	if u.Scheme == "ssh+receiver" {
+		return &replicate.ReceiverTarget{Transport: target}, target.Close, nil
 	}
 	return target, target.Close, nil
 }

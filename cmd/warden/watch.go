@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"warden/internal/audit"
+	"warden/internal/manifest"
 	"warden/internal/watch"
 )
 
@@ -95,12 +96,27 @@ func runWatch() error {
 		return err
 	}
 
-	w := watch.New(p.configManifestPath, watchedPaths, classifyPath, armed, st, log, reloadServiceFor(log))
+	q, err := loadReloadQueue(p)
+	if err != nil {
+		return err
+	}
+	w := watch.New(p.configManifestPath, watchedPaths, classifyPath, armed, st, log, q.add)
+	m, err := manifest.New(p.configManifestPath)
+	if err != nil {
+		return err
+	}
+	w.Baseline, err = accountBaseline(p, m, st)
+	if err != nil {
+		return err
+	}
 	res, err := w.Check()
 	if err != nil {
 		return err
 	}
 
+	if armed {
+		res.ReloadErrors = append(res.ReloadErrors, q.flush()...)
+	}
 	now := time.Now()
 	for _, change := range res.FlaggedChanges {
 		if err := reactToGuardedChange(p, change, log, now); err != nil {
