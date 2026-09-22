@@ -237,12 +237,18 @@ func (r *Retriever) Pull(namespace string, generation int, st *store.Store) (*ma
 	}
 
 	for _, rec := range m.Records {
+		if !store.ValidHash(rec.Hash) {
+			return nil, fmt.Errorf("retrieve: invalid hash for %s", rec.Path)
+		}
 		if st.Has(rec.Hash) {
 			continue
 		}
 		content, err := r.target.Get(rec.Hash)
 		if err != nil {
 			return nil, fmt.Errorf("retrieve: fetch object %s (%s): %w", rec.Hash, rec.Path, err)
+		}
+		if err := store.Verify(rec.Hash, content); err != nil {
+			return nil, err
 		}
 		if _, err := st.Put(content); err != nil {
 			return nil, fmt.Errorf("retrieve: store object %s (%s): %w", rec.Hash, rec.Path, err)

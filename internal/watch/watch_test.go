@@ -399,3 +399,33 @@ func TestReloadFailureDoesNotAbortThePass(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckHonorsChangedProfile(t *testing.T) {
+	dir, st, log := setup(t)
+	path := filepath.Join(dir, "config")
+	baseline := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snapshotBaseline(t, baseline, []string{path}, nil, st)
+	if err := os.WriteFile(path, []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(baseline, nil, nil, true, st, log, nil).Check(); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(path)
+	if string(content) != "new" {
+		t.Fatal("restored a path removed from profile")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	res, err := New(baseline, []string{path}, func(string) manifest.Class { return manifest.ConfirmFirst }, true, st, log, nil).Check()
+	if err != nil || len(res.Flagged) != 1 {
+		t.Fatalf("result=%v err=%v", res, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("deleted confirm-first path was recreated")
+	}
+}

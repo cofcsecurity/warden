@@ -223,3 +223,12 @@ Arming now shows changes since the previous baseline before accepting the curren
 - IP bans default to indefinite, with timed manual bans available. Account locks also default to indefinite; positive manual durations still expire.
 - `/etc/warden/profile.json` replaces built-in watched paths, classes, and service mappings without rebuilding, and can extend detection. The actual scored image still needs operator review.
 - Detection includes unknown running process names. Attribution falls back to the system journal and excludes logged team-key source IPs in addition to the configured team address.
+
+## Backup recovery and review fixes
+
+- Missing or corrupt objects are recovered from configured local replicas and SSH peers, verified against their manifest hash, and cached.
+- Missing manifests fall back to local archives and peers. Explicit generations cannot fall back to another generation.
+- Retrieve supports automatic source selection and a metadata-only dry run.
+- SSH handshakes, session opens, and commands have timeouts. Remote writes quote paths correctly and use unique temporary files with no-overwrite publication. Local replica publication also avoids overwrites during concurrent writes.
+- Watch honors the current profile for removed paths and deleted-file classifications.
+- Remaining findings and feature candidates are recorded in [REVIEW.md](REVIEW.md).

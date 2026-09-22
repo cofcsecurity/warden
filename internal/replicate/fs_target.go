@@ -24,6 +24,18 @@ func NewFSTarget(root string) (*FSTarget, error) {
 	return &FSTarget{root: root}, nil
 }
 
+// OpenFSTarget opens an existing replica without creating directories.
+func OpenFSTarget(root string) (*FSTarget, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("replicate: %s is not a directory", root)
+	}
+	return &FSTarget{root: root}, nil
+}
+
 func (t *FSTarget) objectPath(hash string) string {
 	return filepath.Join(t.root, "objects", hash[:2], hash)
 }
@@ -194,7 +206,7 @@ func writeOnceLocal(path string, content []byte) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("replicate: close temp for %s: %w", path, err)
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := os.Link(tmp.Name(), path); err != nil && !os.IsExist(err) {
 		return fmt.Errorf("replicate: commit %s: %w", path, err)
 	}
 	return nil

@@ -14,7 +14,8 @@ import (
 
 // Store is a content-addressed object store rooted at a directory.
 type Store struct {
-	root string
+	root          string
+	recoverObject func(string) ([]byte, error)
 }
 
 // New opens (creating if necessary) a store rooted at root.
@@ -36,8 +37,8 @@ func (s *Store) Put(content []byte) (string, error) {
 	hash := hex.EncodeToString(sum[:])
 
 	path := s.objectPath(hash)
-	if _, err := os.Stat(path); err == nil {
-		return hash, nil // already have it
+	if _, err := s.readObject(hash); err == nil {
+		return hash, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -69,8 +70,62 @@ func (s *Store) Put(content []byte) (string, error) {
 	return hash, nil
 }
 
-// Get returns the decompressed content for hash.
+// SetRecovery supplies a fallback for missing or corrupt local objects.
+func (s *Store) SetRecovery(recoverObject func(string) ([]byte, error)) {
+	s.recoverObject = recoverObject
+}
+
+// ValidHash reports whether hash is a canonical SHA-256 object identifier.
+func ValidHash(hash string) bool {
+	if len(hash) != 64 {
+		return false
+	}
+	for _, c := range hash {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// Verify checks bytes before they can be restored or cached under a hash.
+func Verify(hash string, content []byte) error {
+	if !ValidHash(hash) {
+		return fmt.Errorf("store: invalid object hash %q", hash)
+	}
+	sum := sha256.Sum256(content)
+	if hex.EncodeToString(sum[:]) != hash {
+		return fmt.Errorf("store: hash mismatch for %s", hash)
+	}
+	return nil
+}
+
+// Get returns verified content, recovering and caching a backup when needed.
 func (s *Store) Get(hash string) ([]byte, error) {
+	if !ValidHash(hash) {
+		return nil, fmt.Errorf("store: invalid object hash %q", hash)
+	}
+	content, localErr := s.readObject(hash)
+	if localErr == nil {
+		return content, nil
+	}
+	if s.recoverObject == nil {
+		return nil, localErr
+	}
+	content, err := s.recoverObject(hash)
+	if err != nil {
+		return nil, fmt.Errorf("%v; recovery: %w", localErr, err)
+	}
+	if err := Verify(hash, content); err != nil {
+		return nil, err
+	}
+	if _, err := s.Put(content); err != nil {
+		return nil, fmt.Errorf("cache recovered object: %w", err)
+	}
+	return content, nil
+}
+
+func (s *Store) readObject(hash string) ([]byte, error) {
 	f, err := os.Open(s.objectPath(hash))
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", hash, err)
@@ -87,12 +142,18 @@ func (s *Store) Get(hash string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: read %s: %w", hash, err)
 	}
+	if err := Verify(hash, data); err != nil {
+		return nil, err
+	}
 	return data, nil
 }
 
 // Has reports whether an object with the given hash is already stored.
 func (s *Store) Has(hash string) bool {
-	_, err := os.Stat(s.objectPath(hash))
+	if !ValidHash(hash) {
+		return false
+	}
+	_, err := s.readObject(hash)
 	return err == nil
 }
 

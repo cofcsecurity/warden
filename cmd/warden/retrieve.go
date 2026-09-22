@@ -6,8 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"warden/internal/audit"
+	"warden/internal/manifest"
 	"warden/internal/replicate"
-	"warden/internal/store"
 )
 
 // retrieveCmd is Push's reverse: recovering a box's own backups from a
@@ -23,81 +24,121 @@ func retrieveCmd() *cobra.Command {
 	var auditOut string
 
 	cmd := &cobra.Command{
-		Use:   "retrieve <peer-url>",
+		Use:   "retrieve [peer-url]",
 		Short: "Pull this box's own backups back from a replication peer",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			peer := ""
+			if len(args) > 0 {
+				peer = args[0]
+			}
 			if auditOut != "" {
-				return runRetrieveAudit(args[0], auditOut)
+				if peer == "" {
+					return fmt.Errorf("audit retrieval requires a peer URL")
+				}
+				return runRetrieveAudit(peer, auditOut)
 			}
 			tier, err := parseTier(tierFlag)
 			if err != nil {
 				return err
 			}
-			return runRetrieve(args[0], tier, generationFlag, apply)
+			return runRetrieve(peer, tier, generationFlag, apply)
 		},
 	}
 	cmd.Flags().StringVar(&auditOut, "audit", "", "instead of a snapshot, reassemble the replicated audit log into this file (\"-\" for stdout)")
 	cmd.Flags().StringVar(&tierFlag, "tier", string(tierConfig), `snapshot tier to pull: "config" or "data"`)
-	cmd.Flags().IntVar(&generationFlag, "generation", 0, "generation to pull (default: latest available on the peer)")
+	cmd.Flags().IntVar(&generationFlag, "generation", 0, "generation to pull (default: selected peer's latest, otherwise the local baseline or newest backup)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "adopt the pulled manifest as this box's live baseline (default: report what's available and stop)")
 	return cmd
 }
 
 func runRetrieve(peerURL string, tier snapshotTier, generation int, apply bool) error {
-	hostKey, err := hostKeyForConfiguredTarget(peerURL)
-	if err != nil {
-		return err
+	if generation < 0 {
+		return fmt.Errorf("retrieve: generation must be nonnegative")
 	}
-
+	if peerURL != "" {
+		if _, err := hostKeyForConfiguredTarget(peerURL); err != nil {
+			return err
+		}
+	}
 	p, err := loadPaths()
 	if err != nil {
 		return err
 	}
+	return retrieveWithRecovery(p, peerURL, tier, generation, apply)
+}
 
-	target, closeTarget, err := dialReplicateTarget(peerURL, hostKey)
-	if err != nil {
-		return err
+func retrieveWithRecovery(p paths, peerURL string, tier snapshotTier, generation int, apply bool) error {
+	recovery := newBackupRecovery(p, nil)
+	defer recovery.Close()
+	var m *manifest.Manifest
+	// An explicitly selected peer is preferred, with other copies as fallback.
+	if peerURL != "" {
+		for _, src := range recovery.sources {
+			if src.url != peerURL {
+				continue
+			}
+			target, err := recovery.target(src)
+			g := generation
+			if err == nil && g == 0 {
+				g, err = replicate.NewRetriever(target).LatestGeneration(string(tier))
+				if err == nil {
+					generation = g
+				}
+			}
+			if err == nil {
+				data, readErr := target.GetManifest(string(tier), g)
+				if readErr == nil {
+					m, readErr = manifest.Parse(data)
+				}
+				if readErr == nil {
+					readErr = validateRecoveryManifest(m, g)
+				}
+				if readErr != nil {
+					m = nil
+				}
+			}
+			break
+		}
 	}
-	defer closeTarget()
-
-	st, err := store.New(p.storeRoot)
-	if err != nil {
-		return err
-	}
-
-	r := replicate.NewRetriever(target)
-	if generation == 0 {
-		generation, err = r.LatestGeneration(string(tier))
+	if m == nil {
+		var err error
+		if generation == 0 {
+			m, err = recovery.loadManifest(tier, "")
+		} else {
+			m, err = recovery.manifest(tier, generation)
+		}
 		if err != nil {
 			return err
 		}
 	}
-
-	m, err := r.Pull(string(tier), generation, st)
+	fmt.Printf("available: %s tier generation %d, %d records\n", tier, m.Generation, len(m.Records))
+	if !apply {
+		fmt.Println("dry run: pass --apply to recover objects and adopt the baseline")
+		return nil
+	}
+	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
 	}
-
-	fmt.Printf("pulled %s tier generation %d from %s: %d records now available in the local store\n",
-		tier, m.Generation, peerURL, len(m.Records))
-
-	if !apply {
-		fmt.Println("dry run: pass --apply to adopt this as the local live baseline")
-		return nil
-	}
-
-	manifestPath := p.manifestPathForTier(tier)
-	manifestsDir := p.manifestsDirForTier(tier)
-	if err := m.SaveAs(manifestPath); err != nil {
+	defer log.Close()
+	recovery.log = log
+	st, err := recovery.store()
+	if err != nil {
 		return err
 	}
-	if err := m.Archive(manifestsDir); err != nil {
+	for _, rec := range m.Records {
+		if _, err := st.Get(rec.Hash); err != nil {
+			return fmt.Errorf("retrieve %s: %w", rec.Path, err)
+		}
+	}
+	if err := m.Archive(p.manifestsDirForTier(tier)); err != nil {
 		return err
 	}
-
-	fmt.Printf("adopted as the live %s-tier baseline; 'warden watch'/'warden restore' will use it from here\n", tier)
-	return nil
+	if err := m.SaveAs(p.manifestPathForTier(tier)); err != nil {
+		return err
+	}
+	return log.Log("recovery", "baseline-adopted", map[string]any{"tier": tier, "generation": m.Generation})
 }
 
 // runRetrieveAudit reassembles the audit-log segments a peer holds back

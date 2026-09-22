@@ -2,14 +2,12 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/spf13/cobra"
 
 	"warden/internal/audit"
 	"warden/internal/manifest"
 	"warden/internal/restore"
-	"warden/internal/store"
 )
 
 func restoreCmd() *cobra.Command {
@@ -83,14 +81,9 @@ func loadSnapshot(p paths, snapshotID string) (*manifest.Manifest, error) {
 }
 
 func loadSnapshotTier(p paths, snapshotID string, tier snapshotTier) (*manifest.Manifest, error) {
-	if snapshotID == "" {
-		return manifest.New(p.manifestPathForTier(tier))
-	}
-	gen, err := strconv.Atoi(snapshotID)
-	if err != nil {
-		return nil, fmt.Errorf("restore: --snapshot must be a generation number: %w", err)
-	}
-	return manifest.LoadGeneration(p.manifestsDirForTier(tier), gen)
+	recovery := newBackupRecovery(p, nil)
+	defer recovery.Close()
+	return recovery.loadManifest(tier, snapshotID)
 }
 
 // planLines renders a restore plan the same way for both `warden restore`
@@ -110,7 +103,9 @@ func planLines(entries []restore.PlanEntry) []string {
 // applyPlan applies entries and logs each step, shared by `restore --apply`
 // and opmenu's restore command so both go through the identical sequence.
 func applyPlan(p paths, entries []restore.PlanEntry, log *audit.Logger) ([]string, error) {
-	st, err := store.New(p.storeRoot)
+	recovery := newBackupRecovery(p, log)
+	defer recovery.Close()
+	st, err := recovery.store()
 	if err != nil {
 		return nil, err
 	}

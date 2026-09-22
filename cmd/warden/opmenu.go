@@ -164,7 +164,7 @@ func summarizeEntry(e audit.Entry) string {
 func runOpmenuRestore(p paths, target string, args []string) (string, error) {
 	apply := len(args) > 0 && args[0] == "apply"
 
-	m, err := manifest.New(p.configManifestPath)
+	m, err := loadSnapshot(p, "")
 	if err != nil {
 		return "", err
 	}

@@ -23,7 +23,7 @@ Local state is stored under `/var/lib/<binary-name>`, with registrations in syst
 
 `loadPaths` and `binaryName` derive these names from `INSTALL_PATH`.
 
-Each tier has separate live and archived manifests. `watch` reads only the config baseline and never writes either manifest.
+Each tier has separate live and archived manifests. `watch` uses the config baseline. If its live manifest is missing, it recovers an existing generation from local archives or configured replicas. It does not approve changed files as a new baseline.
 
 ## Command reference
 
@@ -87,16 +87,16 @@ Audit entries are sent as immutable segments containing new entries since the pr
 
 Requires configured replication targets and, for SSH targets, a replication key and pinned host key. The installer schedules replication every 15 minutes with up to 3 minutes of jitter. Sentinel verifies the timer registration. Each run logs a `replicate`/`pass` entry, including failures.
 
-### `warden retrieve <peer-url> [--tier config|data] [--generation N] [--apply] [--audit <file>]`
+### `warden retrieve [peer-url] [--tier config|data] [--generation N] [--apply] [--audit <file>]`
 
-Recovers local backup state from a peer after a rebuild. The peer URL must match a configured `REPLICATE_TARGETS` entry, which supplies the pinned host key.
+Recovers local backup state after a rebuild. An optional peer URL selects the first source to try and must match a configured `REPLICATE_TARGETS` entry. With no URL, Warden uses local metadata or searches the configured replicas. SSH sources use pinned host keys.
 
 ```
 warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1                    # dry run, latest generation
 warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1 --tier data --apply # recover the data tier
 ```
 
-Dry run fetches the manifest and reports the available generation without changing local state. `--apply` fetches its objects and adopts it as the live baseline for the selected tier. See DEPLOYMENT.md for the recovery procedure.
+Dry run reports the available generation without copying objects or adopting a baseline. `--apply` verifies every required object, recovers missing copies, then adopts the manifest for the selected tier. A manifest and its objects can come from different configured replicas. Audit retrieval still requires a peer URL.
 
 `--audit <file>` reassembles the peer's audit segments into the specified file (`-` for stdout). It ignores tier and generation flags.
 
@@ -350,6 +350,20 @@ Run `arm`, `disarm`, and `detect` through `opmenu shell`; they are not separate 
 ```
 
 `component` identifies the subsystem that logged the event; `fields` contains event-specific data.
+
+## Backup recovery
+
+Restore, watch, and replication use the local object store first. If an object is missing or corrupt, Warden checks configured `file://` replicas, then SSH peers in configuration order. Failed connections and invalid copies are skipped. Each recovered object must match the SHA-256 recorded in the manifest before it is cached or restored. Recovery records the source in `audit.log`.
+
+A missing live manifest is recovered from local archives or configured peers. Warden selects the newest valid generation it can read. An explicit `--snapshot` or `--generation` requires that exact generation; it never substitutes an older one. If every copy is gone, the operation fails with the attempted sources instead of creating an empty replacement baseline.
+
+```sh
+warden retrieve --tier config                 # inspect available metadata
+warden retrieve --tier config --apply         # recover objects and adopt the baseline
+warden restore /srv/example/score.dat --tier data --apply
+```
+
+Recovery uses existing replication targets. SSH connection and handshake attempts have ten-second limits; session opening and commands have fifteen-second limits. A timed-out peer is closed so another can be tried. Object hashes detect damaged or mismatched content; manifests still rely on trusted local state and configured peers, without a separate signature.
 
 ## Known limitations
 

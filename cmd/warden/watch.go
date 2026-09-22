@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"warden/internal/audit"
-	"warden/internal/store"
 	"warden/internal/watch"
 )
 
@@ -76,15 +75,20 @@ func runWatch() error {
 		return err
 	}
 
-	st, err := store.New(p.storeRoot)
-	if err != nil {
-		return err
-	}
 	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
+	recovery := newBackupRecovery(p, log)
+	defer recovery.Close()
+	if err := recovery.ensureManifest(tierConfig); err != nil {
+		return err
+	}
+	st, err := recovery.store()
+	if err != nil {
+		return err
+	}
 
 	armed, err := isArmed(p)
 	if err != nil {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"os"
 	"testing"
 )
 
@@ -73,5 +74,40 @@ func TestPrune(t *testing.T) {
 	}
 	if s.Has(dropHash) {
 		t.Errorf("expected unreferenced object to be pruned")
+	}
+}
+
+func TestGetRejectsCorruptionAndRecoversVerifiedContent(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("approved")
+	hash, err := st.Put(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(st.objectPath(hash), []byte("invalid gzip"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if st.Has(hash) {
+		t.Fatal("corrupt object considered available")
+	}
+	st.SetRecovery(func(string) ([]byte, error) { return content, nil })
+	got, err := st.Get(hash)
+	if err != nil || string(got) != string(content) {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+	st.SetRecovery(nil)
+	if _, err := st.Get(hash); err != nil {
+		t.Fatalf("repair not cached: %v", err)
+	}
+	for _, hash := range []string{"", "a", "../../etc/passwd"} {
+		if st.Has(hash) {
+			t.Fatal("invalid hash exists")
+		}
+		if _, err := st.Get(hash); err == nil {
+			t.Fatal("invalid hash accepted")
+		}
 	}
 }

@@ -105,7 +105,14 @@ func (w *Watcher) Check() (*Result, error) {
 
 	res := &Result{}
 
+	watched := map[string]bool{}
+	for _, path := range w.paths {
+		watched[path] = true
+	}
 	for _, change := range manifest.Diff(last, next) {
+		if !watched[change.Path] {
+			continue
+		}
 		// A Removed change has no New record, so its class comes from
 		// Old — otherwise a deleted ConfirmFirst path (e.g. /etc/shadow)
 		// would fall through to the auto-restore branch below purely
@@ -120,6 +127,9 @@ func (w *Watcher) Check() (*Result, error) {
 			class = change.Old.Class
 		}
 
+		if w.classify != nil {
+			class = w.classify(change.Path)
+		}
 		switch {
 		case class == manifest.ConfirmFirst:
 			res.Flagged = append(res.Flagged, change.Path)

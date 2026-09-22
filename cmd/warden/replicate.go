@@ -73,7 +73,9 @@ func runReplicate() error {
 	if err != nil {
 		return err
 	}
-	st, err := store.New(p.storeRoot)
+	recovery := newBackupRecovery(p, nil)
+	defer recovery.Close()
+	st, err := recovery.store()
 	if err != nil {
 		return err
 	}
@@ -82,6 +84,7 @@ func runReplicate() error {
 		return err
 	}
 	defer log.Close()
+	recovery.log = log
 
 	state, err := loadAuditPushState(p.auditPushStatePath)
 	if err != nil {
@@ -150,6 +153,8 @@ func pushToTarget(p paths, st *store.Store, t replicateTarget, state auditPushSt
 	defer closeTarget()
 
 	r := replicate.New(target)
+	recovery := newBackupRecovery(p, nil)
+	defer recovery.Close()
 	pushed := 0
 	for _, tier := range []snapshotTier{tierConfig, tierData} {
 		m, err := manifest.New(p.manifestPathForTier(tier))
@@ -157,12 +162,23 @@ func pushToTarget(p paths, st *store.Store, t replicateTarget, state auditPushSt
 			return 0, err
 		}
 		if m.Generation == 0 && len(m.Records) == 0 {
-			continue // this tier has never been snapshotted yet; nothing to push
+			recovered, recoveryErr := recovery.manifest(tier, 0)
+			if recoveryErr != nil {
+				if tier == tierData && len(dataTierPaths) == 0 {
+					continue
+				}
+				return 0, recoveryErr
+			}
+			m = recovered
 		}
 
 		manifestData, err := readArchivedManifest(p.manifestsDirForTier(tier), m.Generation)
 		if err != nil {
-			return 0, err
+			// The live manifest is another local copy of the same generation.
+			manifestData, err = json.Marshal(m)
+			if err != nil {
+				return 0, err
+			}
 		}
 		if err := r.Push(string(tier), m, manifestData, st); err != nil {
 			return 0, fmt.Errorf("push %s tier: %w", tier, err)

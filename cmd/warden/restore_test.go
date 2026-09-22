@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"warden/internal/audit"
 	"warden/internal/manifest"
@@ -15,7 +16,7 @@ func TestRestoreLoadsBothTiersAndGenerations(t *testing.T) {
 	dir := t.TempDir()
 	p := paths{configManifestPath: filepath.Join(dir, "config.json"), dataManifestPath: filepath.Join(dir, "data.json"), configManifestsDir: filepath.Join(dir, "config"), dataManifestsDir: filepath.Join(dir, "data")}
 	for _, tier := range []snapshotTier{tierConfig, tierData} {
-		m := &manifest.Manifest{Generation: 7, Records: []manifest.Record{{Path: "/" + string(tier)}}}
+		m := &manifest.Manifest{Generation: 7, Records: []manifest.Record{{Path: "/" + string(tier), Hash: strings.Repeat("a", 64)}}}
 		if err := m.SaveAs(p.manifestPathForTier(tier)); err != nil {
 			t.Fatal(err)
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"path"
 	"sort"
 	"strings"
@@ -42,17 +43,24 @@ func DialSSH(addr, user string, signer ssh.Signer, hostKey ssh.PublicKey, root s
 		Timeout:           10 * time.Second,
 	}
 
-	client, err := ssh.Dial("tcp", addr, config)
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("replicate: dial %s: %w", addr, err)
 	}
-
-	t := &SSHTarget{client: client, root: root}
-	if err := t.run(fmt.Sprintf("mkdir -p %s", shellQuote(path.Join(root, "objects")))); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("replicate: init remote root %s: %w", root, err)
+	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		conn.Close()
+		return nil, err
 	}
-	return t, nil
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("replicate: handshake %s: %w", addr, err)
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		sshConn.Close()
+		return nil, err
+	}
+	return &SSHTarget{client: ssh.NewClient(sshConn, chans, reqs), root: root}, nil
 }
 
 // Close closes the underlying SSH connection.
@@ -136,7 +144,7 @@ func (t *SSHTarget) listRemoteDir(dir string) ([]string, error) {
 		return nil, nil
 	}
 
-	session, err := t.client.NewSession()
+	session, err := t.newSession()
 	if err != nil {
 		return nil, fmt.Errorf("replicate: open session: %w", err)
 	}
@@ -144,7 +152,7 @@ func (t *SSHTarget) listRemoteDir(dir string) ([]string, error) {
 
 	var out bytes.Buffer
 	session.Stdout = &out
-	if err := session.Run(fmt.Sprintf("ls -1 %s", shellQuote(dir))); err != nil {
+	if err := t.runSession(session, fmt.Sprintf("ls -1 %s", shellQuote(dir))); err != nil {
 		return nil, fmt.Errorf("replicate: list %s: %w", dir, err)
 	}
 
@@ -231,11 +239,10 @@ func (t *SSHTarget) exists(remotePath string) (bool, error) {
 }
 
 // writeOnceRemote writes content to remotePath unless it's already there.
-// The remote shell, not this process, decides existence and does the
-// rename, so there's no window where a partial write could look complete:
-// the temp file only replaces the target once it's fully written.
+// The remote shell links a completed temporary file into place without
+// replacing an existing copy, including one published by a concurrent writer.
 func (t *SSHTarget) writeOnceRemote(remotePath string, content []byte) error {
-	session, err := t.client.NewSession()
+	session, err := t.newSession()
 	if err != nil {
 		return fmt.Errorf("replicate: open session: %w", err)
 	}
@@ -243,23 +250,20 @@ func (t *SSHTarget) writeOnceRemote(remotePath string, content []byte) error {
 
 	session.Stdin = bytes.NewReader(content)
 
-	// Fixed tmp suffix, not a per-process unique name: only one
-	// snapshot/replicate invocation is expected to run at a time (see
-	// docs/DESIGN.md), so this isn't racing against a concurrent writer.
-	dir := path.Dir(remotePath)
-	tmpPath := remotePath + ".tmp"
-	cmd := fmt.Sprintf(
-		`sh -c 'set -e; mkdir -p %s; if [ ! -e %s ]; then umask 077; cat > %s && mv %s %s; fi'`,
-		shellQuote(dir), shellQuote(remotePath), shellQuote(tmpPath), shellQuote(tmpPath), shellQuote(remotePath),
-	)
-	if err := session.Run(cmd); err != nil {
+	cmd := remoteWriteCommand(remotePath)
+	if err := t.runSession(session, cmd); err != nil {
 		return fmt.Errorf("replicate: write %s: %w", remotePath, err)
 	}
 	return nil
 }
 
+func remoteWriteCommand(remotePath string) string {
+	dir := path.Dir(remotePath)
+	return fmt.Sprintf(`set -e; mkdir -p %s; if [ ! -e %s ]; then umask 077; warden_tmp=$(mktemp %s); trap 'rm -f "$warden_tmp"' EXIT; cat > "$warden_tmp"; if ! ln "$warden_tmp" %s; then test -e %s; fi; fi`, shellQuote(dir), shellQuote(remotePath), shellQuote(remotePath+".tmp.XXXXXX"), shellQuote(remotePath), shellQuote(remotePath))
+}
+
 func (t *SSHTarget) readRemote(remotePath string) ([]byte, error) {
-	session, err := t.client.NewSession()
+	session, err := t.newSession()
 	if err != nil {
 		return nil, fmt.Errorf("replicate: open session: %w", err)
 	}
@@ -267,19 +271,57 @@ func (t *SSHTarget) readRemote(remotePath string) ([]byte, error) {
 
 	var out bytes.Buffer
 	session.Stdout = &out
-	if err := session.Run(fmt.Sprintf("cat %s", shellQuote(remotePath))); err != nil {
+	if err := t.runSession(session, fmt.Sprintf("cat %s", shellQuote(remotePath))); err != nil {
 		return nil, fmt.Errorf("replicate: read %s: %w", remotePath, err)
 	}
 	return out.Bytes(), nil
 }
 
 func (t *SSHTarget) run(cmd string) error {
-	session, err := t.client.NewSession()
+	session, err := t.newSession()
 	if err != nil {
 		return fmt.Errorf("replicate: open session: %w", err)
 	}
 	defer session.Close()
-	return session.Run(cmd)
+	return t.runSession(session, cmd)
+}
+
+func (t *SSHTarget) newSession() (*ssh.Session, error) {
+	type result struct {
+		session *ssh.Session
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() { session, err := t.client.NewSession(); done <- result{session, err} }()
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result.session, result.err
+	case <-timer.C:
+		_ = t.client.Close()
+		result := <-done
+		if result.session != nil {
+			_ = result.session.Close()
+		}
+		return nil, fmt.Errorf("replicate: opening remote session timed out")
+	}
+}
+
+// A stalled peer must not prevent fallback to another replica.
+func (t *SSHTarget) runSession(session *ssh.Session, command string) error {
+	done := make(chan error, 1)
+	go func() { done <- session.Run(command) }()
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		_ = t.client.Close()
+		<-done
+		return fmt.Errorf("replicate: remote command timed out")
+	}
 }
 
 // shellQuote wraps s in single quotes for safe use in a remote shell

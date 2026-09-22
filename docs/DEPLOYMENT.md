@@ -286,7 +286,7 @@ warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1 --tier con
 warden retrieve ssh://warden-backup@box2/home/warden-backup/from-box1 --tier data --apply
 ```
 
-The peer URL must match a configured replication target. Run without `--apply` to inspect the generation first. Applying retrieves the objects and baseline used by watch and restore.
+The optional peer URL must match a configured replication target. Omit it to use automatic source selection: `warden retrieve --tier config --apply`. Missing objects are searched across local storage and all configured replicas. Run without `--apply` to inspect the generation first.
 
 Recover the audit trail separately:
 

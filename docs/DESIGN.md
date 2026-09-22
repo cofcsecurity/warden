@@ -263,3 +263,11 @@ The audit log rotates at 8 MiB (`audit.MaxLogBytes`) and retains one previous fi
 1. Unit tests per package: manifest hash round-trip, store put/get with dedup, watch diff correctness, TOTP against known RFC 6238 test vectors.
 2. Integration test in a VM mirroring the target distro: install, kill the sentinel and confirm it respawns, edit a watched config and confirm it reverts, delete the SSH key and confirm it comes back.
 3. Adversarial test before the real competition: have a teammate try to find and kill this on a box with no knowledge of where to look, timed, so the team knows its actual survival window rather than assuming one.
+
+## Backup recovery
+
+`cmd/warden/recovery.go` manages fallback across configured targets. Store reads verify decompressed bytes and recover missing or corrupt objects through a callback. Recovery tries local replicas before SSH peers, validates the expected hash, caches the recovered object, and records its source. Connections are reused for one operation and closed afterward.
+
+Missing live manifests are recovered from local archives and replicas. Explicit generations stay exact; automatic selection chooses the newest readable generation. Recovery validates generation numbers, absolute unique paths, and object hashes. Metadata is not independently signed.
+
+Restore and watch share this recovery store. Replication can refill its local store from another peer, and can reconstruct a missing archive from the live manifest. Armed snapshots attempt recovery before reading a changed live file and reject content that does not match the baseline. Retrieve dry runs read metadata only.

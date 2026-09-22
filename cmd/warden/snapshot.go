@@ -36,7 +36,9 @@ func runSnapshot(tier snapshotTier) error {
 		return err
 	}
 
-	st, err := store.New(p.storeRoot)
+	recovery := newBackupRecovery(p, nil)
+	defer recovery.Close()
+	st, err := recovery.store()
 	if err != nil {
 		return err
 	}
@@ -45,21 +47,32 @@ func runSnapshot(tier snapshotTier) error {
 		return err
 	}
 	defer log.Close()
+	recovery.log = log
 
 	manifestPath := p.manifestPathForTier(tier)
 	manifestsDir := p.manifestsDirForTier(tier)
 
+	armed, err := isArmed(p)
+	if err != nil {
+		return err
+	}
+	if _, statErr := os.Stat(manifestPath); os.IsNotExist(statErr) {
+		generations, listErr := manifest.Generations(manifestsDir)
+		if listErr != nil {
+			return listErr
+		}
+		if armed || len(generations) > 0 {
+			if err := recovery.ensureManifest(tier); err != nil {
+				return err
+			}
+		}
+	}
 	last, err := manifest.New(manifestPath)
 	if err != nil {
 		return err
 	}
 
 	next, err := manifest.Generate(pathsForTier(tier), classifyPath, last.Generation+1)
-	if err != nil {
-		return err
-	}
-
-	armed, err := isArmed(p)
 	if err != nil {
 		return err
 	}
@@ -104,12 +117,19 @@ func runSnapshot(tier snapshotTier) error {
 		if st.Has(r.Hash) {
 			continue
 		}
-		content, err := os.ReadFile(r.Path)
-		if err != nil {
-			if os.IsNotExist(err) {
+		// Recover a frozen baseline from replicas before reading changed live files.
+		if armed && tier == tierConfig {
+			if _, err := st.Get(r.Hash); err == nil {
+				newObjects++
 				continue
 			}
+		}
+		content, err := os.ReadFile(r.Path)
+		if err != nil {
 			return fmt.Errorf("snapshot: read %s: %w", r.Path, err)
+		}
+		if err := store.Verify(r.Hash, content); err != nil {
+			return fmt.Errorf("snapshot: %s changed or its baseline object is missing: %w", r.Path, err)
 		}
 		if _, err := st.Put(content); err != nil {
 			return fmt.Errorf("snapshot: store %s: %w", r.Path, err)
