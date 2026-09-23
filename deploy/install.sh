@@ -574,6 +574,15 @@ step_next_steps() {
 	echo ""
 }
 
+step_verify_access() {
+	echo "==> Verify access from the team's SSH client before cleanup."
+	echo "    Connect from an address allowed by TEAM_FROM_IP=${TEAM_FROM_IP}."
+	echo "    Keep the team's private login key on that client."
+	echo "    ssh -i <team-private-key> ${OPMENU_USER}@<this-host-address> status"
+	echo "    Use this host's address reachable from the team client."
+	ask "    Login verified from the team client? [y/N] " ans
+}
+
 main() {
 	require_root
 	ensure_deps
@@ -592,9 +601,7 @@ main() {
 	step_generate_static_secret
 	step_detect_summary
 
-	echo "==> Before deleting this script, verify the access layer works:"
-	echo "    ssh -i <team's own login private key, matching TEAM_PUBKEY above> ${OPMENU_USER}@127.0.0.1 status"
-	ask "    Verified? [y/N] " ans
+	step_verify_access
 	[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "not deleting install.sh; re-run once verified"; exit 1; }
 
 	step_next_steps

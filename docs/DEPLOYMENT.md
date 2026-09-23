@@ -91,7 +91,9 @@ sudo ./scripts/build-and-install.sh
 
 The wizard collects team key, team IP, and install path, and offers TOTP and replication-key generation. It suggests a `/24` based on the connected client shown by `who`; verify this, especially when using a jump host. Export `TEAM_PUBKEY`, `TEAM_FROM_IP`, `INSTALL_PATH`, `TOTP_SECRET`, `REPLICATE_TARGETS`, `REPLICATE_KEY`, `AUTOBAN_ENABLED`, `AUTOLOCK_ENABLED`, or `SAFE_ACCOUNTS` to supply those values without prompts.
 
-The script builds, checks `debug-config`, and invokes `install.sh`. After success it removes the source tree unless `KEEP_SOURCE=1` is set.
+The script builds in a private workspace, checks `debug-config`, and invokes `install.sh` with the private executable path. Build output and Go build/temporary files are removed on exit, including failed builds or installs. `KEEP_SOURCE=1` retains the source checkout after success, but does not retain the private build workspace.
+
+Older versions wrote `deploy/warden` into the checkout. Remove any leftover copy from an earlier build. If its credentials may have been exposed, replace those credentials; a private rebuild cannot revoke an already copied key.
 
 Continue with step 6.
 
@@ -270,9 +272,11 @@ Installation leaves auto-restore disabled. Open a shell with `ssh <opmenu-user>@
 3. Lock down the host to a state the IR team judges sufficient to preserve. Run `warden scan` to establish the anomaly baseline before arming.
 4. Run `warden arm`, review the changes, then confirm the new baseline.
 
-   Resolve unexplained changes before confirming. Arming accepts the current files, including any tampering that occurred during setup.
+   Resolve unexplained changes before confirming. Warden preserves the reviewed bytes and rejects arming if file contents, modes, or the selected path set changed during review. Changes after that check remain drift against the approved baseline.
 
    With no interactive input, use `arm --yes` after reading the review. The review is still printed and logged.
+
+A malformed host profile does not block authenticated operator shell access, status, or disarming. Restore and other protection operations still reject it. Use the shell to repair the profile.
 
 The installer leaves arming to the operator. Check armed state with `warden status`. Continue threat hunting, containment, and blue-team operations after arming. Warden buys time by maintaining the selected state; it does not finish the incident response.
 

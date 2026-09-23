@@ -77,10 +77,7 @@ func main() {
 			if verbose {
 				logLevel.Set(slog.LevelDebug)
 			}
-			if cmd.Name() == "receive" {
-				return nil
-			}
-			return loadHostProfile(hostProfilePath)
+			return prepareCommandProfile(cmd.Name(), hostProfilePath)
 		},
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")
@@ -149,5 +146,16 @@ func main() {
 	}
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+// Emergency access and disarming must work even when the protection profile
+// is broken. Opmenu loads it only inside the authenticated restore callback.
+func prepareCommandProfile(command, path string) error {
+	switch command {
+	case "receive", "opmenu", "disarm", "status":
+		return nil
+	default:
+		return loadHostProfile(path)
 	}
 }

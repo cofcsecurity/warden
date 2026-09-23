@@ -38,6 +38,10 @@ func runOpmenu() error {
 		return err
 	}
 
+	return runOpmenuWithPaths(p, hostProfilePath)
+}
+
+func runOpmenuWithPaths(p paths, profilePath string) error {
 	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
@@ -55,7 +59,12 @@ func runOpmenu() error {
 		p.staticSecretPath,
 		p.spentTOTPPath,
 		func() (string, error) { return runStatus(p) },
-		func(target string, args []string) (string, error) { return runOpmenuRestore(p, target, args) },
+		func(target string, args []string) (string, error) {
+			if err := loadHostProfile(profilePath); err != nil {
+				return "", err
+			}
+			return runOpmenuRestore(p, target, args)
+		},
 		"/bin/bash",
 		log,
 	)

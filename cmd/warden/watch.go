@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -109,9 +110,9 @@ func runWatch() error {
 	if err != nil {
 		return err
 	}
-	res, err := w.Check()
-	if err != nil {
-		return err
+	res, checkErr := w.Check()
+	if res == nil {
+		return checkErr
 	}
 
 	if armed {
@@ -140,6 +141,7 @@ func runWatch() error {
 		"suppressed":    len(res.Suppressed),
 		"flagged":       len(res.Flagged),
 		"reload_errors": len(res.ReloadErrors),
+		"check_failed":  checkErr != nil,
 	}); err != nil {
 		return err
 	}
@@ -148,5 +150,5 @@ func runWatch() error {
 	if !armed && len(res.Suppressed) > 0 {
 		fmt.Println("note: disarmed — the paths above were left as-is. run 'warden arm' once hardening is done.")
 	}
-	return nil
+	return errors.Join(append([]error{checkErr}, res.ReloadErrors...)...)
 }

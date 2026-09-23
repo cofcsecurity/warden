@@ -12,7 +12,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"warden/internal/audit"
+	"warden/internal/fsutil"
 	"warden/internal/manifest"
+	"warden/internal/store"
 )
 
 // armCmd and disarmCmd gate watch's auto-restore behind an explicit,
@@ -91,6 +93,18 @@ func runArm(assumeYes bool) error {
 		return err
 	}
 
+	return armWithPaths(p, assumeYes, os.Stdin)
+}
+
+func armWithPaths(p paths, assumeYes bool, input io.Reader) error {
+	armed, err := isArmed(p)
+	if err != nil {
+		return err
+	}
+	if armed {
+		return fmt.Errorf("arm: already armed; disarm before reviewing a replacement baseline")
+	}
+
 	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
@@ -107,6 +121,11 @@ func runArm(assumeYes bool) error {
 		return err
 	}
 
+	// Preserve the exact reviewed bytes before waiting for operator input.
+	if err := stageArmCandidate(p, review.Candidate); err != nil {
+		return err
+	}
+
 	printArmConfig(os.Stdout, p)
 	printArmReview(os.Stdout, review, time.Now())
 	if len(review.Changes) > 0 {
@@ -114,20 +133,18 @@ func runArm(assumeYes bool) error {
 			return err
 		}
 		if !assumeYes {
-			if err := confirmArm(os.Stdin, len(review.Changes)); err != nil {
+			if err := confirmArm(input, len(review.Changes)); err != nil {
 				return err
 			}
 		}
 	}
 
-	// Lock in exactly what's on disk right now as the enforced baseline,
-	// not whatever snapshot's own timer last happened to catch.
-	if err := runSnapshot(tierConfig); err != nil {
-		return fmt.Errorf("arm: snapshot before arming: %w", err)
+	if err := publishArmCandidate(p, review.Candidate); err != nil {
+		return err
 	}
 
 	armedAt := time.Now().UTC().Format(time.RFC3339)
-	if err := os.WriteFile(p.armedMarkerPath, []byte(armedAt+"\n"), 0o600); err != nil {
+	if err := fsutil.WriteFile(p.armedMarkerPath, []byte(armedAt+"\n"), 0o600); err != nil {
 		return fmt.Errorf("arm: write marker: %w", err)
 	}
 
@@ -246,6 +263,7 @@ func safeAccountsSuffix() string {
 // armReview is what changed between the last baseline and now, plus
 // enough context to say how old that baseline is.
 type armReview struct {
+	Candidate  *manifest.Manifest
 	Changes    []manifest.Change
 	BaselineAt time.Time
 	Generation int
@@ -262,13 +280,13 @@ func reviewSinceBaseline(manifestPath string, paths []string, classify manifest.
 	if err != nil {
 		return armReview{}, fmt.Errorf("arm: load baseline: %w", err)
 	}
-	if len(last.Records) == 0 {
-		return armReview{NoBaseline: true}, nil
-	}
-
 	current, err := manifest.Generate(paths, classify, last.Generation)
 	if err != nil {
 		return armReview{}, fmt.Errorf("arm: read current state: %w", err)
+	}
+
+	if len(last.Records) == 0 {
+		return armReview{NoBaseline: true, Candidate: current}, nil
 	}
 
 	changes := manifest.Diff(last, current)
@@ -283,7 +301,7 @@ func reviewSinceBaseline(manifestPath string, paths []string, classify manifest.
 		return changes[i].Path < changes[j].Path
 	})
 
-	return armReview{Changes: changes, BaselineAt: last.CreatedAt, Generation: last.Generation}, nil
+	return armReview{Candidate: current, Changes: changes, BaselineAt: last.CreatedAt, Generation: last.Generation}, nil
 }
 
 func changeIsConfirmFirst(c manifest.Change) bool {
@@ -431,4 +449,51 @@ func isArmed(p paths) (bool, error) {
 		return false, fmt.Errorf("check armed state: %w", err)
 	}
 	return true, nil
+}
+
+// stageArmCandidate stores only bytes matching the manifest shown for review.
+func stageArmCandidate(p paths, candidate *manifest.Manifest) error {
+	st, err := store.New(p.storeRoot)
+	if err != nil {
+		return err
+	}
+	for _, record := range candidate.Records {
+		content, err := fsutil.ReadFile(record.Path)
+		if err != nil {
+			return err
+		}
+		if err := store.Verify(record.Hash, content); err != nil {
+			return fmt.Errorf("arm: %s changed while preparing review; review again: %w", record.Path, err)
+		}
+		if _, err := st.Put(content); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func publishArmCandidate(p paths, candidate *manifest.Manifest) error {
+	generation, err := allocateGeneration(p, tierConfig, candidate.Generation)
+	if err != nil {
+		return err
+	}
+	// A late edit after this comparison is still drift against the candidate.
+	// Never reread that edit into the approved manifest or its stored objects.
+	current, err := manifest.Generate(watchedPaths, classifyPath, candidate.Generation)
+	if err != nil {
+		return fmt.Errorf("arm: verify reviewed state: %w", err)
+	}
+	if !sameRecords(candidate.Records, current.Records) {
+		return fmt.Errorf("arm: watched files changed during review; nothing armed, review again")
+	}
+	next := *candidate
+	next.Generation = generation
+	next.CreatedAt = time.Now().UTC()
+	if err := signManifest(&next, tierConfig); err != nil {
+		return err
+	}
+	if err := next.Archive(p.configManifestsDir); err != nil {
+		return err
+	}
+	return next.SaveAs(p.configManifestPath)
 }

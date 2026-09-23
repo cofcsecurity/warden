@@ -102,19 +102,24 @@ func (w *Watcher) Check() (*Result, error) {
 		last = w.Baseline
 	}
 
-	// The generation number here is never persisted, so it's not
-	// meaningful — Diff only compares records, not generations.
-	next, err := manifest.Generate(w.paths, w.classify, last.Generation)
-	if err != nil {
-		return nil, fmt.Errorf("watch: generate manifest: %w", err)
-	}
-
+	// A failed read is not a deletion. Exclude that path from this pass,
+	// report the failure, and keep repairing independent paths.
 	res := &Result{}
 	var restoreErrors []error
-
+	next := &manifest.Manifest{Generation: last.Generation}
 	watched := map[string]bool{}
 	for _, path := range w.paths {
+		current, err := manifest.Generate([]string{path}, w.classify, last.Generation)
+		if err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("watch: read %s: %w", path, err))
+			res.Flagged = append(res.Flagged, path)
+			if w.log != nil {
+				_ = w.log.Log("watch", "read-failed", map[string]any{"path": path, "error": err.Error()})
+			}
+			continue
+		}
 		watched[path] = true
+		next.Records = append(next.Records, current.Records...)
 	}
 	for _, change := range manifest.Diff(last, next) {
 		if !watched[change.Path] {
@@ -154,7 +159,9 @@ func (w *Watcher) Check() (*Result, error) {
 			// all is itself the tamper.
 			symlink, err := manifest.IsSymlink(change.Path)
 			if err != nil {
-				return res, fmt.Errorf("watch: check %s: %w", change.Path, err)
+				restoreErrors = append(restoreErrors, fmt.Errorf("watch: check %s: %w", change.Path, err))
+				res.Flagged = append(res.Flagged, change.Path)
+				continue
 			}
 			if symlink {
 				res.Flagged = append(res.Flagged, change.Path)

@@ -2,8 +2,10 @@ package watch
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"warden/internal/audit"
@@ -427,5 +429,59 @@ func TestCheckHonorsChangedProfile(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("deleted confirm-first path was recreated")
+	}
+}
+
+func TestUnreadablePathDoesNotBlockIndependentRepair(t *testing.T) {
+	for _, armed := range []bool{false, true} {
+		t.Run(fmt.Sprint(armed), func(t *testing.T) {
+			dir, st, log := setup(t)
+			bad, good := filepath.Join(dir, "bad"), filepath.Join(dir, "good")
+			for _, path := range []string{bad, good} {
+				if err := os.WriteFile(path, []byte("approved"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			baseline := filepath.Join(dir, "manifest.json")
+			snapshotBaseline(t, baseline, []string{bad, good}, nil, st)
+			if err := os.Remove(bad); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(bad, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(good, []byte("tampered"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var reloaded []string
+			res, err := New(baseline, []string{bad, good}, nil, armed, st, log, func(path string) error { reloaded = append(reloaded, path); return nil }).Check()
+			if err == nil || res == nil {
+				t.Fatalf("expected partial failure: %+v %v", res, err)
+			}
+			got, err := os.ReadFile(good)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "tampered"
+			if armed {
+				want = "approved"
+			}
+			if string(got) != want {
+				t.Fatalf("got %q, want %q", got, want)
+			}
+			if len(res.Flagged) != 1 || res.Flagged[0] != bad {
+				t.Fatalf("missing bad path: %+v", res)
+			}
+			if len(res.FlaggedChanges) != 0 {
+				t.Fatal("read failure fabricated attribution evidence")
+			}
+			if armed && (len(reloaded) != 1 || reloaded[0] != good) {
+				t.Fatalf("repair not reloaded: %v", reloaded)
+			}
+			info, err := os.Lstat(bad)
+			if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+				t.Fatalf("unsafe replacement of unreadable path: %v", err)
+			}
+		})
 	}
 }

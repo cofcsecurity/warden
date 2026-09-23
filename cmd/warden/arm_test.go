@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"warden/internal/manifest"
+	"warden/internal/store"
 )
 
 // armTestBaseline writes a manifest covering paths as they are right now,
@@ -264,5 +265,98 @@ func TestConfirmArmAcceptsOnlyAnExplicitYes(t *testing.T) {
 		if err := confirmArm(strings.NewReader(answer), 2); err == nil {
 			t.Errorf("expected %q to be treated as declining", answer)
 		}
+	}
+}
+
+type armMutationReader struct {
+	change func()
+	done   bool
+}
+
+func (r *armMutationReader) Read(p []byte) (int, error) {
+	if !r.done {
+		r.change()
+		r.done = true
+	}
+	return strings.NewReader("y\n").Read(p)
+}
+
+func TestArmRejectsChangesAfterReview(t *testing.T) {
+	for _, kind := range []string{"content", "mode", "deletion", "addition"} {
+		t.Run(kind, func(t *testing.T) {
+			p, _, _ := recoveryFixture(t)
+			p.armedMarkerPath = filepath.Join(p.storeRoot, "armed")
+			path, added := filepath.Join(p.storeRoot, "watched"), filepath.Join(p.storeRoot, "new")
+			if err := os.WriteFile(path, []byte("initial"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			armTestBaseline(t, p.configManifestPath, []string{path}, nil)
+			before, _ := os.ReadFile(p.configManifestPath)
+			old := watchedPaths
+			watchedPaths = []string{path, added}
+			t.Cleanup(func() { watchedPaths = old })
+			if err := os.WriteFile(path, []byte("reviewed"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			input := &armMutationReader{change: func() {
+				var err error
+				switch kind {
+				case "content":
+					err = os.WriteFile(path, []byte("unreviewed"), 0600)
+				case "mode":
+					err = os.Chmod(path, 0644)
+				case "deletion":
+					err = os.Remove(path)
+				case "addition":
+					err = os.WriteFile(added, []byte("unreviewed"), 0600)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}}
+			err := armWithPaths(p, false, input)
+			if err == nil || !strings.Contains(err.Error(), "changed during review") {
+				t.Fatalf("accepted %s: %v", kind, err)
+			}
+			after, _ := os.ReadFile(p.configManifestPath)
+			if !bytes.Equal(before, after) {
+				t.Fatal("changed the live baseline on rejected review")
+			}
+			if _, err := os.Stat(p.armedMarkerPath); !os.IsNotExist(err) {
+				t.Fatalf("armed despite rejected review: %v", err)
+			}
+		})
+	}
+}
+
+func TestArmPublishesReviewedObjects(t *testing.T) {
+	p, _, _ := recoveryFixture(t)
+	p.armedMarkerPath = filepath.Join(p.storeRoot, "armed")
+	path := filepath.Join(p.storeRoot, "watched")
+	if err := os.WriteFile(path, []byte("reviewed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := watchedPaths
+	watchedPaths = []string{path}
+	t.Cleanup(func() { watchedPaths = old })
+	if err := armWithPaths(p, true, strings.NewReader("")); err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.New(p.configManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Records) != 1 {
+		t.Fatalf("wrong manifest: %+v", m)
+	}
+	data, err := store.Open(p.storeRoot).Get(m.Records[0].Hash)
+	if err != nil || string(data) != "reviewed" {
+		t.Fatalf("missing reviewed bytes: %q %v", data, err)
+	}
+	if _, err := os.Stat(p.armedMarkerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := armWithPaths(p, true, strings.NewReader("")); err == nil {
+		t.Fatal("replacement baseline allowed without disarming")
 	}
 }

@@ -8,7 +8,7 @@ Updated September 22, 2026
 
 Warden is an incident-response tool for the CofC Cybersecurity Club's SECCDC/PCDC defense team, used when active incursions are known to be underway. The IR team locks down a box to a sufficient state, reviews the baseline, and then arms Warden to help maintain that state.
 
-Warden aims to buy time through restricted repair access, file restoration, and backup recovery. Blue-team operations, threat hunting, containment, and service repair remain ongoing human work. Arming records an operator-approved state; it does not establish that the host is free of compromise. The tool's setup and operational overhead are impractical for routine administration outside this setting.
+Warden aims to buy time through restricted repair access, file restoration, and backup recovery. Blue-team operations, threat hunting, containment, and service repair remain ongoing human work. Arming stores the reviewed bytes and checks for changes before publishing the approved state. Changes during review require another review. It does not establish that the host is free of compromise. The tool's setup and operational overhead are impractical for routine administration outside this setting.
 
 ## Overview and Goals
 
@@ -296,7 +296,7 @@ Assume compromise may still be present. Triage the host and contain known malici
 
 On-host compilation uses the host's toolchain and exposes compiled secrets through linker arguments during the build. Existing privileged malware may capture those secrets. Removing setup artifacts afterward does not undo that exposure. Warden's access and recovery controls help the response; they do not establish trust in a compromised operating system.
 
-If Go is missing, the build script offers to install it. Offline installation requires a supplied toolchain and vendored dependencies. After successful installation, the script removes its checkout and build artifacts unless `KEEP_SOURCE=1` is set.
+If Go is missing, the build script offers to install it. Offline installation requires a supplied toolchain and vendored dependencies. Build output, the Go build cache, and temporary linker files stay in a private workspace with umask `077`. The executable is mode `0700`; an exit trap removes that workspace on success or failure. After successful installation the script also removes its checkout unless `KEEP_SOURCE=1` is set.
 
 ### Optional separate-machine build
 
@@ -321,7 +321,7 @@ One script, run once, does the entire setup:
 5. Create the dedicated, low-privilege account the access layer uses (same name as the binary), install its restricted `authorized_keys` entry, and grant it a `visudo`-validated `NOPASSWD` sudo rule scoped to the exact `opmenu` invocation.
 6. Generate the initial manifest and take the first snapshot. Leave automatic restore disarmed until the baseline has been reviewed and repaired.
 7. Generate a static second factor with `warden rotate-secret` and save the value printed during installation.
-8. Verify by calling `warden opmenu status` once over loopback, confirming the access layer works before walking away from the box.
+8. From the team's SSH client at an allowed source address, run `ssh <account>@<host-address> status` to verify access. Keep the login private key on that client.
 9. Delete the install script itself. It's a one-time-use file, and leaving it behind leaves a trace for red to find.
 
 ### Setup cleanup and logs

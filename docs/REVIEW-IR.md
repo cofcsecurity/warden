@@ -1,6 +1,14 @@
 # Incident-response workflow review
 
-Reviewed `9e41268`. Five new findings are open. Four were reproduced locally; the installer verification issue was identified from its generated command and key restriction. No production code was changed in this review. The [six earlier recovery findings](REVIEW-2026-09-22.md) remain open separately.
+Reviewed `9e41268`. The five findings below are now fixed. The descriptions and reproductions document the reviewed version. Four were reproduced locally; the installer verification issue was identified from its generated command and key restriction. The [six earlier recovery findings](REVIEW-2026-09-22.md) remain open separately.
+
+## Implemented fixes
+
+- On-host compilation uses a private workspace, umask `077`, a mode `0700` executable, and private Go build and temporary directories. An exit trap removes them on success or failure. The source checkout no longer receives the credential-bearing executable.
+- Watch collects per-path read failures, flags those paths without treating them as deletions, and continues independent checks and repairs. Successful repairs still reach the reload queue, and the command reports the combined failures afterward.
+- Arming stores the reviewed bytes before confirmation, checks the candidate's hashes, modes, classes, symlink state, and path set again before publishing, and rejects changes made during review. It publishes the reviewed candidate. An already armed host must be disarmed before replacing its baseline.
+- Authenticated operator shell access, read-only status, and disarming no longer depend on parsing the protection profile. Operator restore loads the profile after second-factor verification. Watch, restore, snapshots, and arming still reject an invalid profile.
+- Installation asks for verification from the team's SSH client against the defended host's reachable address, keeping the source-IP restriction intact.
 
 ## Findings
 
@@ -67,3 +75,7 @@ Code: [install.sh](../deploy/install.sh), lines 595-598; [units.go](../cmd/warde
 ## Validation
 
 The watch reproduction used a temporary test with ordinary files and a FIFO. Its correctness assertion failed because the unrelated file remained modified. The arming and shell probes used the CLI with only profile and state paths redirected into a temporary directory. The build probe used a fake seed and relocated output. No real services, accounts, SSH policy, or production data were changed. Temporary failing tests were removed after recording the results; these cases are not fixed by the existing passing suite. The loopback finding was not tested against a deployed sshd.
+
+Regression coverage now includes a FIFO blocking one watched path while another is repaired, content/mode/addition/deletion changes during arming review, authenticated and rejected shell requests with a malformed profile, rejection of restore with that profile, private build artifact permissions and cleanup on build/install failure, and team-client verification instructions.
+
+The full `go test -race -count=1 ./...` suite, `go vet ./...`, Linux amd64 build, shell syntax checks, and `git diff --check` passed after the fixes. A real compilation with a dummy credential verified private workspace and executable permissions. A fresh Linux installation and live operator SSH login were not performed.

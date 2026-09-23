@@ -453,6 +453,23 @@ collect_config() {
 	fi
 }
 
+# All credential-bearing build output, temporary linker files, and caches
+# stay private even if installation fails or the source checkout is readable.
+BUILD_WORKSPACE=""
+cleanup_build_workspace() {
+	if [[ -n "$BUILD_WORKSPACE" ]]; then
+		rm -rf -- "$BUILD_WORKSPACE"
+		BUILD_WORKSPACE=""
+	fi
+}
+prepare_build_workspace() {
+	umask 077
+	BUILD_WORKSPACE="$(mktemp -d /tmp/warden-build.XXXXXXXX)"
+	chmod 700 "$BUILD_WORKSPACE"
+	mkdir "$BUILD_WORKSPACE/cache" "$BUILD_WORKSPACE/tmp"
+	trap cleanup_build_workspace EXIT
+}
+
 build() {
 	local mod_flag=""
 	if [[ -d vendor ]]; then
@@ -462,7 +479,7 @@ build() {
 		echo "==> No ./vendor found — building normally, which needs this box to reach Go's module proxy"
 	fi
 
-	CGO_ENABLED=0 go build $mod_flag -ldflags="-s -w \
+	GOCACHE="$BUILD_WORKSPACE/cache" GOTMPDIR="$BUILD_WORKSPACE/tmp" CGO_ENABLED=0 go build $mod_flag -ldflags="-s -w \
 		-X 'main.buildTeamPubKey=${TEAM_PUBKEY}' \
 		-X 'main.buildTeamFromIP=${TEAM_FROM_IP}' \
 		-X 'main.buildTOTPSecret=${TOTP_SECRET}' \
@@ -474,10 +491,11 @@ build() {
 		-X 'main.buildManifestKey=${MANIFEST_KEY:-}' \
 		-X 'main.buildManifestPublicKey=${MANIFEST_PUBLIC_KEY:-}' \
 		-X 'main.buildManifestSource=${MANIFEST_SOURCE:-}'" \
-		-o deploy/warden ./cmd/warden
+		-o "$BUILD_WORKSPACE/warden" ./cmd/warden
+	chmod 700 "$BUILD_WORKSPACE/warden"
 
 	echo "==> Verifying what actually got baked in"
-	./deploy/warden debug-config
+	"$BUILD_WORKSPACE/warden" debug-config
 }
 
 step_cleanup_repo() {
@@ -508,6 +526,7 @@ step_cleanup_team_key() {
 
 main() {
 	require_root
+	prepare_build_workspace
 	ensure_deps
 	ensure_go
 	step_confirm_clean
@@ -515,7 +534,7 @@ main() {
 	build
 	step_cleanup_team_key
 
-	export WARDEN_BIN_SRC="./warden"
+	export WARDEN_BIN_SRC="$BUILD_WORKSPACE/warden"
 	export INSTALL_PATH TEAM_PUBKEY TEAM_FROM_IP REPLICATE_TARGETS
 
 	echo "==> Handing off to install.sh"
