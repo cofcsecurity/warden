@@ -27,22 +27,52 @@ func Parse(args []string) (Request, error) {
 	var r Request
 	if len(args) == 2 && (args[0] == "passwd" || args[0] == "gpasswd") {
 		r = Request{Tool: args[0], Target: args[1], Operation: "password"}
-	} else if len(args) == 4 && args[0] == "gpasswd" && (args[1] == "-a" || args[1] == "-d") {
+	} else if len(args) == 4 && args[0] == "gpasswd" && (args[1] == "-a" || args[1] == "-d" || args[1] == "-M" || args[1] == "--members") {
 		r = Request{Tool: "gpasswd", Target: args[3], Member: args[2], Operation: args[1]}
 	} else {
-		return r, fmt.Errorf("use passwd USER, gpasswd GROUP, or gpasswd -a/-d USER GROUP")
+		return r, fmt.Errorf("use passwd USER, gpasswd GROUP, gpasswd -a/-d USER GROUP, or gpasswd -M USER1,USER2 GROUP")
 	}
-	if !namePattern.MatchString(r.Target) || r.Member != "" && !namePattern.MatchString(r.Member) {
+	if r.Operation == "--members" {
+		r.Operation = "-M"
+	}
+	if !namePattern.MatchString(r.Target) {
 		return Request{}, fmt.Errorf("invalid local account or group name")
+	}
+	if r.MembershipEdit() {
+		if r.Operation != "-M" && !namePattern.MatchString(r.Member) {
+			return Request{}, fmt.Errorf("invalid local account name")
+		}
+		seen := map[string]bool{}
+		for _, member := range r.Members() {
+			if !namePattern.MatchString(member) || seen[member] {
+				return Request{}, fmt.Errorf("member list must contain distinct local account names")
+			}
+			seen[member] = true
+		}
 	}
 	return r, nil
 }
 
 func (r Request) Args() []string {
-	if r.Member != "" {
+	if r.MembershipEdit() {
 		return []string{r.Operation, r.Member, r.Target}
 	}
 	return []string{r.Target}
+}
+
+// MembershipEdit includes an explicitly empty replacement list.
+func (r Request) MembershipEdit() bool { return r.Tool == "gpasswd" && r.Operation != "password" }
+func (r Request) Members() []string {
+	if r.Member == "" {
+		return nil
+	}
+	return strings.Split(r.Member, ",")
+}
+func (r Request) expectedMembers(previous string) string {
+	if r.Operation == "-M" {
+		return r.Member
+	}
+	return changedMembers(previous, r.Member, r.Operation == "-a")
 }
 
 func records(data []byte, count int) (map[string][]string, error) {
@@ -100,8 +130,10 @@ func (r Request) ValidateBefore(data map[string][]byte) error {
 		if parsed["group"][r.Target][1] != "x" {
 			return fmt.Errorf("target does not use a shadow group password")
 		}
-		if r.Member != "" && parsed["passwd"][r.Member] == nil {
-			return fmt.Errorf("member must be an existing local account")
+		for _, member := range r.Members() {
+			if parsed["passwd"][member] == nil {
+				return fmt.Errorf("member %s must be an existing local account", member)
+			}
 		}
 	}
 	return nil
@@ -116,11 +148,11 @@ func (r Request) Apply(base, before, after map[string][]byte) (map[string][]byte
 	if err := r.ValidateBefore(after); err != nil {
 		return nil, err
 	}
-	if r.Member != "" {
+	if r.MembershipEdit() {
 		for _, file := range []string{"group", "gshadow"} {
 			old, _ := records(before[file], fields(file))
 			next, _ := records(after[file], fields(file))
-			if !sameMembers(next[r.Target][3], changedMembers(old[r.Target][3], r.Member, r.Operation == "-a")) {
+			if !sameMembers(next[r.Target][3], r.expectedMembers(old[r.Target][3])) {
 				return nil, fmt.Errorf("requested membership change missing from %s", file)
 			}
 		}
@@ -164,9 +196,9 @@ func (r Request) Apply(base, before, after map[string][]byte) (map[string][]byte
 			if a[1] != b[1] && (b[1] == "" || strings.ContainsAny(b[1], "! *\t\r")) {
 				return nil, fmt.Errorf("unexpected group password field")
 			}
-		case r.Tool == "gpasswd" && r.Member != "" && (file == "group" || file == "gshadow"):
+		case r.MembershipEdit() && (file == "group" || file == "gshadow"):
 			allowed[3] = true
-			if !sameMembers(b[3], changedMembers(a[3], r.Member, r.Operation == "-a")) {
+			if !sameMembers(b[3], r.expectedMembers(a[3])) {
 				return nil, fmt.Errorf("unexpected membership change in %s", file)
 			}
 		}

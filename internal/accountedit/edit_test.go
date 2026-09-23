@@ -139,3 +139,75 @@ func TestPasswordChangeCannotBecomePasswordless(t *testing.T) {
 		t.Fatal("accepted password deletion")
 	}
 }
+
+func TestBatchMembershipReplacement(t *testing.T) {
+	for _, list := range []string{"bob,alice", "bob", ""} {
+		t.Run("members="+list, func(t *testing.T) {
+			base := fixture()
+			after := maps.Clone(base)
+			for _, file := range []string{"group", "gshadow"} {
+				after[file] = bytes.ReplaceAll(base[file], []byte(":alice\n"), []byte(":"+list+"\n"))
+			}
+			r, err := Parse([]string{"gpasswd", "-M", list, "sudo"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := r.Args(); len(got) != 3 || got[0] != "-M" || got[1] != list || got[2] != "sudo" {
+				t.Fatalf("incorrect native arguments: %q", got)
+			}
+			if _, err := r.Apply(base, base, after); err != nil {
+				t.Fatal(err)
+			}
+			// A mismatch in either database must be rejected, even when clearing the list.
+			after["gshadow"] = bytes.ReplaceAll(base["gshadow"], []byte(":alice\n"), []byte(":root\n"))
+			if _, err := r.Apply(base, base, after); err == nil {
+				t.Fatal("accepted mismatched gshadow batch")
+			}
+		})
+	}
+}
+
+func TestBatchRejectsMalformedAndNonlocalMembers(t *testing.T) {
+	for _, list := range []string{"alice,alice", "alice,", ",alice", "alice,,bob", "alice, bob", "alice,-R", "alice\nroot"} {
+		if _, err := Parse([]string{"gpasswd", "-M", list, "sudo"}); err == nil {
+			t.Fatalf("accepted %q", list)
+		}
+	}
+	for _, op := range []string{"-a", "-d"} {
+		for _, list := range []string{"alice,bob", ""} {
+			if _, err := Parse([]string{"gpasswd", op, list, "sudo"}); err == nil {
+				t.Fatalf("accepted invalid native arguments %s %q", op, list)
+			}
+		}
+	}
+	r, err := Parse([]string{"gpasswd", "--members", "alice,unknown", "sudo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Args()[0] != "-M" {
+		t.Fatal("long alias not normalized")
+	}
+	if err := r.ValidateBefore(fixture()); err == nil {
+		t.Fatal("accepted nonlocal member")
+	}
+}
+
+func TestBatchCannotApproveOtherGroupFields(t *testing.T) {
+	for _, c := range []struct{ file, old, next string }{
+		{"group", "sudo:x:27:", "sudo:x:0:"},
+		{"group", "root:x:0:", "root:x:0:bob"},
+		{"gshadow", "sudo:!::", "sudo:!:bob:"},
+		{"gshadow", "sudo:!::", "sudo:$6$evil::"},
+	} {
+		base := fixture()
+		after := maps.Clone(base)
+		for _, file := range []string{"group", "gshadow"} {
+			after[file] = bytes.ReplaceAll(base[file], []byte(":alice\n"), []byte(":bob\n"))
+		}
+		after[c.file] = bytes.ReplaceAll(after[c.file], []byte(c.old), []byte(c.next))
+		r, _ := Parse([]string{"gpasswd", "-M", "bob", "sudo"})
+		if _, err := r.Apply(base, base, after); err == nil {
+			t.Fatalf("accepted unrelated %s mutation", c.file)
+		}
+	}
+}

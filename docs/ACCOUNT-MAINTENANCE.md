@@ -6,10 +6,12 @@ Use `account-edit` from the team's authenticated root shell on the defended box.
 warden account-edit passwd alice
 warden account-edit gpasswd -a alice sudo
 warden account-edit gpasswd -d alice sudo
+warden account-edit gpasswd -M alice,bob,charlie sudo
+warden account-edit gpasswd -M "" incident-response
 warden account-edit gpasswd incident-response
 ```
 
-Replace `warden` with the installed binary path if it was renamed. The last command changes a group's password. Only these forms are supported; arbitrary utility flags, alternate roots, directory accounts, and passwords supplied as arguments are rejected.
+Replace `warden` with the installed binary path if it was renamed. The last command changes a group's password. `-M` (also `--members`) replaces the target group's entire explicit member list; it does not append users. An empty quoted list clears that list. Users whose primary GID is the group remain members through `/etc/passwd`. Supply the full list you want to keep. Batch replacement affects one group per invocation and uses one second-factor prompt and one config generation. Only these forms are supported; arbitrary utility flags, alternate roots, directory accounts, and passwords supplied as arguments are rejected.
 
 Warden prompts for its TOTP code or static second factor without echoing it. For password changes, `passwd` or `gpasswd` then prompts normally on the existing terminal. Use an interactive SSH shell with a terminal allocated. No client-side files or software are needed.
 
@@ -19,6 +21,7 @@ Before running the utility, Warden requires an existing config snapshot covering
 
 - `passwd USER` may update that user's shadow password hash and last-change date. It cannot approve changes to the user's UID, shell, home, expiry policy, or another account.
 - `gpasswd -a/-d USER GROUP` may make exactly that membership change in both group databases. It cannot approve a changed GID or group administrator.
+- `gpasswd -M USER1,USER2 GROUP` may replace only that group's member list, and both group databases must match the requested list. Every named member must be a distinct existing local user. Empty entries inside a list, duplicate users, and directory-only users are rejected before the utility runs.
 - `gpasswd GROUP` may change only that group's gshadow password hash.
 
 The wrapper checks permissions, ownership, symlinks, and all other account-file content before accepting the result. Successful edits create a new config generation and preserve earlier archives. The account scan recognizes the exact approved group record, even if it has not run since the edit. Subsequent changes to that record still get checked.

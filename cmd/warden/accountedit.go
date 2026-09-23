@@ -26,10 +26,11 @@ import (
 
 func accountEditCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "account-edit passwd USER | gpasswd [-a/-d USER] GROUP",
+		Use:   "account-edit passwd USER | gpasswd [-a/-d USER | -M USERS] GROUP",
 		Short: "Run a deliberate local password or group change and approve its exact result",
-		Long: `Runs passwd USER, gpasswd GROUP, or gpasswd -a/-d USER GROUP after a
-hidden Warden second-factor prompt. Requires root and an interactive terminal.
+		Long: `Runs passwd USER, gpasswd GROUP, gpasswd -a/-d USER GROUP, or
+gpasswd -M USER1,USER2 GROUP after a hidden Warden second-factor prompt.
+-M replaces the complete supplementary member list; -M "" clears it. Requires root and an interactive terminal.
 All four account files must already match the effective config baseline.
 Only the requested fields are accepted. No passwords are collected by Warden.
 Other Warden mutation commands report busy while this command holds its lock;

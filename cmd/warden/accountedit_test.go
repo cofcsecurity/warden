@@ -104,16 +104,16 @@ func TestAccountEditApprovesPasswordAndRetainsPriorArchive(t *testing.T) {
 	}
 }
 
-func TestAccountEditGroupApprovalSurvivesUntilNextScan(t *testing.T) {
+func TestAccountEditBatchGroupApprovalSurvivesUntilNextScan(t *testing.T) {
 	p, dir := accountEditFixture(t)
 	passwd, group := filepath.Join(dir, "passwd"), filepath.Join(dir, "group")
 	if _, err := anomaly.CheckAccounts(p.anomalyDir, passwd, group); err != nil {
 		t.Fatal(err)
 	}
-	req, _ := accountedit.Parse([]string{"gpasswd", "-a", "bob", "sudo"})
+	req, _ := accountedit.Parse([]string{"gpasswd", "-M", "bob,root", "sudo"})
 	if err := performAccountEdit(p, dir, req, func() error {
 		for _, name := range []string{"group", "gshadow"} {
-			editFile(t, filepath.Join(dir, name), ":alice\n", ":alice,bob\n")
+			editFile(t, filepath.Join(dir, name), ":alice\n", ":bob,root\n")
 		}
 		return nil
 	}); err != nil {
