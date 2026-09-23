@@ -29,3 +29,21 @@ func TestSignatureBindsIdentityTierAndRecords(t *testing.T) {
 		t.Fatal("accepted modified content")
 	}
 }
+
+func TestSignatureBindsAccountGroupApprovals(t *testing.T) {
+	public, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manifest{Generation: 1, ApprovedGroups: map[string]string{"sudo": "approved-record-hash"}}
+	if err := m.Sign(key, "box1", "config"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Verify(public, "box1", "config"); err != nil {
+		t.Fatal(err)
+	}
+	m.ApprovedGroups["sudo"] = "different-record-hash"
+	if err := m.Verify(public, "box1", "config"); err == nil {
+		t.Fatal("accepted modified group approval")
+	}
+}

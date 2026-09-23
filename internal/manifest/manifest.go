@@ -54,6 +54,8 @@ type Manifest struct {
 	Signature  string    `json:"signature,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	Records    []Record  `json:"records"`
+	// ApprovedGroups contains exact group-record hashes authorized by account-edit.
+	ApprovedGroups map[string]string `json:"approved_groups,omitempty"`
 
 	path string
 }

@@ -13,6 +13,7 @@ import (
 	"warden/internal/anomaly"
 	"warden/internal/audit"
 	"warden/internal/autoban"
+	"warden/internal/manifest"
 )
 
 // suidScanDirs are the bounded set of common bin directories scan checks
@@ -184,7 +185,16 @@ func reactToAnomalyFinding(p paths, f anomaly.Finding, armed bool, now time.Time
 func runAllAnomalyChecks(p paths) ([]anomaly.Finding, error) {
 	var all []anomaly.Finding
 
-	accountFindings, err := anomaly.CheckAccounts(p.anomalyDir, "/etc/passwd", "/etc/group")
+	m, err := manifest.New(p.configManifestPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(m.ApprovedGroups) > 0 {
+		if err := verifyManifest(m, tierConfig); err != nil {
+			return nil, err
+		}
+	}
+	accountFindings, err := anomaly.CheckAccountsWithGroupApprovals(p.anomalyDir, "/etc/passwd", "/etc/group", m.ApprovedGroups)
 	if err != nil {
 		return nil, fmt.Errorf("scan: accounts check: %w", err)
 	}

@@ -100,6 +100,7 @@ func main() {
 	root.AddCommand(banCmd())
 	root.AddCommand(unbanCmd())
 	root.AddCommand(acceptCmd())
+	root.AddCommand(accountEditCmd())
 	root.AddCommand(alertsCmd())
 	root.AddCommand(rotateSecretCmd())
 	root.AddCommand(uninstallCmd())

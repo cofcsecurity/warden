@@ -282,7 +282,7 @@ The installer leaves arming to the operator. Check armed state with `warden stat
 
 Use `warden fleet` to view local state and reporting peers. Sentinel logs overdue heartbeats.
 
-For later maintenance, disarm first and re-arm after reviewing the changes. Use `warden accept <path> <code>` to approve one config file.
+For local password or group membership changes, use `warden account-edit passwd USER` or `warden account-edit gpasswd -a/-d USER GROUP`. See [account maintenance](ACCOUNT-MAINTENANCE.md) for requirements and failure handling. For other planned config edits, use `warden accept <path> <code>` after review. Disarming stops automatic restoration, but does not disable every active-response path; it is not a general maintenance exemption.
 
 For response events, run `warden alerts` in a separate authenticated shell.
 

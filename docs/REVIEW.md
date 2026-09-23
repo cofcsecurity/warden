@@ -1,5 +1,7 @@
 # Review findings
 
+The [natural-change and attribution review](CHANGE-ATTRIBUTION.md) records six open attribution/response findings against `95c404d`, three reproduced locally, and a proposed policy for legitimate file changes.
+
 The [incident-response workflow review](REVIEW-IR.md) records five findings against `9e41268`, now fixed, including on-host credential exposure, arming review consistency, and repair availability.
 
 The [September 22 deployment review](REVIEW-2026-09-22.md) records six additional open findings against `8e45fe5`. The review below describes the preceding implementation.

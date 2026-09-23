@@ -350,3 +350,7 @@ Restore and watch share this recovery store. Replication can refill its local st
 Mutating CLI operations share an advisory process lock. Manifests and response state publish through temporary files; archives reject conflicting writes. Object retention includes both active manifests. Account lock overlays are computed for restoration without altering the approved archive.
 
 The restricted receiver accepts one JSON request through a forced SSH command and confines file operations with Go's directory-root API. Its protocol has no shell execution, deletion, or pruning operation. Source-specific receiver credentials and roots provide isolation; retention belongs to the receiving administrator. Legacy shell transport remains available for migration only.
+
+## Natural changes and writer evidence
+
+See [CHANGE-ATTRIBUTION.md](CHANGE-ATTRIBUTION.md) for the current attribution findings and proposed handling of generated files, service activity, package updates, and scoped maintenance. The broader observation and attribution policy is not implemented yet. [Account maintenance](ACCOUNT-MAINTENANCE.md) implements one narrow case: authorized `passwd` and `gpasswd` edits. It validates the before/after account files and publishes a config generation that approves only the requested fields. Exact group-record approvals travel with that manifest so scan needs no separate approval transaction. Current SSH attribution establishes session overlap, not file authorship. A file's owner or an affected account is also not necessarily its writer.

@@ -96,9 +96,10 @@ func runAccept(path, code string) error {
 		return err
 	}
 	next := &manifest.Manifest{
-		Generation: generation,
-		CreatedAt:  time.Now().UTC(),
-		Records:    records,
+		Generation:     generation,
+		CreatedAt:      time.Now().UTC(),
+		Records:        records,
+		ApprovedGroups: last.ApprovedGroups,
 	}
 
 	st, err := store.New(p.storeRoot)

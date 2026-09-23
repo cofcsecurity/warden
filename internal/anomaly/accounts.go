@@ -31,6 +31,12 @@ var getentPasswd = func() ([]byte, error) {
 // to sudo/wheel — never change a single name, so a check that only
 // diffed names saw nothing at all.
 func CheckAccounts(baselineDir, passwdPath, groupPath string) ([]Finding, error) {
+	return CheckAccountsWithGroupApprovals(baselineDir, passwdPath, groupPath, nil)
+}
+
+// CheckAccountsWithGroupApprovals excludes only exact group records authorized
+// in the current config manifest. Every unrelated user/group still gets checked.
+func CheckAccountsWithGroupApprovals(baselineDir, passwdPath, groupPath string, approved map[string]string) ([]Finding, error) {
 	var findings []Finding
 
 	localUsers, err := colonFileEntries(passwdPath)
@@ -93,7 +99,7 @@ func CheckAccounts(baselineDir, passwdPath, groupPath string) ([]Finding, error)
 				Description: fmt.Sprintf("local group modified: %s (%s)", e.name, strings.Join(changes, "; ")),
 				Detail:      groupPath,
 			}
-		})
+		}, approved)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +236,7 @@ func diffAccountEntries(
 	fields []accountField,
 	describeNew func(colonEntry) Finding,
 	describeChanged func(colonEntry, []string) Finding,
+	approved ...map[string]string,
 ) ([]Finding, error) {
 	bootstrap := firstRun(baselinePath)
 	old, err := loadBaseline(baselinePath)
@@ -247,6 +254,9 @@ func diffAccountEntries(
 		}
 
 		previous, existed := old[e.name]
+		if len(approved) > 0 && approved[0][e.name] == hashContent([]byte(strings.Join(e.fields, ":"))) {
+			continue
+		}
 		switch {
 		case !existed:
 			findings = append(findings, describeNew(e))
