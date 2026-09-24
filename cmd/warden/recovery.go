@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"warden/internal/audit"
+	"warden/internal/fsutil"
 	"warden/internal/manifest"
 	"warden/internal/replicate"
 	"warden/internal/store"
@@ -20,12 +21,13 @@ import (
 // Each operation keeps successful connections open and skips unavailable peers.
 // Local replicas are tried before SSH, whose host keys remain pinned.
 type backupRecovery struct {
-	p       paths
-	sources []replicateTarget
-	opened  map[string]replicate.Target
-	failed  map[string]error
-	closes  []func() error
-	log     *audit.Logger
+	p           paths
+	sources     []replicateTarget
+	opened      map[string]replicate.Target
+	failed      map[string]error
+	closes      []func() error
+	log         *audit.Logger
+	quarantined []string
 }
 
 var openRecoveryTarget = dialRecoveryTarget
@@ -157,7 +159,7 @@ func (r *backupRecovery) manifest(tier snapshotTier, generation int) (*manifest.
 	// An exact local archive needs no network lookup.
 	if generation > 0 {
 		// The live pointer may be the last local copy of this generation.
-		if data, err := os.ReadFile(r.p.manifestPathForTier(tier)); err == nil {
+		if data, err := fsutil.ReadFile(r.p.manifestPathForTier(tier)); err == nil {
 			if m, err := manifest.Parse(data); err == nil && validateRecoveryManifest(m, generation) == nil && verifyManifest(m, tier) == nil {
 				return m, nil
 			}
@@ -235,7 +237,7 @@ func (r *backupRecovery) loadManifest(tier snapshotTier, id string) (*manifest.M
 		}
 		return r.manifest(tier, g)
 	}
-	data, err := os.ReadFile(r.p.manifestPathForTier(tier))
+	data, err := fsutil.ReadFile(r.p.manifestPathForTier(tier))
 	if err == nil {
 		m, parseErr := manifest.Parse(data)
 		if parseErr == nil && validateRecoveryManifest(m, 0) == nil && verifyManifest(m, tier) == nil {
@@ -263,7 +265,7 @@ func (r *backupRecovery) ensureManifest(tier snapshotTier) error {
 	if m.Generation < highest {
 		return fmt.Errorf("automatic manifest recovery would roll back from generation %d to %d; use retrieve --allow-rollback", highest, m.Generation)
 	}
-	if err := m.Archive(r.p.manifestsDirForTier(tier)); err != nil {
+	if err := r.archiveRecovered(tier, m); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(m, "", "  ")

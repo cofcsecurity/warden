@@ -65,7 +65,7 @@ type Manifest struct {
 func New(path string) (*Manifest, error) {
 	m := &Manifest{path: path}
 
-	data, err := os.ReadFile(path)
+	data, err := fsutil.ReadFile(path)
 	switch {
 	case os.IsNotExist(err):
 		return m, nil
@@ -141,7 +141,7 @@ func (m *Manifest) Archive(dir string) error {
 		if !os.IsExist(err) {
 			return err
 		}
-		previous, readErr := os.ReadFile(path)
+		previous, readErr := fsutil.ReadFile(path)
 		if readErr != nil {
 			return readErr
 		}

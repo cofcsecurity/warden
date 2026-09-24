@@ -117,3 +117,43 @@ func TestModeOnlyRestorePreservesInactiveService(t *testing.T) {
 		t.Fatalf("mode=%v calls=%v", info.Mode(), ctrl.calls)
 	}
 }
+
+func TestFailedRollbackRetainsPreRestoreCopy(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := st.Put([]byte("approved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "service.conf")
+	if err := os.WriteFile(path, []byte("previous"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := &fakeController{active: true}
+	r := New(st, func(string) (string, bool) { return "example", true })
+	r.Control = ctrl
+	r.Validate = func(string) error {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Errorf("invalid config")
+	}
+	results := r.Apply([]PlanEntry{{Path: path, TargetHash: hash, TargetMode: 0600, Changed: true}})
+	res := results[0]
+	if res.Err == nil || res.RollbackPath == "" {
+		t.Fatalf("no recovery artifact: %+v", res)
+	}
+	data, err := os.ReadFile(res.RollbackPath)
+	if err != nil || string(data) != "previous" {
+		t.Fatalf("lost original: %q %v", data, err)
+	}
+	if fmt.Sprint(ctrl.calls) != "[stop]" {
+		t.Fatalf("restarted after incomplete rollback: %v", ctrl.calls)
+	}
+}

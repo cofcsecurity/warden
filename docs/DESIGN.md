@@ -347,6 +347,10 @@ Missing live manifests are recovered from local archives and replicas. Explicit 
 Restore and watch share this recovery store. Replication can refill its local store from another peer, and can reconstruct a missing archive from the live manifest. Armed snapshots attempt recovery before reading a changed live file and reject content that does not match the baseline. Retrieve dry runs read metadata only.
 
 
+Recovery and explicit retrieval quarantine corrupt regular-file archives before publishing verified replacements. Valid conflicting generations are never overwritten. Backup verification reads each live, archived, and peer manifest independently and reports their states by tier and generation; an unreadable tier excludes that peer from the complete-replica count.
+
+A failed restore rollback retains its pre-restore file and reports the recovery path. Services remain stopped when rollback is incomplete. Full crash-resumable restore transactions and persistent service-start retries remain planned work.
+
 Mutating CLI operations share an advisory process lock. Manifests and response state publish through temporary files; archives reject conflicting writes. Object retention includes both active manifests. Account lock overlays are computed for restoration without altering the approved archive.
 
 The restricted receiver accepts one JSON request through a forced SSH command and confines file operations with Go's directory-root API. Its protocol has no shell execution, deletion, or pruning operation. Source-specific receiver credentials and roots provide isolation; retention belongs to the receiving administrator. Legacy shell transport remains available for migration only.

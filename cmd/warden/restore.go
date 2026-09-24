@@ -160,6 +160,7 @@ func applyPlan(p paths, entries []restore.PlanEntry, log *audit.Logger) ([]strin
 			"path":            res.Path,
 			"service_stopped": res.ServiceStopped,
 			"service_started": res.ServiceStarted,
+			"rollback_copy":   res.RollbackPath,
 			"error":           errString(res.Err),
 		})
 		if res.Err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -258,5 +259,86 @@ func TestRecoveryPeerFailureFallsThroughAndClosesConnections(t *testing.T) {
 	r.Close()
 	if !closed {
 		t.Fatal("connection not closed")
+	}
+}
+
+func TestRecoveryQuarantinesCorruptArchive(t *testing.T) {
+	for _, retrieve := range []bool{false, true} {
+		t.Run(fmt.Sprint(retrieve), func(t *testing.T) {
+			p, hash, content := recoveryFixture(t)
+			peer, url := recoveryPeer(t)
+			buildReplicateTargets = url
+			m := &manifest.Manifest{Generation: 1, Records: []manifest.Record{{Path: "/example", Hash: hash, Mode: 0600}}}
+			putRecoveryManifest(t, peer, tierConfig, m)
+			if err := peer.Put(hash, content); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(p.configManifestsDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			broken := []byte("{broken archive")
+			if err := os.WriteFile(manifest.ArchivePath(p.configManifestsDir, 1), broken, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if retrieve {
+				if err := retrieveWithRecovery(p, url, tierConfig, 1, true); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				r := newBackupRecovery(p, nil)
+				defer r.Close()
+				if err := r.ensureManifest(tierConfig); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recovered, err := manifest.New(p.configManifestPath)
+			if err != nil || recovered.Generation != 1 {
+				t.Fatalf("not recovered: %+v %v", recovered, err)
+			}
+			archived, err := manifest.LoadGeneration(p.configManifestsDir, 1)
+			if err != nil || archived.Records[0].Hash != hash {
+				t.Fatalf("archive not repaired: %v", err)
+			}
+			names, err := filepath.Glob(filepath.Join(p.configManifestsDir, "corrupt-manifest-1-*.json"))
+			if err != nil || len(names) != 1 {
+				t.Fatalf("missing quarantined archive: %v %v", names, err)
+			}
+			retained, err := os.ReadFile(names[0])
+			if err != nil || !bytes.Equal(retained, broken) {
+				t.Fatal("corrupt bytes lost")
+			}
+		})
+	}
+}
+
+func TestArchiveRepairRefusesValidConflictAndSymlink(t *testing.T) {
+	for _, symlink := range []bool{false, true} {
+		t.Run(fmt.Sprint(symlink), func(t *testing.T) {
+			p, hash, _ := recoveryFixture(t)
+			old := &manifest.Manifest{Generation: 1, Records: []manifest.Record{{Path: "/old", Hash: hash, Mode: 0600}}}
+			if err := old.Archive(p.configManifestsDir); err != nil {
+				t.Fatal(err)
+			}
+			path := manifest.ArchivePath(p.configManifestsDir, 1)
+			before, _ := os.ReadFile(path)
+			if symlink {
+				if err := os.Rename(path, path+".target"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(path+".target", path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			next := &manifest.Manifest{Generation: 1, Records: []manifest.Record{{Path: "/new", Hash: hash, Mode: 0600}}}
+			r := newBackupRecovery(p, nil)
+			defer r.Close()
+			if err := r.archiveRecovered(tierConfig, next); err == nil {
+				t.Fatal("overwrote conflict or followed symlink")
+			}
+			after, _ := os.ReadFile(path)
+			if !bytes.Equal(before, after) || len(r.quarantined) != 0 {
+				t.Fatal("modified protected archive")
+			}
+		})
 	}
 }

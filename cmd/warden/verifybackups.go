@@ -18,14 +18,22 @@ type backupCheck struct {
 	Hash   string            `json:"hash"`
 	Copies map[string]string `json:"copies"`
 }
+type metadataCheck struct {
+	Tier       snapshotTier      `json:"tier"`
+	Generation int               `json:"generation"`
+	Copies     map[string]string `json:"copies"`
+}
 type backupReport struct {
-	LastSuccessfulAt time.Time     `json:"last_successful_at,omitempty"`
-	CheckedAt        time.Time     `json:"checked_at"`
-	Checks           []backupCheck `json:"objects"`
-	Problems         []string      `json:"problems,omitempty"`
-	UsableReplicas   int           `json:"usable_replicas"`
-	Repaired         int           `json:"repaired"`
-	Healthy          bool          `json:"healthy"`
+	Metadata            []metadataCheck `json:"manifests"`
+	MetadataRepaired    int             `json:"manifests_repaired"`
+	QuarantinedArchives []string        `json:"quarantined_archives,omitempty"`
+	LastSuccessfulAt    time.Time       `json:"last_successful_at,omitempty"`
+	CheckedAt           time.Time       `json:"checked_at"`
+	Checks              []backupCheck   `json:"objects"`
+	Problems            []string        `json:"problems,omitempty"`
+	UsableReplicas      int             `json:"usable_replicas"`
+	Repaired            int             `json:"repaired"`
+	Healthy             bool            `json:"healthy"`
 }
 
 func verifyBackupsCmd() *cobra.Command {
@@ -62,7 +70,7 @@ func verifyBackupsCmd() *cobra.Command {
 		}
 		return nil
 	}}
-	cmd.Flags().BoolVar(&repair, "repair", false, "Recover local objects from verified replicas and record results")
+	cmd.Flags().BoolVar(&repair, "repair", false, "Repair local objects and missing/corrupt archives from verified copies; record results")
 	cmd.Flags().BoolVar(&record, "record", false, "Save verification results for status; default only reads")
 	return cmd
 }
@@ -88,6 +96,9 @@ func checkBackups(p paths, repair bool) backupReport {
 			problem(err.Error())
 			live = &manifest.Manifest{}
 		}
+		liveData, liveReadErr := readMetadataCopy(p.manifestPathForTier(tier))
+		liveState := metadataState(liveData, liveReadErr, tier, 0, nil)
+
 		for _, src := range r.sources {
 			target, err := r.target(src)
 			if err != nil {
@@ -122,45 +133,69 @@ func checkBackups(p paths, repair bool) backupReport {
 		if live.Generation > 0 {
 			selected[live.Generation] = true
 		}
+
+		if live.Generation <= 0 && (len(selected) > 0 || liveState != "missing") {
+			problem(fmt.Sprintf("local live: %s manifest %s", tier, liveState))
+			report.Metadata = append(report.Metadata, metadataCheck{Tier: tier, Generation: live.Generation, Copies: map[string]string{"local-live": liveState}})
+		}
+
+		orderedGenerations := make([]int, 0, len(selected))
 		for generation := range selected {
-			m, err := r.manifest(tier, generation)
-			if err != nil {
-				problem(err.Error())
-				continue
+			orderedGenerations = append(orderedGenerations, generation)
+		}
+		sort.Ints(orderedGenerations)
+		for _, generation := range orderedGenerations {
+			check := metadataCheck{Tier: tier, Generation: generation, Copies: map[string]string{}}
+			m, selectionErr := r.manifest(tier, generation)
+			if selectionErr != nil {
+				problem(selectionErr.Error())
 			}
-			for _, rec := range m.Records {
-				hashes[rec.Hash] = true
+			var canonical []byte
+			if m != nil {
+				for _, rec := range m.Records {
+					hashes[rec.Hash] = true
+				}
+				canonical, _ = json.Marshal(m)
 			}
-			canonical, _ := json.Marshal(m)
+			archivePath := manifest.ArchivePath(p.manifestsDirForTier(tier), generation)
+			data, readErr := readMetadataCopy(archivePath)
+			state := metadataState(data, readErr, tier, generation, canonical)
+			if repair && m != nil && (state == "missing" || state == "corrupt") {
+				if err := r.archiveRecovered(tier, m); err != nil {
+					problem(err.Error())
+				} else {
+					state = "repaired"
+					report.MetadataRepaired++
+				}
+			}
+			check.Copies["local-archive"] = state
+			if state != "verified" && state != "repaired" {
+				problem(fmt.Sprintf("local archive: %s manifest %d %s", tier, generation, state))
+			}
+			if live.Generation == generation {
+				data, err := readMetadataCopy(p.manifestPathForTier(tier))
+				state := metadataState(data, err, tier, generation, canonical)
+				check.Copies["local-live"] = state
+				if state != "verified" {
+					problem(fmt.Sprintf("local live: %s manifest %d %s", tier, generation, state))
+				}
+			}
+			// Inspect every source even when no canonical manifest could be selected.
+			// An unreadable tier must never count as a usable complete replica.
 			for _, src := range r.sources {
 				target, err := r.target(src)
-				if err != nil {
-					continue
-				}
-				data, err := target.GetManifest(string(tier), generation)
-				if err != nil {
-					usable[src.url] = false
-					problem(fmt.Sprintf("%s: %s manifest %d missing or unreadable", src.url, tier, generation))
-					continue
-				}
-				peer, err := manifest.Parse(data)
+				state := "unreachable"
 				if err == nil {
-					err = validateRecoveryManifest(peer, generation)
+					data, err := target.GetManifest(string(tier), generation)
+					state = metadataState(data, err, tier, generation, canonical)
 				}
-				if err == nil {
-					err = verifyManifest(peer, tier)
-				}
-				if err != nil {
+				check.Copies[src.url] = state
+				if state != "verified" || selectionErr != nil {
 					usable[src.url] = false
-					problem(fmt.Sprintf("%s: invalid manifest %d: %v", src.url, generation, err))
-					continue
-				}
-				normalized, _ := json.Marshal(peer)
-				if string(normalized) != string(canonical) {
-					usable[src.url] = false
-					problem(fmt.Sprintf("%s: conflicting %s generation %d", src.url, tier, generation))
+					problem(fmt.Sprintf("%s: %s manifest %d %s", src.url, tier, generation, state))
 				}
 			}
+			report.Metadata = append(report.Metadata, check)
 		}
 	}
 	if len(hashes) == 0 {
@@ -236,9 +271,46 @@ func checkBackups(p paths, repair bool) backupReport {
 			report.UsableReplicas++
 		}
 	}
+	report.QuarantinedArchives = append(report.QuarantinedArchives, r.quarantined...)
 	sort.Strings(report.Problems)
 	return report
 }
+
+// Verification reads each stored copy instead of substituting a recovery result.
+func readMetadataCopy(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("non-regular metadata %s", path)
+	}
+	return fsutil.ReadFile(path)
+}
+func metadataState(data []byte, readErr error, tier snapshotTier, generation int, canonical []byte) string {
+	if errors.Is(readErr, os.ErrNotExist) {
+		return "missing"
+	}
+	if readErr != nil {
+		return "unreadable"
+	}
+	m, err := manifest.Parse(data)
+	if err == nil {
+		err = validateRecoveryManifest(m, generation)
+	}
+	if err == nil {
+		err = verifyManifest(m, tier)
+	}
+	if err != nil {
+		return "corrupt"
+	}
+	normalized, _ := json.Marshal(m)
+	if canonical != nil && string(normalized) != string(canonical) {
+		return "conflicting"
+	}
+	return "verified"
+}
+
 func backupHealthSummary(p paths) string {
 	data, err := os.ReadFile(filepath.Join(p.storeRoot, "backup-health.json"))
 	if os.IsNotExist(err) {
@@ -251,5 +323,5 @@ func backupHealthSummary(p paths) string {
 	if err := json.Unmarshal(data, &report); err != nil {
 		return "invalid verification record"
 	}
-	return fmt.Sprintf("checked at %s: healthy=%t, usable replicas=%d, repaired=%d, last successful=%s (recorded state)", report.CheckedAt.Format(time.RFC3339), report.Healthy, report.UsableReplicas, report.Repaired, report.LastSuccessfulAt.Format(time.RFC3339))
+	return fmt.Sprintf("checked at %s: healthy=%t, usable replicas=%d, repaired objects=%d, repaired manifests=%d, last successful=%s (recorded state)", report.CheckedAt.Format(time.RFC3339), report.Healthy, report.UsableReplicas, report.Repaired, report.MetadataRepaired, report.LastSuccessfulAt.Format(time.RFC3339))
 }

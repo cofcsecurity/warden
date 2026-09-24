@@ -79,6 +79,7 @@ type EntryResult struct {
 	Skipped        bool // entry wasn't Changed, so nothing was done
 	ServiceStopped string
 	ServiceStarted string
+	RollbackPath   string // retained pre-restore file when rollback failed
 	Err            error
 }
 
@@ -119,6 +120,7 @@ func (r *Restorer) Apply(entries []PlanEntry) []EntryResult {
 		next, previous string
 		existed        bool
 		committed      bool
+		retainPrevious bool
 	}
 	var files []staged
 	units := map[string]bool{}
@@ -133,7 +135,7 @@ func (r *Restorer) Apply(entries []PlanEntry) []EntryResult {
 	defer func() {
 		for _, f := range files {
 			os.Remove(f.next)
-			if f.previous != "" {
+			if f.previous != "" && !f.retainPrevious {
 				os.Remove(f.previous)
 			}
 		}
@@ -231,7 +233,7 @@ func (r *Restorer) Apply(entries []PlanEntry) []EntryResult {
 		errs = append(errs, cause)
 		rollbackOK := true
 		for j := len(files) - 1; j >= 0; j-- {
-			f := files[j]
+			f := &files[j]
 			if !f.committed {
 				continue
 			}
@@ -242,7 +244,13 @@ func (r *Restorer) Apply(entries []PlanEntry) []EntryResult {
 				err = os.Remove(entries[f.index].Path)
 			}
 			if err != nil {
-				errs = append(errs, err)
+				if f.previous != "" {
+					f.retainPrevious = true
+					results[f.index].RollbackPath = f.previous
+					errs = append(errs, fmt.Errorf("rollback %s failed; pre-restore copy retained at %s: %w", entries[f.index].Path, f.previous, err))
+				} else {
+					errs = append(errs, fmt.Errorf("rollback %s failed: %w", entries[f.index].Path, err))
+				}
 				rollbackOK = false
 			}
 		}

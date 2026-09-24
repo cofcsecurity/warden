@@ -141,7 +141,7 @@ func retrieveWithRecovery(p paths, peerURL string, tier snapshotTier, generation
 			return fmt.Errorf("retrieve %s: %w", rec.Path, err)
 		}
 	}
-	if err := m.Archive(p.manifestsDirForTier(tier)); err != nil {
+	if err := recovery.archiveRecovered(tier, m); err != nil {
 		return err
 	}
 	if err := m.SaveAs(p.manifestPathForTier(tier)); err != nil {
