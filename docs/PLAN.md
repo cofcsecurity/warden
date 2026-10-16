@@ -1,6 +1,6 @@
 # Implementation Plan
 
-Implementation history and remaining deployment checks. Later phases supersede earlier behavior; see [USAGE.md](USAGE.md) for the current interface.
+Implementation history. Later phases supersede earlier behavior; the rework at the end supersedes everything about access, setup, signing and reporting. See [USAGE.md](USAGE.md) for the current interface. The earlier review documents (REVIEW*.md, CHANGE-ATTRIBUTION.md) described the incident-response design and are in git history.
 
 ## Phase 0: Scaffold and core data layer (done)
 
@@ -231,7 +231,7 @@ Arming now shows changes since the previous baseline before accepting the curren
 - Retrieve supports automatic source selection and a metadata-only dry run.
 - SSH handshakes, session opens, and commands have timeouts. Remote writes quote paths correctly and use unique temporary files with no-overwrite publication. Local replica publication also avoids overwrites during concurrent writes.
 - Watch honors the current profile for removed paths and deleted-file classifications.
-- Remaining findings and feature candidates are recorded in [REVIEW.md](REVIEW.md).
+- Remaining findings and feature candidates were recorded in REVIEW.md (removed in the rework; see git history).
 
 
 ### Review implementation
@@ -240,3 +240,44 @@ Arming now shows changes since the previous baseline before accepting the curren
 - Added atomic state publication and a shared mutation lock; accept verifies content before recording a new baseline; non-regular file reads fail without blocking.
 - Added backup verification and local repair, restricted receivers, signed manifests, explicit rollback checks, profile validation, restore preflight, and backup health in status.
 - Deployment options and migration steps are in DEPLOYMENT.md. No scheduled repair is enabled by default.
+
+## Rework: protect and recover, nothing else (done)
+
+The goal changed from incident response with accountability to keeping competition boxes alive: rules are loose, nobody needs to prove later who did what, red wants to destroy things. Warden kept what keeps hosts alive and recoverable and dropped the rest.
+
+Removed:
+- TOTP, the static second factor, `rotate-secret`, second-factor prompts in `accept`, `uninstall` and `account-edit`, QR and key-generation scripts.
+- Signed manifests (`manifest-keygen`, receiver key pinning), audit-segment replication and `retrieve --audit`, heartbeats and `fleet`, `debug-config`.
+- Every `-ldflags` secret and flag. The bash installers (`deploy/install.sh`, `scripts/*`) and unit templates.
+
+Access:
+- opmenu is a dispatcher: no command opens a root shell (pty allowed), any warden command runs, anything else is refused.
+- Runtime config (`/var/lib/<name>/config.json`, mirrored to `/usr/lib/<name>/`) holds the team key, team network, response modes, safe accounts, peers and paired sources.
+- Sentinel checks the whole access chain as invariants (account, key file, sshd effective config via `sshd -T`, sshd service, sudo, firewall, ld.so.preload, spares, config copies) and keeps going past individual failures.
+- A scoped `Match User` sshd drop-in per access account pins its key file and adds it to `AllowUsers`.
+- Break-glass: a second account with its own key file outside `/home`, sudoers file, drop-in, timer and `/etc/cron.d` entry.
+- More triggers: a one-minute timer, a path unit on the access files, root's crontab every two minutes, a fail-open hook on sshd's start, and break-glass's own timer and cron.d file. Units are checked by content and active state, so masking or stopping one counts as broken.
+- Neutral unit suffixes; no `warden` string on the box.
+
+Setup:
+- `warden install --key ...` on the box, driven by `./install.sh`, which builds from the clone (fetching a verified Go toolchain if needed) or downloads a release and checks `SHA256SUMS`. Tagged commits publish releases from CI. Re-running install updates in place. `rekey` and `config set` change settings without a rebuild.
+
+Protecting files:
+- Profile entries may be globs or `/**` trees; the default list follows the team's hardening sheet. The host profile extends the defaults instead of replacing them.
+- New files in auto-restore directories are quarantined while armed. Warden's own files are excluded from the watch list. Symlinks to non-files are recorded by target.
+- `arm` no longer prompts; it prints a short list of what changed. `accept` takes several paths or `--flagged`.
+- Flagged changes react once rather than every pass. `alerts` shows restores, quarantines, repairs and flags.
+
+Backups and responses:
+- `pair key | accept | add` sets up upload-only peers from a laptop with only ssh. The receiver has a per-source quota that refuses rather than evicts. Push was kept over pull (see DESIGN.md).
+- Ban and lock modes are `off`, `flag` (default) or `act` at runtime.
+- `status --json` is the contract for seer; every command takes `--quiet`.
+
+Tests: container end-to-end tests (`make e2e`) on Ubuntu 24.04 and Rocky 9 with a laptop container that has only ssh: install, access over the key, arm and tamper, every lockout move in the access chain, killing the triggers, removing the main path entirely (break-glass), a broken profile, pairing and retrieval, uninstall, with a bystander account's login and `sshd -T` checked throughout.
+
+Still open:
+- Move `scan` and `detect` into seer; `seer warden status` and an on-box `seer warden profile`.
+- Scoring-account hints (`[SCORING?]` tags) as advisory input to the safe list.
+- Per-service quiesce hooks (mysqldump, pg_dump) for the data tier.
+- Windows: interfaces first, then a spike (Server 2016 floor).
+- Timed rehearsal on throwaway VMs.

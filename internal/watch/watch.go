@@ -47,6 +47,11 @@ type Watcher struct {
 	log          *audit.Logger
 	reload       Reload
 	Baseline     *manifest.Manifest
+	// Quarantine, when set, handles a new file that appeared under an
+	// auto-restore pattern while armed: it should copy the file somewhere
+	// safe and remove it. Quarantinable says which new paths qualify.
+	Quarantine    func(path string) error
+	Quarantinable func(path string) bool
 }
 
 // New builds a Watcher. manifestPath is where the last known-good manifest
@@ -83,6 +88,8 @@ type Result struct {
 	// Flagged itself stays a plain []string for callers that just want
 	// the count/paths.
 	FlaggedChanges []manifest.Change
+	// Quarantined are new files removed from auto-restore directories.
+	Quarantined []string
 	// ReloadErrors collects failures from Reload. The restores they
 	// belong to still happened — these are reported so an operator
 	// knows a service is running on something other than what's now on
@@ -182,9 +189,24 @@ func (w *Watcher) Check() (*Result, error) {
 			w.logChange("auto-restored", change)
 
 		case change.Kind == manifest.Added:
-			// No known-good content exists for a new path, so it can only
-			// be flagged, not restored.
+			// The approved baseline has no such file. In an auto-restore
+			// directory (sshd_config.d, sudoers.d, pam.d, cron.d) that is
+			// the classic override or backdoor, so while armed it is
+			// quarantined: copied aside, then removed. Anywhere else it
+			// can only be flagged.
+			if w.armed && w.Quarantine != nil && w.Quarantinable != nil && w.Quarantinable(change.Path) {
+				if err := w.Quarantine(change.Path); err != nil {
+					restoreErrors = append(restoreErrors, fmt.Errorf("watch: quarantine %s: %w", change.Path, err))
+					res.Flagged = append(res.Flagged, change.Path)
+					continue
+				}
+				res.Quarantined = append(res.Quarantined, change.Path)
+				res.AutoRestored = append(res.AutoRestored, change.Path)
+				w.logChange("quarantined", change)
+				continue
+			}
 			res.Flagged = append(res.Flagged, change.Path)
+			res.FlaggedChanges = append(res.FlaggedChanges, change)
 			w.logChange("flagged-unexpected", change)
 		}
 	}

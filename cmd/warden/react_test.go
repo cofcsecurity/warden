@@ -4,13 +4,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
-	"golang.org/x/crypto/ssh"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"warden/internal/attribution"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func writeAuthLog(t *testing.T, lines ...string) string {
@@ -32,20 +33,17 @@ func writeAuthLog(t *testing.T, lines ...string) string {
 // tests can do this instead of touching real /var/log files.
 func withAuthLogAndTeamIP(t *testing.T, logPath, teamIP string) {
 	t.Helper()
-	origPaths, origIP := authLogPaths, buildTeamFromIP
+	origPaths := authLogPaths
+	withConfig(t)
 	authLogPaths = []string{logPath}
-	buildTeamFromIP = teamIP
-	t.Cleanup(func() {
-		authLogPaths = origPaths
-		buildTeamFromIP = origIP
-	})
+	cfg.AllowFrom = teamIP
+	t.Cleanup(func() { authLogPaths = origPaths })
 }
 
 func TestIPMatchesTeamExact(t *testing.T) {
-	origIP := buildTeamFromIP
-	defer func() { buildTeamFromIP = origIP }()
+	withConfig(t)
 
-	buildTeamFromIP = "203.0.113.10"
+	cfg.AllowFrom = "203.0.113.10"
 	if !ipMatchesTeam("203.0.113.10") {
 		t.Fatal("expected an exact match")
 	}
@@ -55,10 +53,9 @@ func TestIPMatchesTeamExact(t *testing.T) {
 }
 
 func TestIPMatchesTeamCIDR(t *testing.T) {
-	origIP := buildTeamFromIP
-	defer func() { buildTeamFromIP = origIP }()
+	withConfig(t)
 
-	buildTeamFromIP = "203.0.113.0/24"
+	cfg.AllowFrom = "203.0.113.0/24"
 	if !ipMatchesTeam("203.0.113.42") {
 		t.Fatal("expected an address inside the CIDR to match")
 	}
@@ -155,8 +152,9 @@ func TestAttributeChangeAmbiguousWithMultipleForeignSessions(t *testing.T) {
 }
 
 func TestJournalFallbackAndTeamKeyExclusion(t *testing.T) {
-	oldJournal, oldKey := journalSessions, buildTeamPubKey
-	t.Cleanup(func() { journalSessions, buildTeamPubKey = oldJournal, oldKey })
+	oldJournal := journalSessions
+	withConfig(t)
+	t.Cleanup(func() { journalSessions = oldJournal })
 	withAuthLogAndTeamIP(t, "/nonexistent/auth.log", "203.0.113.10")
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -166,7 +164,7 @@ func TestJournalFallbackAndTeamKeyExclusion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	buildTeamPubKey = string(ssh.MarshalAuthorizedKey(key))
+	cfg.TeamKey = string(ssh.MarshalAuthorizedKey(key))
 	now := time.Now()
 	journalSessions = func(event, now time.Time) ([]attribution.Session, error) {
 		return []attribution.Session{

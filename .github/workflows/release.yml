@@ -1,0 +1,35 @@
+name: Release
+
+# Tag a commit (git tag v1.2.3 && git push --tags) to publish static Linux
+# binaries and their SHA256SUMS. install.sh --release v1.2.3 downloads and
+# verifies them on boxes without Go.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: test
+        run: go test ./...
+
+      - name: build
+        run: make release
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Verify with: sha256sum -c SHA256SUMS. Install with: sudo ./install.sh --release $GITHUB_REF_NAME --key '<team public key>'"

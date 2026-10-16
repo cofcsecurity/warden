@@ -1,228 +1,76 @@
 package opmenu
 
 import (
-	"encoding/base32"
-	"os"
-	"path/filepath"
-	"strings"
+	"errors"
+	"reflect"
 	"testing"
-	"time"
-
-	"warden/internal/audit"
-	"warden/internal/totp"
 )
 
-func testHandler(t *testing.T, restoreCalled *bool) (*Handler, string) {
-	t.Helper()
-	h, secret, _ := testHandlerWithStaticSecret(t, restoreCalled, "")
-	return h, secret
+func TestParse(t *testing.T) {
+	req := Parse("  restore /etc/nginx/nginx.conf --apply ", "198.51.100.7 51234 22")
+	if !reflect.DeepEqual(req.Args, []string{"restore", "/etc/nginx/nginx.conf", "--apply"}) {
+		t.Fatalf("args = %q", req.Args)
+	}
+	if req.SourceIP != "198.51.100.7" {
+		t.Fatalf("source ip = %q", req.SourceIP)
+	}
+	if req.Shell() {
+		t.Fatal("a command is not a shell request")
+	}
 }
 
-// testHandlerWithStaticSecret is testHandler plus a static-secret file
-// (created with the given initial content, or left absent if empty), for
-// exercising the non-TOTP fallback path.
-func testHandlerWithStaticSecret(t *testing.T, restoreCalled *bool, staticSecretContent string) (*Handler, string, string) {
-	t.Helper()
-	secret := base32.StdEncoding.EncodeToString([]byte("test-secret-1234567890"))
-
-	log, err := audit.New(filepath.Join(t.TempDir(), "audit.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { log.Close() })
-
-	staticSecretPath := ""
-	if staticSecretContent != "" {
-		staticSecretPath = filepath.Join(t.TempDir(), "second-factor")
-		if err := os.WriteFile(staticSecretPath, []byte(staticSecretContent), 0o600); err != nil {
-			t.Fatal(err)
+func TestEmptyAndShellRequestShell(t *testing.T) {
+	for _, raw := range []string{"", "   ", "shell", "shell extra"} {
+		if !Parse(raw, "").Shell() {
+			t.Fatalf("%q should request a shell", raw)
 		}
 	}
-
-	h := New(
-		secret,
-		staticSecretPath,
-		filepath.Join(t.TempDir(), "second-factor-spent"),
-		func() (string, error) { return "ok", nil },
-		func(target string, args []string) (string, error) {
-			if restoreCalled != nil {
-				*restoreCalled = true
-			}
-			return "restored " + target, nil
-		},
-		"", // no shell path in tests; shell path is exercised separately
-		log,
-	)
-	return h, secret, staticSecretPath
 }
 
-func TestStatusNeedsNoTOTP(t *testing.T) {
-	h, _ := testHandler(t, nil)
-
-	out, err := h.Handle(Request{Command: CommandStatus})
-	if err != nil {
+func TestHandleRunsAllowedCommandWithoutAnyCode(t *testing.T) {
+	var got []string
+	var logged string
+	h := &Handler{
+		Run:     func(args []string) error { got = args; return nil },
+		Allowed: func(name string) bool { return name == "arm" },
+		Log:     func(action string, _ map[string]any) { logged = action },
+	}
+	if err := h.Handle(Parse("arm --yes", "")); err != nil {
 		t.Fatal(err)
 	}
-	if out != "ok" {
-		t.Errorf("got %q, want %q", out, "ok")
+	if !reflect.DeepEqual(got, []string{"arm", "--yes"}) {
+		t.Fatalf("ran %q", got)
+	}
+	if logged != "ran" {
+		t.Fatalf("logged %q", logged)
 	}
 }
 
-func TestRestoreRejectedWithoutTOTP(t *testing.T) {
-	called := false
-	h, _ := testHandler(t, &called)
-
-	_, err := h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}})
-	if err == nil {
-		t.Fatal("expected error for restore without TOTP")
+func TestHandleRejectsUnknownCommand(t *testing.T) {
+	ran := false
+	h := &Handler{
+		Run:     func([]string) error { ran = true; return nil },
+		Allowed: func(name string) bool { return name == "status" },
 	}
-	if called {
-		t.Errorf("RestoreFn should not have been invoked without a valid TOTP")
+	if err := h.Handle(Parse("rm -rf /", "")); err == nil {
+		t.Fatal("expected rejection")
 	}
-}
-
-func TestRestoreAcceptedWithValidTOTP(t *testing.T) {
-	called := false
-	h, secret := testHandler(t, &called)
-
-	code, err := totp.Generate(secret, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: code})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != "restored nginx" {
-		t.Errorf("got %q, want %q", out, "restored nginx")
-	}
-	if !called {
-		t.Errorf("RestoreFn should have been invoked with a valid TOTP")
+	if ran {
+		t.Fatal("rejected command must not run")
 	}
 }
 
-func TestRestoreRejectedWithWrongTOTP(t *testing.T) {
-	called := false
-	h, _ := testHandler(t, &called)
-
-	_, err := h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: "000000"})
-	if err == nil {
-		t.Fatal("expected error for restore with wrong TOTP")
-	}
-	if called {
-		t.Errorf("RestoreFn should not have been invoked with a wrong TOTP")
+func TestHandlePropagatesCommandError(t *testing.T) {
+	want := errors.New("boom")
+	h := &Handler{Run: func([]string) error { return want }}
+	if err := h.Handle(Parse("status", "")); !errors.Is(err, want) {
+		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestUnrecognizedCommandRejected(t *testing.T) {
-	h, _ := testHandler(t, nil)
-
-	_, err := h.Handle(Request{Command: "rm -rf /"})
-	if err == nil {
-		t.Fatal("expected error for unrecognized command")
-	}
-}
-
-func TestRestoreAcceptedWithValidStaticSecret(t *testing.T) {
-	called := false
-	h, _, _ := testHandlerWithStaticSecret(t, &called, "my-static-passphrase\n")
-
-	out, err := h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: "my-static-passphrase"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != "restored nginx" {
-		t.Errorf("got %q, want %q", out, "restored nginx")
-	}
-	if !called {
-		t.Errorf("RestoreFn should have been invoked with a valid static secret")
-	}
-}
-
-func TestRestoreRejectedWithWrongStaticSecret(t *testing.T) {
-	called := false
-	h, _, _ := testHandlerWithStaticSecret(t, &called, "my-static-passphrase\n")
-
-	_, err := h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: "wrong-guess"})
-	if err == nil {
-		t.Fatal("expected error for restore with a wrong static secret")
-	}
-	if called {
-		t.Errorf("RestoreFn should not have been invoked with a wrong static secret")
-	}
-}
-
-func TestStaticSecretStillHonorsValidTOTP(t *testing.T) {
-	// A configured static secret must not disable TOTP -- either should
-	// still work.
-	called := false
-	h, secret, _ := testHandlerWithStaticSecret(t, &called, "my-static-passphrase\n")
-
-	code, err := totp.Generate(secret, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: code})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !called {
-		t.Errorf("RestoreFn should have been invoked with a valid TOTP code even though a static secret is also configured")
-	}
-}
-
-func TestUnconfiguredStaticSecretPathNeverMatches(t *testing.T) {
-	// StaticSecretPath == "" (the default/unconfigured state) must never
-	// accidentally accept anything.
-	called := false
-	h, _ := testHandler(t, &called)
-
-	_, err := h.Handle(Request{Command: CommandRestore, Args: []string{"nginx"}, TOTPCode: ""})
-	if err == nil {
-		t.Fatal("expected error for an empty code")
-	}
-	if called {
-		t.Errorf("RestoreFn should not have been invoked")
-	}
-}
-
-// TestTOTPCodeCannotBeReplayed covers the window a captured code used to
-// stay good for: without this, anyone who observed a code had the rest of
-// its ~90-second skew window to use it themselves.
-func TestTOTPCodeCannotBeReplayed(t *testing.T) {
-	h, secret := testHandler(t, nil)
-	code, err := totp.Generate(secret, timeNow())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := h.Handle(Request{Command: CommandRestore, TOTPCode: code, Args: []string{"nginx"}}); err != nil {
-		t.Fatalf("first use of a fresh code should be accepted: %v", err)
-	}
-
-	_, err = h.Handle(Request{Command: CommandRestore, TOTPCode: code, Args: []string{"nginx"}})
-	if err == nil {
-		t.Fatal("expected the same code to be refused the second time")
-	}
-	if !strings.Contains(err.Error(), "already been used") {
-		t.Errorf("expected the error to say why, got: %v", err)
-	}
-}
-
-func TestSpentTOTPStateIsPerHandlerPath(t *testing.T) {
-	// A handler with no replay-protection path configured (tests only)
-	// must still work rather than refusing everything.
-	h, secret := testHandler(t, nil)
-	h.SpentTOTPPath = ""
-	code, err := totp.Generate(secret, timeNow())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		if _, err := h.Handle(Request{Command: CommandRestore, TOTPCode: code, Args: []string{"nginx"}}); err != nil {
-			t.Fatalf("attempt %d: %v", i+1, err)
-		}
+func TestShellWithoutPathFails(t *testing.T) {
+	h := &Handler{}
+	if err := h.Handle(Parse("shell", "")); err == nil {
+		t.Fatal("expected error without a shell path")
 	}
 }

@@ -3,12 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/cobra"
 	"os"
 	"sort"
 	"time"
 	"warden/internal/detect"
 	"warden/internal/fsutil"
+
+	"github.com/spf13/cobra"
 )
 
 var ignoredProcesses = map[string]bool{}
@@ -43,19 +44,19 @@ func profileCmd() *cobra.Command {
 func validateProfile(p paths) profileReport {
 	report := profileReport{}
 	paths := map[string]bool{}
-	for _, list := range [][]string{configTierPaths, dataTierPaths} {
+	for _, entry := range configTierPaths {
+		if coveredBy(dataTierPaths, entry) {
+			report.Issues = append(report.Issues, "path in both tiers: "+entry)
+		}
+	}
+	// Absent entries are normal (the defaults cover many distros); only
+	// what is present here is checked.
+	for _, list := range [][]string{watchedFiles(), pathsForTier(tierData)} {
 		for _, path := range list {
-			if paths[path] {
-				report.Issues = append(report.Issues, "conflicting tier or duplicate path: "+path)
-			}
 			paths[path] = true
-			info, err := os.Lstat(path)
-			if err != nil {
-				report.Issues = append(report.Issues, "missing or unreadable path: "+path)
+			if _, err := os.Lstat(path); err != nil {
+				report.Issues = append(report.Issues, "unreadable path: "+path)
 				continue
-			}
-			if !info.Mode().IsRegular() {
-				report.Issues = append(report.Issues, "non-regular watched path: "+path)
 			}
 			if len(pathServices[path]) > 0 {
 				if _, ok := serviceForPath(path); !ok {

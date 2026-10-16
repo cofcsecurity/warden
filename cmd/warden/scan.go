@@ -34,16 +34,12 @@ for any account (not just Warden's own entry), authorized_keys tampering
 for any account, new listening TCP ports, and newly installed packages.
 Not a SIEM replacement — see docs/PLAN.md Phase 9.
 
-Always flags and logs every finding, regardless of armed state. Once
-armed, and only if built with AUTOLOCK_ENABLED/AUTOBAN_ENABLED, also
-reacts: locks the responsible local account (and kills its sessions) when
-a finding is unambiguously attributable to one, and separately attempts
-to ban the source IP the same way react.go's guarded-file-change reaction
-already does. Every reaction stays on this box — see docs/DESIGN.md's
-"it does not fight back" policy. Refuses to ever lock root, the opmenu
-account itself, an account on the configured SAFE_ACCOUNTS list, or
-anything that isn't a genuine local account (a domain/AD-backed account
-needs to be locked in its own directory service, not here).`,
+Always flags and logs every finding. Once armed it also responds per the
+runtime config's lock and ban modes: "flag" logs what it would lock or
+ban, "act" locks the responsible local account (and kills its sessions)
+and bans the source IP when the evidence points at exactly one. Never
+locks root, Warden's accounts, a safe_accounts entry, or an account that
+is not local.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runScan()
 		},
@@ -89,7 +85,11 @@ func runScan() error {
 		}
 		suspect, account, evidence, candidates := attributeChange(eventTime, now)
 		autobanned := false
-		if suspect != "" && buildAutobanEnabled != "" && armed {
+		wouldBan := ""
+		if suspect != "" && armed && cfg.Ban == modeFlag {
+			wouldBan = suspect
+		}
+		if suspect != "" && cfg.Ban == modeAct && armed {
 			store := autoban.NewStore(p.bannedIPsPath)
 			reason := fmt.Sprintf("anomaly (%s): %s (account %q)", f.Check, f.Description, account)
 			if err := autoban.Add(store, autoban.IPTables{}, suspect, reason, autobanDuration, now); err != nil {
@@ -119,6 +119,9 @@ func runScan() error {
 		if suspect != "" {
 			fields["suspect_ip"] = suspect
 		}
+		if wouldBan != "" {
+			fields["would_ban"] = wouldBan
+		}
 		if suspect == "" && len(candidates) > 1 {
 			fields["candidate_ips"] = candidates
 		}
@@ -127,8 +130,8 @@ func runScan() error {
 		}
 	}
 
-	// A "pass" entry every run, clean or not — the same unconditional
-	// heartbeat watch and sentinel-check log. Without it, a run with
+	// A "pass" entry every run, clean or not, the same as watch and
+	// sentinel-check log. Without it, a run with
 	// zero findings wrote nothing at all, so neither the audit log nor
 	// `status` could tell "scan ran and the box is clean" apart from
 	// "scan's timer has been dead for three days": both look like
@@ -150,16 +153,15 @@ func runScan() error {
 	return nil
 }
 
-// reactToAnomalyFinding applies the account-lock half of scan's reaction:
-// only once armed and only if this build has AUTOLOCK_ENABLED, and only
-// when canLockAccount clears the finding's culprit (never overridden
-// automatically — force is always false here; that's only ever a human
-// operator's own explicit choice via 'warden lock-account --force').
+// reactToAnomalyFinding applies the account-lock half of scan's reaction,
+// only once armed, only in lock mode "act", and only when canLockAccount
+// clears the finding's culprit (force is never automatic). In "flag" mode
+// it reports what it would have locked and changes nothing.
 func reactToAnomalyFinding(p paths, f anomaly.Finding, armed bool, now time.Time) (locked bool, skippedReason string, err error) {
 	if f.Culprit == "" {
 		return false, "", nil
 	}
-	if !armed || buildAutolockEnabled == "" {
+	if !armed || cfg.Lock == modeOff {
 		return false, "", nil
 	}
 
@@ -169,6 +171,9 @@ func reactToAnomalyFinding(p paths, f anomaly.Finding, armed bool, now time.Time
 	}
 	if !ok {
 		return false, reason, nil
+	}
+	if cfg.Lock == modeFlag {
+		return false, "flag mode: would lock " + f.Culprit, nil
 	}
 
 	sys := accountlock.OSAccounts{NologinShell: nologinShellPath()}
@@ -188,11 +193,6 @@ func runAllAnomalyChecks(p paths) ([]anomaly.Finding, error) {
 	m, err := manifest.New(p.configManifestPath)
 	if err != nil {
 		return nil, err
-	}
-	if len(m.ApprovedGroups) > 0 {
-		if err := verifyManifest(m, tierConfig); err != nil {
-			return nil, err
-		}
 	}
 	accountFindings, err := anomaly.CheckAccountsWithGroupApprovals(p.anomalyDir, "/etc/passwd", "/etc/group", m.ApprovedGroups)
 	if err != nil {
@@ -246,7 +246,11 @@ func checkCronForThisBox(p paths) ([]anomaly.Finding, error) {
 		marker = cronMarker(unitName)
 	}
 
+	own := ownFiles()
 	normalize := func(path string, content []byte) []byte {
+		if own(path) {
+			return nil
+		}
 		if path != rootCrontabPath || marker == "" {
 			return content
 		}
@@ -269,13 +273,17 @@ func checkCronForThisBox(p paths) ([]anomaly.Finding, error) {
 }
 
 // checkAuthorizedKeysForThisBox watches every account's authorized_keys
-// file it can find under /home and /root, with the opmenu account's own
-// expected line stripped first (same reasoning as checkCronForThisBox).
+// file under /home and /root, except Warden's own access accounts, whose
+// keys sentinel holds.
 func checkAuthorizedKeysForThisBox(p paths) ([]anomaly.Finding, error) {
 	var sources []anomaly.AuthorizedKeysSource
+	own := ownFiles()
 
 	if matches, err := filepath.Glob("/home/*/.ssh/authorized_keys"); err == nil {
 		for _, m := range matches {
+			if own(m) {
+				continue
+			}
 			sources = append(sources, anomaly.AuthorizedKeysSource{
 				Path:    m,
 				Culprit: accountFromHomeAuthorizedKeysPath(m),
@@ -286,32 +294,7 @@ func checkAuthorizedKeysForThisBox(p paths) ([]anomaly.Finding, error) {
 	if _, err := os.Stat(rootAK); err == nil {
 		sources = append(sources, anomaly.AuthorizedKeysSource{Path: rootAK, Culprit: "root"})
 	}
-
-	var opmenuAKPath, opmenuLine string
-	if akPath, err := authorizedKeysPath(); err == nil {
-		opmenuAKPath = akPath
-		if path, err := installPath(); err == nil {
-			if line, err := authorizedKeysLine(path); err == nil {
-				opmenuLine = line
-			}
-		}
-	}
-
-	normalize := func(path string, content []byte) []byte {
-		if path != opmenuAKPath || opmenuLine == "" {
-			return content
-		}
-		var kept []string
-		for _, line := range strings.Split(string(content), "\n") {
-			if line == opmenuLine {
-				continue
-			}
-			kept = append(kept, line)
-		}
-		return []byte(strings.Join(kept, "\n"))
-	}
-
-	return anomaly.CheckAuthorizedKeys(p.anomalyDir, sources, normalize)
+	return anomaly.CheckAuthorizedKeys(p.anomalyDir, sources, nil)
 }
 
 // accountFromHomeAuthorizedKeysPath extracts <user> from

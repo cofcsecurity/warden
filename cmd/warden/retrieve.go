@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -13,15 +12,12 @@ import (
 
 // retrieveCmd is Push's reverse: recovering a box's own backups from a
 // peer that holds a copy of them, after this box was wiped and rebuilt.
-// The peer must be one of the URLs baked into buildReplicateTargets — its
-// pinned host key comes from there, the same source of truth push uses,
-// rather than a separate --host-key flag a rebuilt box wouldn't have any
-// principled way to fill in on its own.
+// The peer must be one of the configured peers: its pinned host key comes
+// from there, the same source of truth push uses.
 func retrieveCmd() *cobra.Command {
 	var tierFlag string
 	var generationFlag int
 	var apply, allowRollback bool
-	var auditOut string
 
 	cmd := &cobra.Command{
 		Use:   "retrieve [peer-url]",
@@ -32,12 +28,6 @@ func retrieveCmd() *cobra.Command {
 			if len(args) > 0 {
 				peer = args[0]
 			}
-			if auditOut != "" {
-				if peer == "" {
-					return fmt.Errorf("audit retrieval requires a peer URL")
-				}
-				return runRetrieveAudit(peer, auditOut)
-			}
 			tier, err := parseTier(tierFlag)
 			if err != nil {
 				return err
@@ -45,7 +35,6 @@ func retrieveCmd() *cobra.Command {
 			return runRetrieve(peer, tier, generationFlag, apply, allowRollback)
 		},
 	}
-	cmd.Flags().StringVar(&auditOut, "audit", "", "instead of a snapshot, reassemble the replicated audit log into this file (\"-\" for stdout)")
 	cmd.Flags().StringVar(&tierFlag, "tier", string(tierConfig), `snapshot tier to pull: "config" or "data"`)
 	cmd.Flags().IntVar(&generationFlag, "generation", 0, "generation to pull (default: selected peer's latest, otherwise the local baseline or newest backup)")
 	cmd.Flags().BoolVar(&allowRollback, "allow-rollback", false, "Explicitly permit adopting an older generation or an incomplete lineage check")
@@ -94,9 +83,6 @@ func retrieveWithRecovery(p paths, peerURL string, tier snapshotTier, generation
 				}
 				if readErr == nil {
 					readErr = validateRecoveryManifest(m, g)
-					if readErr == nil {
-						readErr = verifyManifest(m, tier)
-					}
 				}
 				if readErr != nil {
 					m = nil
@@ -150,56 +136,16 @@ func retrieveWithRecovery(p paths, peerURL string, tier snapshotTier, generation
 	return log.Log("recovery", "baseline-adopted", map[string]any{"tier": tier, "generation": m.Generation})
 }
 
-// runRetrieveAudit reassembles the audit-log segments a peer holds back
-// into one JSON-lines file. This is the recovery half of the reason the
-// log is replicated at all: if red team deleted audit.log on this box (or
-// the box was rebuilt from scratch), the evidence of what happened is
-// still sitting on the peer, and this is how it comes back.
-//
-// The output is written somewhere the operator names, never over the live
-// audit log: mixing a peer's copy back into the file this box is actively
-// appending to would muddle the local record with a remote one.
-func runRetrieveAudit(peerURL, outPath string) error {
-	hostKey, err := hostKeyForConfiguredTarget(peerURL)
-	if err != nil {
-		return err
-	}
-
-	target, closeTarget, err := dialReplicateTarget(peerURL, hostKey)
-	if err != nil {
-		return err
-	}
-	defer closeTarget()
-
-	data, err := replicate.NewRetriever(target).PullAudit()
-	if err != nil {
-		return err
-	}
-	if len(data) == 0 {
-		return fmt.Errorf("retrieve: %s holds no replicated audit log", peerURL)
-	}
-
-	if outPath == "-" {
-		_, err := os.Stdout.Write(data)
-		return err
-	}
-	if err := os.WriteFile(outPath, data, 0o600); err != nil {
-		return fmt.Errorf("retrieve: write %s: %w", outPath, err)
-	}
-	fmt.Printf("wrote %d bytes of replicated audit log from %s to %s\n", len(data), peerURL, outPath)
-	return nil
-}
-
-// hostKeyForConfiguredTarget looks up peerURL in buildReplicateTargets and
+// hostKeyForConfiguredTarget looks up peerURL in the configured peers and
 // returns its pinned host key (empty for a file:// peer, which needs
 // none). Recovery only makes sense against a peer this box was already
 // configured to trust — an arbitrary, unpinned URL would reintroduce the
 // exact TOFU risk pinning was meant to avoid.
 func hostKeyForConfiguredTarget(peerURL string) (string, error) {
-	for _, t := range parseReplicateTargets(buildReplicateTargets) {
+	for _, t := range configuredPeers() {
 		if t.url == peerURL {
 			return t.hostKey, nil
 		}
 	}
-	return "", fmt.Errorf("retrieve: %q is not one of this build's configured replicate targets", peerURL)
+	return "", fmt.Errorf("retrieve: %q is not a configured peer (see 'warden pair')", peerURL)
 }

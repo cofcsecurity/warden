@@ -1,0 +1,20 @@
+name: E2E
+
+# Container end-to-end tests (systemd boxes plus an ssh-only laptop). They
+# take about ten minutes, so they run on demand rather than on every push.
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: e2e
+        run: ./test/e2e/run.sh

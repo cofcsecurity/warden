@@ -1,0 +1,8 @@
+# A defended box: systemd as PID 1, sshd, sudo, cron, iptables.
+FROM ubuntu:24.04
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      systemd systemd-sysv openssh-server sudo cron iptables passwd procps iproute2 ca-certificates curl tar \
+ && apt-get clean && rm -rf /var/lib/apt/lists/* \
+ && systemctl enable ssh cron
+CMD ["/sbin/init"]

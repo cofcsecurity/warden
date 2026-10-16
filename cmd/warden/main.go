@@ -1,162 +1,171 @@
-// Warden provides resilient, audited persistence and automatic
-// backup/restore for a host under active attack in a CCDC-style
-// competition. See docs/DESIGN.md for the full design.
+// Warden keeps a defended host alive and recoverable: it holds the team's
+// access open, puts watched files back, and keeps backups on peer boxes.
+// See docs/DESIGN.md.
 package main
 
 import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"warden/internal/fsutil"
+	"time"
 
 	"github.com/spf13/cobra"
-)
 
-// Build-time configuration, set via -ldflags -X main.<field>=<value>.
-// These stay empty in a dev build; a real deploy build supplies all of
-// them.
-var (
-	buildTeamPubKey string
-	buildTeamFromIP string
-	buildTOTPSecret string
-
-	// buildReplicateTargets encodes one or more replication peers, e.g. for
-	// a mesh across several defended boxes rather than a single backup
-	// destination — see docs/DEPLOYMENT.md's "Replication topology"
-	// section. Format: "<url>||<hostkey>;;<url>||<hostkey>...", where
-	// <hostkey> is empty for a file:// target. Parsed by
-	// parseReplicateTargets in cmd/warden/replicate.go.
-	buildReplicateTargets string
-
-	// buildReplicateKey is a base64-encoded PEM private key, generated only
-	// for replication (see docs/DESIGN.md's replicate section) — never a
-	// personal or team login key. One key authenticates to every
-	// configured ssh:// target; they're all team-controlled boxes.
-	buildReplicateKey string
-
-	// buildAutobanEnabled gates watch's auto-ban reaction (see react.go)
-	// behind an explicit opt-in, the same way REPLICATE_TARGETS gates
-	// replication — off (empty) unless a build deliberately sets it,
-	// since firewalling an IP is a more assertive defensive posture than
-	// the rest of Warden. Any non-empty value turns it on; attribution
-	// still always runs and always logs/flags regardless of this flag —
-	// only the actual ban is gated.
-	buildAutobanEnabled string
-
-	// buildAutolockEnabled gates scan.go's account-lock reaction, the
-	// same way buildAutobanEnabled gates the IP-ban one — separately,
-	// since locking a local account is a materially different risk (it
-	// can hit a legitimate teammate's own competition-issued account on
-	// a false positive, where IP-autoban structurally can't hit the
-	// team's own IP). Off (empty) unless a build deliberately sets it.
-	buildAutolockEnabled string
-
-	// buildSafeAccounts is a comma-separated list of local account names
-	// scan.go's auto-lock and the manual lock-account command both
-	// refuse to touch, on top of the always-hardcoded root/opmenu
-	// exclusion — the team's own operating account(s) on this box, and
-	// the scoring engine's account if it uses one. There's no way to
-	// infer either automatically (unlike TEAM_FROM_IP for IP-autoban):
-	// this extends the same manual, team-configured safety
-	// responsibility docs/DEPLOYMENT.md step 0 already asks for around
-	// configTierPaths/ConfirmFirst, to the account-lock surface.
-	buildSafeAccounts string
+	"warden/internal/fsutil"
 )
 
 func main() {
-	var logLevel = new(slog.LevelVar)
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
-	slog.SetDefault(logger)
-
-	var verbose bool
-
-	root := &cobra.Command{
-		Use:   "warden",
-		Short: "Warden provides resilient persistence and backup/restore for a defended host",
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if verbose {
-				logLevel.Set(slog.LevelDebug)
-			}
-			return prepareCommandProfile(cmd.Name(), hostProfilePath)
-		},
-	}
-	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")
-
-	root.AddCommand(manifestKeygenCmd())
-	root.AddCommand(profileCmd())
-	root.AddCommand(receiverCmd())
-	root.AddCommand(verifyBackupsCmd())
-	root.AddCommand(snapshotCmd())
-	root.AddCommand(replicateCmd())
-	root.AddCommand(retrieveCmd())
-	root.AddCommand(watchCmd())
-	root.AddCommand(restoreCmd())
-	root.AddCommand(sentinelCheckCmd())
-	root.AddCommand(opmenuCmd())
-	root.AddCommand(debugConfigCmd())
-	root.AddCommand(armCmd())
-	root.AddCommand(disarmCmd())
-	root.AddCommand(detectCmd())
-	root.AddCommand(banCmd())
-	root.AddCommand(unbanCmd())
-	root.AddCommand(acceptCmd())
-	root.AddCommand(accountEditCmd())
-	root.AddCommand(alertsCmd())
-	root.AddCommand(rotateSecretCmd())
-	root.AddCommand(uninstallCmd())
-	root.AddCommand(scanCmd())
-	root.AddCommand(fleetCmd())
-	root.AddCommand(statusCmd())
-	root.AddCommand(lockAccountCmd())
-	root.AddCommand(unlockAccountCmd())
-
-	// Serialize mutations across timer, manual, and response commands.
-	for _, cmd := range root.Commands() {
-		switch cmd.Name() {
-		case "snapshot", "accept", "arm", "disarm", "retrieve", "restore", "watch", "replicate", "scan", "sentinel-check", "ban", "unban", "lock-account", "unlock-account", "verify-backups":
-			run := cmd.RunE
-			cmd.RunE = func(c *cobra.Command, args []string) error {
-				if c.Name() == "verify-backups" {
-					repair, _ := c.Flags().GetBool("repair")
-					record, _ := c.Flags().GetBool("record")
-					if !repair && !record {
-						return run(c, args)
-					}
-				}
-				if c.Name() == "restore" || c.Name() == "retrieve" {
-					apply, _ := c.Flags().GetBool("apply")
-					if !apply {
-						return run(c, args)
-					}
-				}
-				p, err := loadPaths()
-				if err != nil {
-					return err
-				}
-				if err := os.MkdirAll(p.storeRoot, 0700); err != nil {
-					return err
-				}
-				release, err := fsutil.Lock(filepath.Join(p.storeRoot, "operation.lock"))
-				if err != nil {
-					return err
-				}
-				defer release()
-				return run(c, args)
-			}
-		}
-	}
-	if err := root.Execute(); err != nil {
+	if err := newRootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-// Emergency access and disarming must work even when the protection profile
-// is broken. Opmenu loads it only inside the authenticated restore callback.
-func prepareCommandProfile(command, path string) error {
-	switch command {
-	case "receive", "opmenu", "disarm", "status":
-		return nil
-	default:
-		return loadHostProfile(path)
+// lockTimeout is how long a command waits for another to finish.
+const lockTimeout = 2 * time.Minute
+
+// lockedCommands mutate shared state and take the operation lock, so a
+// timer and a manual command never interleave.
+var lockedCommands = map[string]bool{
+	"snapshot": true, "accept": true, "arm": true, "disarm": true, "retrieve": true,
+	"restore": true, "watch": true, "replicate": true, "scan": true, "sentinel-check": true,
+	"ban": true, "unban": true, "lock-account": true, "unlock-account": true, "verify-backups": true,
+}
+
+func newRootCmd() *cobra.Command {
+	var logLevel = new(slog.LevelVar)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
+
+	var verbose, quiet bool
+
+	root := &cobra.Command{
+		Use:           "warden",
+		Short:         "Keep a defended host's access, files and backups alive",
+		SilenceUsage:  true,
+		SilenceErrors: false,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if verbose {
+				logLevel.Set(slog.LevelDebug)
+			}
+			if quiet {
+				if devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
+					os.Stdout = devnull
+					cmd.SetOut(devnull)
+				}
+			}
+			return prepareCommand(cmd.Name())
+		},
 	}
+	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose logging")
+	root.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "print nothing but errors")
+
+	for _, c := range []*cobra.Command{
+		installCmd(),
+		uninstallCmd(),
+		configCmd(),
+		rekeyCmd(),
+		pairCmd(),
+		profileCmd(),
+		receiverCmd(),
+		verifyBackupsCmd(),
+		snapshotCmd(),
+		replicateCmd(),
+		retrieveCmd(),
+		watchCmd(),
+		restoreCmd(),
+		sentinelCheckCmd(),
+		opmenuCmd(),
+		armCmd(),
+		disarmCmd(),
+		detectCmd(),
+		banCmd(),
+		unbanCmd(),
+		acceptCmd(),
+		accountEditCmd(),
+		alertsCmd(),
+		scanCmd(),
+		statusCmd(),
+		lockAccountCmd(),
+		unlockAccountCmd(),
+	} {
+		root.AddCommand(c)
+	}
+
+	for _, cmd := range root.Commands() {
+		if !lockedCommands[cmd.Name()] {
+			continue
+		}
+		run := cmd.RunE
+		cmd.RunE = func(c *cobra.Command, args []string) error {
+			if !needsLock(c) {
+				return run(c, args)
+			}
+			p, err := loadPaths()
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(p.storeRoot, 0700); err != nil {
+				return err
+			}
+			release, err := fsutil.LockWait(filepath.Join(p.storeRoot, "operation.lock"), lockTimeout)
+			if err != nil {
+				return err
+			}
+			defer release()
+			return run(c, args)
+		}
+	}
+	return root
+}
+
+// needsLock skips the lock for the read-only forms of commands that are
+// otherwise mutating.
+func needsLock(c *cobra.Command) bool {
+	switch c.Name() {
+	case "verify-backups":
+		repair, _ := c.Flags().GetBool("repair")
+		record, _ := c.Flags().GetBool("record")
+		return repair || record
+	case "restore", "retrieve":
+		apply, _ := c.Flags().GetBool("apply")
+		return apply
+	}
+	return true
+}
+
+// prepareCommand loads the runtime config and the host profile. Access and
+// disarming must keep working when the profile is broken, so those
+// commands skip it; opmenu loads it only inside the command it dispatches.
+func prepareCommand(command string) error {
+	p, err := loadPaths()
+	if err != nil {
+		return err
+	}
+	if err := loadRuntimeConfig(p); err != nil && !profileOptional(command) {
+		return err
+	}
+	if profileOptional(command) {
+		_ = loadHostProfile(profilePathFor(p))
+		return nil
+	}
+	return loadHostProfile(profilePathFor(p))
+}
+
+// profilePathFor is a var so tests can point it at a fixture.
+var profilePathFor = func(p paths) string { return p.profilePath }
+
+func profileOptional(command string) bool {
+	switch command {
+	case "receive", "opmenu", "disarm", "status", "sentinel-check", "install", "uninstall", "config", "rekey", "pair", "help":
+		return true
+	}
+	return false
+}
+
+// prepareCommandProfile is kept for tests that exercise profile handling
+// directly against a given path.
+func prepareCommandProfile(command, path string) error {
+	if profileOptional(command) {
+		return nil
+	}
+	return loadHostProfile(path)
 }

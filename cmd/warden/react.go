@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -56,13 +55,18 @@ func reactToGuardedChange(p paths, change manifest.Change, log *audit.Logger, no
 	}
 
 	autobanned := false
-	if suspect != "" && buildAutobanEnabled != "" {
-		store := autoban.NewStore(p.bannedIPsPath)
-		reason := fmt.Sprintf("touched guarded path %s as %q", change.Path, account)
-		if err := autoban.Add(store, autoban.IPTables{}, suspect, reason, autobanDuration, now); err != nil {
-			return fmt.Errorf("react: ban %s: %w", suspect, err)
+	if suspect != "" {
+		switch cfg.Ban {
+		case modeAct:
+			store := autoban.NewStore(p.bannedIPsPath)
+			reason := fmt.Sprintf("touched guarded path %s as %q", change.Path, account)
+			if err := autoban.Add(store, autoban.IPTables{}, suspect, reason, autobanDuration, now); err != nil {
+				return fmt.Errorf("react: ban %s: %w", suspect, err)
+			}
+			autobanned = true
+		case modeFlag:
+			fields["would_ban"] = suspect
 		}
-		autobanned = true
 	}
 	fields["autobanned"] = autobanned
 
@@ -98,7 +102,7 @@ func attributeChange(eventTime, now time.Time) (suspect, account, evidence strin
 	// suspects to root sessions. The opmenu account is not root, and its
 	// source IP must still be excluded if another root session shares it.
 	teamIPs := map[string]bool{}
-	if key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(buildTeamPubKey)); err == nil {
+	if key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(cfg.TeamKey)); err == nil {
 		fingerprint := ssh.FingerprintSHA256(key)
 		for _, s := range sessions {
 			if s.KeyFingerprint == fingerprint {
@@ -135,19 +139,7 @@ func attributeChange(eventTime, now time.Time) (suspect, account, evidence strin
 	}
 }
 
-// ipMatchesTeam reports whether ip is (or falls inside, if
-// buildTeamFromIP is a CIDR) the team's own configured source address.
+// ipMatchesTeam reports whether ip is inside the configured team network.
 func ipMatchesTeam(ip string) bool {
-	if buildTeamFromIP == "" {
-		return false
-	}
-	if ip == buildTeamFromIP {
-		return true
-	}
-	if _, cidr, err := net.ParseCIDR(buildTeamFromIP); err == nil {
-		if parsed := net.ParseIP(ip); parsed != nil {
-			return cidr.Contains(parsed)
-		}
-	}
-	return false
+	return teamNetworkContains(ip)
 }

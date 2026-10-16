@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -16,73 +18,70 @@ import (
 func sentinelCheckCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "sentinel-check",
-		Short: "Verify every registration and timer, respawn what's missing, and check on peers",
+		Short: "Check every link of the access chain and every trigger, and repair what is broken",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSentinelCheck()
+			p, err := loadPaths()
+			if err != nil {
+				return err
+			}
+			return runSentinelCheck(p, os.Stdout)
 		},
 	}
 }
 
-func runSentinelCheck() error {
-	p, err := loadPaths()
-	if err != nil {
-		return err
-	}
+// repairAccess runs one sentinel pass after a config change, so new keys,
+// peers and units take effect at once rather than at the next tick.
+// A var so tests of the commands that call it never touch the real box.
+// It prints nothing: callers such as `pair accept` print output that is fed
+// to another command.
+var repairAccess = func(p paths) error {
+	return runSentinelCheck(p, io.Discard)
+}
 
+func runSentinelCheck(p paths, w io.Writer) error {
 	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
 
-	regs, err := buildRegistrations()
+	regs, err := buildRegistrations(p)
 	if err != nil {
 		return err
 	}
 
-	s := sentinel.New(regs, log)
-	res, err := s.Run()
-	if err != nil {
-		return err
-	}
-
+	res, runErr := sentinel.New(regs, log).Run()
 	if err := log.Log("sentinel", "pass", map[string]any{
 		"ok":        len(res.OK),
 		"recreated": len(res.Recreated),
+		"flagged":   len(res.Flagged),
+		"failed":    runErr != nil,
 	}); err != nil {
 		return err
 	}
-
 	if len(res.Recreated) > 0 {
-		fmt.Printf("recreated: %v\n", res.Recreated)
+		fmt.Fprintf(w, "repaired: %v\n", res.Recreated)
+	}
+	if len(res.Flagged) > 0 {
+		fmt.Fprintf(w, "needs a human: %v (see 'warden alerts')\n", res.Flagged)
 	}
 
-	// Reconcile errors below are collected rather than returned straight
-	// away: each pass keeps going past a single failure internally (see
-	// autoban.Reconcile), so ending sentinel-check on the first error
-	// would undo that by skipping the other reconcile entirely.
-	var reconcileErrs []error
+	errs := []error{runErr}
 
-	// Ban reconciliation piggybacks on sentinel-check's existing
-	// "reassert desired state every pass" schedule, rather than adding a
-	// third periodic invocation: reapply any active ban whose firewall
-	// rule might have been flushed (a reboot, or red team running
-	// iptables -F), and lift anything past its expiry.
+	// Bans are live firewall rules; reassert them every pass in case they
+	// were flushed, and lift any that expired.
 	active, expired, err := autoban.Reconcile(autoban.NewStore(p.bannedIPsPath), autoban.IPTables{}, time.Now())
 	if err != nil {
-		reconcileErrs = append(reconcileErrs, fmt.Errorf("sentinel-check: reconcile bans: %w", err))
+		errs = append(errs, fmt.Errorf("sentinel-check: reconcile bans: %w", err))
 	}
 	if len(expired) > 0 {
-		if err := log.Log("react", "ban-expired", map[string]any{"ips": expired}); err != nil {
-			return err
-		}
-		fmt.Printf("ban(s) expired: %v\n", expired)
+		_ = log.Log("react", "ban-expired", map[string]any{"ips": expired})
+		fmt.Fprintf(w, "ban(s) expired: %v\n", expired)
 	}
 	if len(active) > 0 {
-		fmt.Printf("active ban(s) reasserted: %v\n", active)
+		fmt.Fprintf(w, "active ban(s) reasserted: %v\n", active)
 	}
-
-	// Reassert active account restrictions and lift successfully expired locks.
 
 	lockedAccounts, expiredLocks, err := accountlock.Reconcile(
 		accountlock.NewStore(p.accountLocksPath),
@@ -90,25 +89,14 @@ func runSentinelCheck() error {
 		time.Now(),
 	)
 	if err != nil {
-		reconcileErrs = append(reconcileErrs, fmt.Errorf("sentinel-check: reconcile account locks: %w", err))
+		errs = append(errs, fmt.Errorf("sentinel-check: reconcile account locks: %w", err))
 	}
 	if len(expiredLocks) > 0 {
-		if err := log.Log("react", "lock-expired", map[string]any{"users": expiredLocks}); err != nil {
-			return err
-		}
-		fmt.Printf("account lock(s) expired: %v\n", expiredLocks)
+		_ = log.Log("react", "lock-expired", map[string]any{"users": expiredLocks})
+		fmt.Fprintf(w, "account lock(s) expired: %v\n", expiredLocks)
 	}
 	if len(lockedAccounts) > 0 {
-		fmt.Printf("active account lock(s): %v\n", lockedAccounts)
+		fmt.Fprintf(w, "active account lock(s): %v\n", lockedAccounts)
 	}
-
-	// The dead-man's switch for *other* boxes, on the same schedule and
-	// for the same reason as the reconciles above: this box is the only
-	// place a peer's silence can be noticed, since a box that has gone
-	// dark by definition isn't running anything that could report it.
-	if err := checkPeerHeartbeats(p, log, time.Now()); err != nil {
-		reconcileErrs = append(reconcileErrs, fmt.Errorf("sentinel-check: check peer heartbeats: %w", err))
-	}
-
-	return errors.Join(reconcileErrs...)
+	return errors.Join(errs...)
 }

@@ -1,14 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"warden/internal/audit"
+	"warden/internal/fsutil"
 	"warden/internal/manifest"
 	"warden/internal/watch"
 )
@@ -101,11 +105,13 @@ func runWatch() error {
 	if err != nil {
 		return err
 	}
-	w := watch.New(p.configManifestPath, watchedPaths, classifyPath, armed, st, log, q.add)
 	m, err := manifest.New(p.configManifestPath)
 	if err != nil {
 		return err
 	}
+	w := watch.New(p.configManifestPath, watchPassPaths(m), classifyPath, armed, st, log, q.add)
+	w.Quarantinable = quarantinable
+	w.Quarantine = func(path string) error { return quarantineFile(p, path, log) }
 	w.Baseline, err = accountBaseline(p, m, st)
 	if err != nil {
 		return err
@@ -119,7 +125,7 @@ func runWatch() error {
 		res.ReloadErrors = append(res.ReloadErrors, q.flush()...)
 	}
 	now := time.Now()
-	for _, change := range res.FlaggedChanges {
+	for _, change := range newlyFlagged(p, res.FlaggedChanges) {
 		if err := reactToGuardedChange(p, change, log, now); err != nil {
 			// A failed reaction (e.g. iptables not present) must not stop
 			// the rest of the check — the flag itself already happened
@@ -140,15 +146,113 @@ func runWatch() error {
 		"auto_restored": len(res.AutoRestored),
 		"suppressed":    len(res.Suppressed),
 		"flagged":       len(res.Flagged),
+		"quarantined":   len(res.Quarantined),
 		"reload_errors": len(res.ReloadErrors),
 		"check_failed":  checkErr != nil,
 	}); err != nil {
 		return err
 	}
 
-	fmt.Printf("armed: %t, auto-restored: %d, suppressed: %d, flagged: %d\n", armed, len(res.AutoRestored), len(res.Suppressed), len(res.Flagged))
+	fmt.Printf("armed: %t, auto-restored: %d, quarantined: %d, suppressed: %d, flagged: %d\n", armed, len(res.AutoRestored)-len(res.Quarantined), len(res.Quarantined), len(res.Suppressed), len(res.Flagged))
 	if !armed && len(res.Suppressed) > 0 {
 		fmt.Println("note: disarmed — the paths above were left as-is. run 'warden arm' once hardening is done.")
 	}
 	return errors.Join(append([]error{checkErr}, res.ReloadErrors...)...)
+}
+
+// watchPassPaths is what one watch pass looks at: every file the profile
+// matches right now, plus every baselined file the profile still covers,
+// so a deleted file shows up as a removal rather than vanishing.
+func watchPassPaths(baseline *manifest.Manifest) []string {
+	paths := watchedFiles()
+	seen := map[string]bool{}
+	for _, p := range paths {
+		seen[p] = true
+	}
+	own := ownFiles()
+	for _, r := range baseline.Records {
+		if !seen[r.Path] && !own(r.Path) && coveredBy(configTierPaths, r.Path) {
+			seen[r.Path] = true
+			paths = append(paths, r.Path)
+		}
+	}
+	return paths
+}
+
+// quarantinable reports whether a new file may be removed: it must sit
+// under an auto-restore pattern that names a directory's contents, never
+// an exact path (a newly installed service's config is not a backdoor).
+func quarantinable(path string) bool {
+	if classifyPath(path) != manifest.SafeAutoRestore {
+		return false
+	}
+	for _, pattern := range configTierPaths {
+		if isPattern(pattern) && matchesPattern(pattern, path) && !confirmFirstPaths[pattern] {
+			return true
+		}
+	}
+	return false
+}
+
+// quarantineFile copies path into the state directory's quarantine and
+// removes it. The copy keeps the evidence and makes the removal reversible.
+func quarantineFile(p paths, path string, log *audit.Logger) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(p.quarantineDir, 0o700); err != nil {
+		return err
+	}
+	name := time.Now().UTC().Format("20060102T150405Z") + strings.ReplaceAll(path, "/", "_")
+	dest := filepath.Join(p.quarantineDir, name)
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dest+".symlink", []byte(target+"\n"), 0o600); err != nil {
+			return err
+		}
+	} else {
+		data, err := fsutil.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dest, data, 0o600); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	_ = log.Log("watch", "quarantine-copy", map[string]any{"path": path, "copy": dest})
+	return nil
+}
+
+// newlyFlagged drops flagged changes already reacted to in an earlier pass.
+// A flag-only file stays drifted until a human accepts it, and without
+// this every pass would raise the same alert again.
+func newlyFlagged(p paths, changes []manifest.Change) []manifest.Change {
+	statePath := filepath.Join(p.dataDir, "reacted.json")
+	seen := map[string]string{}
+	if data, err := os.ReadFile(statePath); err == nil {
+		_ = json.Unmarshal(data, &seen)
+	}
+	var out []manifest.Change
+	next := map[string]string{}
+	for _, c := range changes {
+		key := "removed"
+		if c.New != nil {
+			key = c.New.Hash
+		}
+		next[c.Path] = key
+		if seen[c.Path] != key {
+			out = append(out, c)
+		}
+	}
+	if data, err := json.Marshal(next); err == nil {
+		_ = fsutil.WriteFile(statePath, data, 0o600)
+	}
+	return out
 }

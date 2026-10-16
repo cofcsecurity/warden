@@ -2,12 +2,12 @@ package replicate
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"sort"
@@ -36,20 +36,45 @@ type Response struct {
 	Error  string `json:",omitempty"`
 }
 
-// Receiver has no delete, rename, shell, or retention operation. The root and
-// verification key are selected by the administrator's forced SSH command.
+// Receiver has no delete, rename, shell, or retention operation: a source
+// that is later compromised can add copies but never erase the good ones it
+// sent earlier. The root is selected by the forced SSH command the peer
+// installed for that source (see `warden pair accept`). Quota caps the
+// bytes a source may store; once full, puts are refused rather than older
+// copies dropped, so flooding the peer cannot evict a good backup.
 type Receiver struct {
-	Root      *os.Root
-	PublicKey ed25519.PublicKey
-	Source    string
+	Root  *os.Root
+	Quota int64
 }
 
-func NewReceiver(root string, key ed25519.PublicKey, source string) (*Receiver, error) {
+func NewReceiver(root string, quota int64) (*Receiver, error) {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, err
+	}
 	r, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, err
 	}
-	return &Receiver{Root: r, PublicKey: key, Source: source}, nil
+	return &Receiver{Root: r, Quota: quota}, nil
+}
+
+// usage totals the regular files under the root.
+func (r *Receiver) usage() (int64, error) {
+	var total int64
+	err := fs.WalkDir(r.Root.FS(), ".", func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
 }
 func (r *Receiver) Close() error { return r.Root.Close() }
 func (r *Receiver) Serve(in io.Reader, out io.Writer) error {
@@ -89,14 +114,6 @@ func location(q Request) (dir, file string, err error) {
 				return "", "", fmt.Errorf("invalid generation")
 			}
 			file = fmt.Sprintf("manifest-%d.json", q.Generation)
-		}
-	case "audit", "heartbeat":
-		dir = q.Kind
-		if q.Operation != "list" {
-			if !validName(q.ID) {
-				return "", "", fmt.Errorf("invalid name")
-			}
-			file = q.ID
 		}
 	default:
 		return "", "", fmt.Errorf("invalid kind")
@@ -182,10 +199,14 @@ func (r *Receiver) handle(q Request, res *Response) error {
 		if m.Generation != q.Generation {
 			return fmt.Errorf("generation mismatch")
 		}
-		if len(r.PublicKey) > 0 {
-			if err := m.Verify(r.PublicKey, r.Source, q.Tier); err != nil {
-				return err
-			}
+	}
+	if r.Quota > 0 {
+		used, err := r.usage()
+		if err != nil {
+			return err
+		}
+		if used+int64(len(q.Data)) > r.Quota {
+			return fmt.Errorf("quota of %d bytes reached; existing copies are kept", r.Quota)
 		}
 	}
 	if err := r.Root.MkdirAll(dir, 0700); err != nil {
@@ -291,24 +312,4 @@ func (t *ReceiverTarget) ManifestGenerations(ns string) ([]int, error) {
 	}
 	sort.Ints(out)
 	return out, e
-}
-func (t *ReceiverTarget) HasAudit(n string) (bool, error) {
-	r, e := t.request(Request{Operation: "has", Kind: "audit", ID: n})
-	return r.Exists, e
-}
-func (t *ReceiverTarget) GetAudit(n string) ([]byte, error) {
-	r, e := t.request(Request{Operation: "get", Kind: "audit", ID: n})
-	return r.Data, e
-}
-func (t *ReceiverTarget) PutAudit(n string, b []byte) error {
-	_, e := t.request(Request{Operation: "put", Kind: "audit", ID: n, Data: b})
-	return e
-}
-func (t *ReceiverTarget) AuditSegments() ([]string, error) {
-	r, e := t.request(Request{Operation: "list", Kind: "audit"})
-	return r.Names, e
-}
-func (t *ReceiverTarget) PutHeartbeat(n string, b []byte) error {
-	_, e := t.request(Request{Operation: "put", Kind: "heartbeat", ID: n, Data: b})
-	return e
 }

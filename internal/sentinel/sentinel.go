@@ -1,67 +1,102 @@
-// Package sentinel checks that persistence itself is still alive: the SSH
-// key entry, and each of the two independent triggers (systemd timer, cron
-// entry) that re-invoke it. It reads registration files directly rather
-// than shelling out to systemctl/crontab, since either could be altered.
+// Package sentinel keeps Warden's own access and triggers alive. Each
+// Registration is one invariant with a check and, usually, a repair. A
+// pass checks every invariant and repairs what is broken; one failure
+// never stops the rest, since red only has to win one link but we have
+// to hold all of them.
 package sentinel
 
 import (
+	"errors"
 	"fmt"
 
 	"warden/internal/audit"
 )
 
-// Registration is one thing sentinel checks for and can re-create.
+// Registration is one thing sentinel checks and can usually re-create.
 type Registration struct {
-	Name     string
-	Check    func() (present bool, err error)
+	Name  string
+	Check func() (ok bool, err error)
+	// Recreate repairs the invariant. Nil means flag only: the problem
+	// is reported but not something Warden may change.
 	Recreate func() error
+	// Problems, when set, explains a failed check for the log.
+	Problems func() []string
 }
 
-// Sentinel runs one check-and-respawn pass over a set of registrations.
+// Sentinel runs one check-and-repair pass over a set of registrations.
 type Sentinel struct {
 	registrations []Registration
 	log           *audit.Logger
 }
 
-// New builds a Sentinel over the given registrations (typically: the
-// authorized_keys entry, the systemd timer unit, and the cron entry).
 func New(registrations []Registration, log *audit.Logger) *Sentinel {
 	return &Sentinel{registrations: registrations, log: log}
 }
 
-// Result reports what one Run pass found and fixed.
+// Result reports what one Run pass found and did.
 type Result struct {
-	Recreated []string
 	OK        []string
+	Recreated []string
+	Flagged   []string
 }
 
-// Run checks every registration and re-creates whichever is missing.
+// Run checks every registration, repairing what it can. Errors from
+// individual registrations are joined and returned after every
+// registration has had its turn.
 func (s *Sentinel) Run() (*Result, error) {
 	res := &Result{}
+	var errs []error
 
 	for _, reg := range s.registrations {
-		present, err := reg.Check()
+		ok, err := reg.Check()
 		if err != nil {
-			return res, fmt.Errorf("sentinel: check %s: %w", reg.Name, err)
+			errs = append(errs, fmt.Errorf("sentinel: check %s: %w", reg.Name, err))
+			s.logAction("check-failed", reg, err)
+			continue
 		}
-		if present {
+		if ok {
 			res.OK = append(res.OK, reg.Name)
 			continue
 		}
-
+		if reg.Recreate == nil {
+			res.Flagged = append(res.Flagged, reg.Name)
+			s.logAction("flagged", reg, nil)
+			continue
+		}
+		problems := describe(reg)
 		if err := reg.Recreate(); err != nil {
-			return res, fmt.Errorf("sentinel: recreate %s: %w", reg.Name, err)
+			errs = append(errs, fmt.Errorf("sentinel: repair %s: %w", reg.Name, err))
+			s.logFields("repair-failed", reg.Name, problems, err)
+			continue
 		}
 		res.Recreated = append(res.Recreated, reg.Name)
-		s.logAction(reg.Name)
+		s.logFields("recreated", reg.Name, problems, nil)
 	}
 
-	return res, nil
+	return res, errors.Join(errs...)
 }
 
-func (s *Sentinel) logAction(name string) {
+func describe(reg Registration) []string {
+	if reg.Problems == nil {
+		return nil
+	}
+	return reg.Problems()
+}
+
+func (s *Sentinel) logAction(action string, reg Registration, err error) {
+	s.logFields(action, reg.Name, describe(reg), err)
+}
+
+func (s *Sentinel) logFields(action, name string, problems []string, err error) {
 	if s.log == nil {
 		return
 	}
-	_ = s.log.Log("sentinel", "recreated", map[string]any{"registration": name})
+	fields := map[string]any{"registration": name}
+	if len(problems) > 0 {
+		fields["problems"] = problems
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+	_ = s.log.Log("sentinel", action, fields)
 }

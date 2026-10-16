@@ -14,14 +14,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spf13/cobra"
-	"golang.org/x/term"
 	"warden/internal/accountedit"
 	"warden/internal/accountlock"
 	"warden/internal/audit"
 	"warden/internal/fsutil"
 	"warden/internal/manifest"
 	"warden/internal/store"
+
+	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func accountEditCmd() *cobra.Command {
@@ -29,7 +30,7 @@ func accountEditCmd() *cobra.Command {
 		Use:   "account-edit passwd USER | gpasswd [-a/-d USER | -M USERS] GROUP",
 		Short: "Run a deliberate local password or group change and approve its exact result",
 		Long: `Runs passwd USER, gpasswd GROUP, gpasswd -a/-d USER GROUP, or
-gpasswd -M USER1,USER2 GROUP after a hidden Warden second-factor prompt.
+gpasswd -M USER1,USER2 GROUP, then approves exactly that change.
 -M replaces the complete supplementary member list; -M "" clears it. Requires root and an interactive terminal.
 All four account files must already match the effective config baseline.
 Only the requested fields are accepted. No passwords are collected by Warden.
@@ -51,8 +52,8 @@ timer invocations retry on their next scheduled pass. The utility has a five-min
 			if err != nil {
 				return err
 			}
-			if req.Tool == "passwd" && req.Target == opUser {
-				return fmt.Errorf("use Warden's access configuration for the opmenu account")
+			if req.Tool == "passwd" && (req.Target == opUser || req.Target == cfg.BreakGlassUser) {
+				return fmt.Errorf("%s is one of Warden's access accounts; sentinel manages it", req.Target)
 			}
 			tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 			if err != nil {
@@ -62,9 +63,6 @@ timer invocations retry on their next scheduled pass. The utility has a five-min
 			if !term.IsTerminal(int(tty.Fd())) {
 				return fmt.Errorf("account-edit requires a terminal")
 			}
-			if err := authorizeAccountEdit(tty); err != nil {
-				return err
-			}
 			p, err := loadPaths()
 			if err != nil {
 				return err
@@ -72,7 +70,7 @@ timer invocations retry on their next scheduled pass. The utility has a five-min
 			if err := os.MkdirAll(p.storeRoot, 0700); err != nil {
 				return err
 			}
-			release, err := fsutil.Lock(filepath.Join(p.storeRoot, "operation.lock"))
+			release, err := fsutil.LockWait(filepath.Join(p.storeRoot, "operation.lock"), lockTimeout)
 			if err != nil {
 				return err
 			}
@@ -103,51 +101,6 @@ timer invocations retry on their next scheduled pass. The utility has a five-min
 				return child.Run()
 			})
 		},
-	}
-}
-
-func authorizeAccountEdit(tty *os.File) error {
-	fd := int(tty.Fd())
-	state, err := term.GetState(fd)
-	if err != nil {
-		return err
-	}
-	defer term.Restore(fd, state)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	fmt.Fprint(tty, "Warden second factor: ")
-	type result struct {
-		code []byte
-		err  error
-	}
-	done := make(chan result)
-	go func() {
-		code, err := term.ReadPassword(fd)
-		select {
-		case done <- result{code, err}:
-		case <-ctx.Done():
-			clear(code)
-		}
-	}()
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("authorization cancelled")
-	case r := <-done:
-		fmt.Fprintln(tty)
-		defer clear(r.code)
-		if r.err != nil {
-			return r.err
-		}
-		ok, err := verifySecondFactor(string(r.code))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("invalid or expired second factor")
-		}
-		return nil
 	}
 }
 
@@ -206,9 +159,6 @@ func performAccountEdit(p paths, dir string, req accountedit.Request, run func()
 	if m.Generation == 0 {
 		return fmt.Errorf("account-edit requires an existing config snapshot")
 	}
-	if err := verifyManifest(m, tierConfig); err != nil {
-		return err
-	}
 	st, err := store.New(p.storeRoot)
 	if err != nil {
 		return err
@@ -256,15 +206,10 @@ func performAccountEdit(p paths, dir string, req accountedit.Request, run func()
 		return err
 	}
 	next := *m
-	next.Signature = ""
 	next.Records = append([]manifest.Record(nil), m.Records...)
 	next.ApprovedGroups = maps.Clone(m.ApprovedGroups)
 	next.Generation, err = allocateGeneration(p, tierConfig, m.Generation)
 	if err != nil {
-		return err
-	}
-	// Check signing capability and archive availability before changing credentials.
-	if err := signManifest(&next, tierConfig); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(p.configManifestsDir, 0700); err != nil {
@@ -327,9 +272,6 @@ func performAccountEdit(p paths, dir string, req accountedit.Request, run func()
 		}
 	}
 	next.CreatedAt = time.Now().UTC()
-	if err := signManifest(&next, tierConfig); err != nil {
-		return err
-	}
 	// Validate again after preparing the stored generation. Later writes remain drift.
 	final, err := readAccountFiles(dir)
 	if err != nil {

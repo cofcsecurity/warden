@@ -1,6 +1,8 @@
 package manifest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -262,5 +264,48 @@ func TestGenerationAllocationAfterRollback(t *testing.T) {
 	next, err := NextGeneration(dir, 1)
 	if err != nil || next != 8 {
 		t.Fatalf("next=%d err=%v", next, err)
+	}
+}
+
+// A unit masked to /dev/null is a symlink to a device: it must be recorded
+// (so masking or unmasking is drift), never fail the whole manifest.
+func TestGenerateRecordsSymlinksToNonFiles(t *testing.T) {
+	dir := t.TempDir()
+	masked := filepath.Join(dir, "ssh.service")
+	if err := os.Symlink("/dev/null", masked); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(dir, "gone")
+	if err := os.Symlink(filepath.Join(dir, "missing"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Generate([]string{masked, dangling}, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Records) != 2 || m.Records[0].Link != "/dev/null" || !m.Records[0].Symlink {
+		t.Fatalf("unexpected records: %+v", m.Records)
+	}
+	content, err := Content(m.Records[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	if hex.EncodeToString(sum[:]) != m.Records[0].Hash {
+		t.Fatal("Content must hash to the record's hash so the store can hold it")
+	}
+
+	if err := os.Remove(masked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/lib/systemd/system/ssh.service", masked); err != nil {
+		t.Fatal(err)
+	}
+	next, err := Generate([]string{masked, dangling}, nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(Diff(m, next)) != 1 {
+		t.Fatalf("retargeting a link must be drift: %+v", Diff(m, next))
 	}
 }

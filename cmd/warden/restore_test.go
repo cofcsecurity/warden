@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +9,8 @@ import (
 	"warden/internal/manifest"
 	"warden/internal/restore"
 	"warden/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 func TestRestoreLoadsBothTiersAndGenerations(t *testing.T) {

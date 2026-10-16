@@ -56,6 +56,9 @@ func Plan(snapshot *manifest.Manifest, target string) ([]PlanEntry, error) {
 			return nil, fmt.Errorf("restore: read current state of %s: %w", r.Path, err)
 		}
 
+		if r.Link != "" {
+			return nil, fmt.Errorf("restore: %s was a symlink to %s; recreate links by hand", r.Path, r.Link)
+		}
 		entry := PlanEntry{Path: r.Path, TargetHash: r.Hash, TargetMode: r.Mode}
 		if len(current.Records) == 1 {
 			entry.CurrentHash = current.Records[0].Hash

@@ -2,11 +2,13 @@
 package fsutil
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 func OpenRegular(path string) (*os.File, error) {
@@ -95,6 +97,20 @@ func WriteFile(path string, data []byte, mode os.FileMode) error {
 	}
 	defer dir.Close()
 	return dir.Sync()
+}
+
+// LockWait is Lock, retrying until timeout. Repairs run often (every
+// minute, and on every access-file change), so a command that finds the
+// lock held waits its turn rather than failing.
+func LockWait(path string, timeout time.Duration) (func(), error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		release, err := Lock(path)
+		if err == nil || !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
+			return release, err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // Lock serializes cooperating processes. The file is never unlinked.

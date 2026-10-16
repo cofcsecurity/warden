@@ -1,9 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +8,11 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
-	"warden/internal/fsutil"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 
 	"warden/internal/audit"
-	"warden/internal/heartbeat"
 	"warden/internal/manifest"
 	"warden/internal/replicate"
 	"warden/internal/store"
@@ -31,8 +25,8 @@ type replicateTarget struct {
 	hostKey string // authorized_keys format; empty for file://
 }
 
-// parseReplicateTargets decodes buildReplicateTargets: records separated
-// by ";;", each an "<url>||<hostkey>" pair (hostkey may be empty).
+// parseReplicateTargets decodes "<url>||<hostkey>" records separated by
+// ";;" (hostkey may be empty). Tests use it to build peer lists.
 func parseReplicateTargets(raw string) []replicateTarget {
 	var targets []replicateTarget
 	for _, rec := range strings.Split(raw, ";;") {
@@ -53,23 +47,20 @@ func parseReplicateTargets(raw string) []replicateTarget {
 func replicateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "replicate",
-		Short: "Push new snapshot objects, audit-log entries, and this box's heartbeat to every peer",
+		Short: "Push new snapshot objects and manifests to every paired peer",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReplicate()
 		},
 	}
 }
 
-// runReplicate pushes both tiers, plus the audit log, to every configured
-// peer — not just config: "always have a path to recovering a box" means
-// the off-host copy has to include the same backups a local rm -rf would
-// otherwise take out entirely. One peer being unreachable doesn't stop
-// the others from getting pushed to — errors are collected and reported
-// together.
+// runReplicate pushes both tiers to every configured peer. One unreachable
+// peer does not stop the others; errors are collected and reported together.
 func runReplicate() error {
-	targets := parseReplicateTargets(buildReplicateTargets)
+	targets := configuredPeers()
 	if len(targets) == 0 {
-		return fmt.Errorf("replicate: no targets configured (build with -ldflags -X main.buildReplicateTargets=...)")
+		return fmt.Errorf("replicate: no peers configured (see 'warden pair')")
 	}
 
 	p, err := loadPaths()
@@ -89,69 +80,35 @@ func runReplicate() error {
 	defer log.Close()
 	recovery.log = log
 
-	state, err := loadAuditPushState(p.auditPushStatePath)
-	if err != nil {
-		return err
-	}
-
-	// Built once, pushed to every peer: one beat describing this box at
-	// this moment, not a slightly different one per peer.
-	beat, err := collectHeartbeat(p, time.Now())
-	if err != nil {
-		return err
-	}
-	beatData, err := heartbeat.Encode(beat)
-	if err != nil {
-		return err
-	}
-	beatName := replicate.HeartbeatName(beat.Host, beat.WrittenAt)
-
 	var errs []string
-	auditBytes, peersOK := 0, 0
+	peersOK := 0
 	for _, t := range targets {
-		pushed, err := pushToTarget(p, st, t, state, beatName, beatData)
-		auditBytes += pushed
-		if err != nil {
+		if err := pushToTarget(p, st, t); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", t.url, err))
 			continue
 		}
 		peersOK++
 	}
 
-	// Saved even when a peer failed: whatever did get pushed is pushed,
-	// and re-sending it would only create a duplicate segment.
-	if err := saveAuditPushState(p.auditPushStatePath, state); err != nil {
-		errs = append(errs, err.Error())
-	}
-
-	// A "pass" entry every run, success or failure, so `warden status`
-	// can tell "replicated fine 3 minutes ago" from "this timer has been
-	// dead since yesterday" — the same reason watch and sentinel-check
-	// log one unconditionally.
 	if logErr := log.Log("replicate", "pass", map[string]any{
-		"peers":              len(targets),
-		"failed":             len(errs),
-		"audit_bytes_pushed": auditBytes,
+		"peers":  len(targets),
+		"failed": len(errs),
 	}); logErr != nil {
 		return logErr
 	}
 
-	// Report completed pushes for manual deployment verification.
-	fmt.Printf("replicate: %d of %d peer(s) completed, %d byte(s) of audit log sent.\n",
-		peersOK, len(targets), auditBytes)
-
+	fmt.Printf("replicate: %d of %d peer(s) completed.\n", peersOK, len(targets))
 	if len(errs) > 0 {
 		return fmt.Errorf("replicate: %d of %d peers failed:\n%s", len(errs), len(targets), strings.Join(errs, "\n"))
 	}
 	return nil
 }
 
-// pushToTarget pushes both snapshot tiers, the audit log, and this box's
-// heartbeat to one peer, returning how many bytes of audit log it sent.
-func pushToTarget(p paths, st *store.Store, t replicateTarget, state auditPushState, beatName string, beatData []byte) (int, error) {
+// pushToTarget pushes both snapshot tiers to one peer.
+func pushToTarget(p paths, st *store.Store, t replicateTarget) error {
 	target, closeTarget, err := dialReplicateTarget(t.url, t.hostKey)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer closeTarget()
 
@@ -195,166 +152,10 @@ func pushToTarget(p paths, st *store.Store, t replicateTarget, state auditPushSt
 			failures = append(failures, fmt.Errorf("%s: %w", tier, tierErr))
 		}
 	}
-	// The audit log and the heartbeat both go even if neither tier has
-	// been snapshotted yet: a box that hasn't been snapshotted has still
-	// been logging and is still either alive or not, and both of those
-	// are exactly what a wipe would otherwise destroy any record of.
-	auditBytes, auditErr := pushAuditLog(p, r, t.url, state)
-
-	// The beat goes last and is reported separately, so "this box is
-	// alive" never displaces an error about the backups themselves —
-	// and a failure to write it is still an error, since silently not
-	// beating is indistinguishable from being dead.
-	beatErr := r.PushHeartbeat(beatName, beatData)
-
-	if auditErr != nil {
-		failures = append(failures, auditErr)
-	}
-	if beatErr != nil {
-		failures = append(failures, beatErr)
-	}
 	if pushed == 0 && len(failures) == 0 {
 		failures = append(failures, fmt.Errorf("no snapshot available"))
 	}
-	return auditBytes, errors.Join(failures...)
-}
-
-// auditPushState maps a replication target URL to what was last pushed to
-// it, so each pass ships only what was appended since — not a fresh copy
-// of the whole log every fifteen minutes.
-type auditPushState map[string]auditPushRecord
-
-// auditPushRecord is how far into the audit log this peer has been
-// brought up to date, plus a digest of exactly those bytes. The digest is
-// what makes "has the log rotated?" answerable: a size alone can't tell a
-// log that grew from one that rotated and was written past the old
-// offset, and getting that wrong means either re-sending the whole log
-// or silently skipping the start of the new one.
-type auditPushRecord struct {
-	Offset int64  `json:"offset"`
-	Digest string `json:"digest"`
-}
-
-// auditPrefixDigest hashes the first n bytes of the log, the portion a
-// peer already holds.
-func auditPrefixDigest(data []byte, n int64) string {
-	if n <= 0 || n > int64(len(data)) {
-		return ""
-	}
-	sum := sha256.Sum256(data[:n])
-	return hex.EncodeToString(sum[:])
-}
-
-// continuesFrom reports whether data is the same file the recorded
-// offset/digest came from, simply grown — rather than a different file
-// that happens to be at least that long.
-func (rec auditPushRecord) continuesFrom(data []byte) bool {
-	if rec.Offset < 0 {
-		return false
-	}
-	if rec.Offset == 0 {
-		return true
-	}
-	if rec.Offset > int64(len(data)) {
-		return false
-	}
-	return auditPrefixDigest(data, rec.Offset) == rec.Digest
-}
-
-func loadAuditPushState(path string) (auditPushState, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return auditPushState{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("replicate: read %s: %w", path, err)
-	}
-	state := auditPushState{}
-	if err := json.Unmarshal(data, &state); err != nil {
-		// A corrupt state file must not stop replication: starting over
-		// re-pushes a segment the peer may already hold, which is
-		// wasteful but harmless (it lands under a new, never-reused
-		// name), where refusing to run would stop the evidence leaving
-		// the box at all.
-		return auditPushState{}, nil
-	}
-	if state == nil {
-		state = auditPushState{}
-	}
-	for key, rec := range state {
-		if rec.Offset < 0 || rec.Offset > 0 && !store.ValidHash(rec.Digest) {
-			delete(state, key)
-		}
-	}
-	return state, nil
-}
-
-func saveAuditPushState(path string, state auditPushState) error {
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("replicate: encode audit push state: %w", err)
-	}
-	if err := fsutil.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("replicate: write %s: %w", path, err)
-	}
-	return nil
-}
-
-// pushAuditLog sends whatever has been appended to the audit log since
-// this peer last heard from us, as one immutable segment.
-//
-// Rotation (see internal/audit's MaxLogBytes) is what the two offset
-// adjustments below are for: when the live log is shorter than the offset
-// recorded for a peer, it has rotated, and the tail of the now-rotated
-// file is sent first so the bytes written between the last push and the
-// rotation aren't lost — then the count restarts against the new file.
-func pushAuditLog(p paths, r *replicate.Replicator, targetURL string, state auditPushState) (int, error) {
-	data, err := os.ReadFile(p.auditLogPath)
-	if os.IsNotExist(err) {
-		return 0, nil // nothing has been logged on this box yet
-	}
-	if err != nil {
-		return 0, fmt.Errorf("replicate: read %s: %w", p.auditLogPath, err)
-	}
-
-	host, _ := os.Hostname()
-	now := time.Now()
-	rec := state[targetURL]
-	sent := 0
-
-	if !rec.continuesFrom(data) {
-		// The live log isn't the file this peer was last brought up to
-		// date with, so it rotated (or was truncated) since. Whatever
-		// was appended to the old file after the last push exists
-		// nowhere else, so send that first, then start counting against
-		// the new file.
-		if rotated, err := os.ReadFile(audit.RotatedPath(p.auditLogPath)); err == nil &&
-			rec.continuesFrom(rotated) && rec.Offset < int64(len(rotated)) {
-			tail := rotated[rec.Offset:]
-			// Stamped a tick before the live log's segment below: its
-			// contents genuinely came first, and segment names are what
-			// PullAudit reassembles the log in order by.
-			name := replicate.AuditSegmentName(host, now.Add(-time.Millisecond), rec.Offset)
-			if err := r.PushAudit(name, tail); err != nil {
-				return sent, err
-			}
-			sent += len(tail)
-		}
-		rec.Offset = 0
-	}
-
-	tail := data[rec.Offset:]
-	if len(tail) == 0 {
-		return sent, nil
-	}
-	if err := r.PushAudit(replicate.AuditSegmentName(host, now, rec.Offset), tail); err != nil {
-		return sent, err
-	}
-	state[targetURL] = auditPushRecord{
-		Offset: int64(len(data)),
-		Digest: auditPrefixDigest(data, int64(len(data))),
-	}
-	return sent + len(tail), nil
+	return errors.Join(failures...)
 }
 
 // dialReplicateTarget dials rawURL (ssh:// or file://), verifying against
@@ -382,20 +183,12 @@ func dialReplicateTarget(rawURL, hostKey string) (replicate.Target, func() error
 }
 
 func dialSSHReplicateTarget(u *url.URL, hostKeyStr string) (replicate.Target, func() error, error) {
-	if buildReplicateKey == "" {
-		return nil, nil, fmt.Errorf("replicate: ssh:// target needs buildReplicateKey baked in at build time")
-	}
 	if hostKeyStr == "" {
-		return nil, nil, fmt.Errorf("replicate: ssh:// target %s has no pinned host key configured", u)
+		return nil, nil, fmt.Errorf("replicate: ssh target %s has no pinned host key configured", u)
 	}
-
-	keyPEM, err := base64.StdEncoding.DecodeString(buildReplicateKey)
+	signer, err := loadPeerSigner()
 	if err != nil {
-		return nil, nil, fmt.Errorf("replicate: decode replication key: %w", err)
-	}
-	signer, err := ssh.ParsePrivateKey(keyPEM)
-	if err != nil {
-		return nil, nil, fmt.Errorf("replicate: parse replication key: %w", err)
+		return nil, nil, err
 	}
 
 	hostKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(hostKeyStr))

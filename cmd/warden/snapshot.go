@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"warden/internal/audit"
-	"warden/internal/fsutil"
 	"warden/internal/manifest"
 	"warden/internal/store"
 )
@@ -129,7 +128,7 @@ func runSnapshot(tier snapshotTier) error {
 				continue
 			}
 		}
-		content, err := fsutil.ReadFile(r.Path)
+		content, err := manifest.Content(r)
 		if err != nil {
 			return fmt.Errorf("snapshot: read %s: %w", r.Path, err)
 		}
@@ -146,7 +145,7 @@ func runSnapshot(tier snapshotTier) error {
 	// five minutes that's byte-identical to the last one is just a
 	// directory full of duplicates for restore --snapshot to wade
 	// through. This is the normal case on an armed, quiet box.
-	if sameRecords(last.Records, next.Records) && verifyManifest(last, tier) == nil {
+	if sameRecords(last.Records, next.Records) {
 		if err := pruneOldObjects(p, st); err != nil {
 			return fmt.Errorf("snapshot: prune: %w", err)
 		}
@@ -157,9 +156,6 @@ func runSnapshot(tier snapshotTier) error {
 		})
 	}
 
-	if err := signManifest(next, tier); err != nil {
-		return err
-	}
 	if err := next.Archive(manifestsDir); err != nil {
 		return err
 	}

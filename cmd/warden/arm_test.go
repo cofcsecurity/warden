@@ -87,15 +87,6 @@ func TestReviewSinceBaselineCatchesEditsMadeWhileUnprotected(t *testing.T) {
 		t.Fatalf("expected all four changes reported, got %+v", review.Changes)
 	}
 
-	// Confirm-first paths sort first: a long list of routine service
-	// edits must not bury the ones an attacker would make.
-	if !changeIsConfirmFirst(review.Changes[0]) || !changeIsConfirmFirst(review.Changes[1]) {
-		t.Errorf("expected confirm-first changes listed first, got %+v", review.Changes)
-	}
-	if got := review.confirmFirstPaths(); len(got) != 2 {
-		t.Errorf("expected two confirm-first paths, got %v", got)
-	}
-
 	kinds := map[string]manifest.ChangeKind{}
 	for _, c := range review.Changes {
 		kinds[c.Path] = c.Kind
@@ -129,21 +120,10 @@ func TestReviewSinceBaselineReportsNoChanges(t *testing.T) {
 		t.Fatalf("expected no changes, got %+v", review.Changes)
 	}
 
-	// "No changes" means opposite things depending on the order the team
-	// worked in, and only they know which it was — so the output has to
-	// carry both readings rather than picking one.
 	var out bytes.Buffer
 	printArmReview(&out, review, time.Now())
-	got := out.String()
-	for _, want := range []string{
-		"Nothing has changed",
-		"hardened BEFORE Warden was installed",
-		"hardened AFTER",
-		"detect",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("expected the all-clear to mention %q, got:\n%s", want, got)
-		}
+	if !strings.Contains(out.String(), "nothing changed") {
+		t.Errorf("expected the all-clear, got:\n%s", out.String())
 	}
 }
 
@@ -167,165 +147,8 @@ func TestReviewWithNoBaselineDoesNotReportEveryPathAsNew(t *testing.T) {
 
 	var out bytes.Buffer
 	printArmReview(&out, review, time.Now())
-	if !strings.Contains(out.String(), "never been snapshotted") {
+	if !strings.Contains(out.String(), "first snapshot") {
 		t.Errorf("expected the no-baseline case explained, got:\n%s", out.String())
-	}
-}
-
-func TestPrintArmReviewNamesEveryChangeWithItsClass(t *testing.T) {
-	baselineAt := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
-	now := baselineAt.Add(45 * time.Minute)
-
-	review := armReview{
-		BaselineAt: baselineAt,
-		Generation: 3,
-		Changes: []manifest.Change{
-			{Kind: manifest.Modified, Path: "/etc/passwd", Old: &manifest.Record{Class: manifest.ConfirmFirst}, New: &manifest.Record{Class: manifest.ConfirmFirst}},
-			{Kind: manifest.Modified, Path: "/etc/nginx/nginx.conf", Old: &manifest.Record{Class: manifest.SafeAutoRestore}, New: &manifest.Record{Class: manifest.SafeAutoRestore}},
-		},
-	}
-
-	var out bytes.Buffer
-	printArmReview(&out, review, now)
-	got := out.String()
-
-	for _, want := range []string{
-		"2 watched path(s) changed",
-		"45m0s ago",
-		"generation 3",
-		"/etc/passwd",
-		"confirm-first",
-		"/etc/nginx/nginx.conf",
-		"auto-restore",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("expected the review to mention %q, got:\n%s", want, got)
-		}
-	}
-
-	// The list and nothing after it: the prompt asks the question, and
-	// standing commentary under every run is what stops people reading
-	// the part that matters.
-	if lines := strings.Split(strings.TrimRight(got, "\n"), "\n"); len(lines) != 4 {
-		t.Errorf("expected a header, a blank line and one line per change, got:\n%s", got)
-	}
-}
-
-func TestArmReviewAuditFieldsRecordWhatWasBaselined(t *testing.T) {
-	review := armReview{
-		Generation: 3,
-		Changes: []manifest.Change{
-			{Kind: manifest.Modified, Path: "/etc/passwd", New: &manifest.Record{Class: manifest.ConfirmFirst}},
-			{Kind: manifest.Added, Path: "/etc/nginx/nginx.conf", New: &manifest.Record{Class: manifest.SafeAutoRestore}},
-		},
-	}
-
-	fields := review.auditFields()
-	changes, ok := fields["changes"].([]string)
-	if !ok || len(changes) != 2 {
-		t.Fatalf("expected both changes recorded, got %+v", fields["changes"])
-	}
-	if changes[0] != "modified /etc/passwd" || changes[1] != "added /etc/nginx/nginx.conf" {
-		t.Errorf("expected kind and path per entry, got %v", changes)
-	}
-	cf, ok := fields["confirm_first"].([]string)
-	if !ok || len(cf) != 1 || cf[0] != "/etc/passwd" {
-		t.Errorf("expected the confirm-first path called out separately, got %+v", fields["confirm_first"])
-	}
-	if fields["baseline_generation"] != 3 {
-		t.Errorf("expected the baseline generation recorded, got %v", fields["baseline_generation"])
-	}
-}
-
-// TestConfirmArmRefusesWhenThereIsNobodyToAsk covers the path most
-// operators hit: `ssh box "shell <code>"` runs over a no-pty channel, so
-// stdin is a pipe with nothing in it. Proceeding silently there would
-// defeat the review — the point is that a person read the list.
-func TestConfirmArmRefusesWhenThereIsNobodyToAsk(t *testing.T) {
-	err := confirmArm(strings.NewReader(""), 3)
-	if err == nil {
-		t.Fatal("expected a refusal rather than silently arming")
-	}
-	if !strings.Contains(err.Error(), "--yes") {
-		t.Errorf("expected the error to say how to proceed, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "3 change(s)") {
-		t.Errorf("expected the error to name the count, got: %v", err)
-	}
-}
-
-func TestConfirmArmAcceptsOnlyAnExplicitYes(t *testing.T) {
-	if err := confirmArm(strings.NewReader("y\n"), 2); err != nil {
-		t.Errorf("expected y to confirm, got: %v", err)
-	}
-	if err := confirmArm(strings.NewReader("Y\n"), 2); err != nil {
-		t.Errorf("expected Y to confirm, got: %v", err)
-	}
-	for _, answer := range []string{"n\n", "\n", "yes please\n", "no\n"} {
-		if err := confirmArm(strings.NewReader(answer), 2); err == nil {
-			t.Errorf("expected %q to be treated as declining", answer)
-		}
-	}
-}
-
-type armMutationReader struct {
-	change func()
-	done   bool
-}
-
-func (r *armMutationReader) Read(p []byte) (int, error) {
-	if !r.done {
-		r.change()
-		r.done = true
-	}
-	return strings.NewReader("y\n").Read(p)
-}
-
-func TestArmRejectsChangesAfterReview(t *testing.T) {
-	for _, kind := range []string{"content", "mode", "deletion", "addition"} {
-		t.Run(kind, func(t *testing.T) {
-			p, _, _ := recoveryFixture(t)
-			p.armedMarkerPath = filepath.Join(p.storeRoot, "armed")
-			path, added := filepath.Join(p.storeRoot, "watched"), filepath.Join(p.storeRoot, "new")
-			if err := os.WriteFile(path, []byte("initial"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			armTestBaseline(t, p.configManifestPath, []string{path}, nil)
-			before, _ := os.ReadFile(p.configManifestPath)
-			old := watchedPaths
-			watchedPaths = []string{path, added}
-			t.Cleanup(func() { watchedPaths = old })
-			if err := os.WriteFile(path, []byte("reviewed"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			input := &armMutationReader{change: func() {
-				var err error
-				switch kind {
-				case "content":
-					err = os.WriteFile(path, []byte("unreviewed"), 0600)
-				case "mode":
-					err = os.Chmod(path, 0644)
-				case "deletion":
-					err = os.Remove(path)
-				case "addition":
-					err = os.WriteFile(added, []byte("unreviewed"), 0600)
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-			}}
-			err := armWithPaths(p, false, input)
-			if err == nil || !strings.Contains(err.Error(), "changed during review") {
-				t.Fatalf("accepted %s: %v", kind, err)
-			}
-			after, _ := os.ReadFile(p.configManifestPath)
-			if !bytes.Equal(before, after) {
-				t.Fatal("changed the live baseline on rejected review")
-			}
-			if _, err := os.Stat(p.armedMarkerPath); !os.IsNotExist(err) {
-				t.Fatalf("armed despite rejected review: %v", err)
-			}
-		})
 	}
 }
 
@@ -336,10 +159,11 @@ func TestArmPublishesReviewedObjects(t *testing.T) {
 	if err := os.WriteFile(path, []byte("reviewed"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	old := watchedPaths
-	watchedPaths = []string{path}
-	t.Cleanup(func() { watchedPaths = old })
-	if err := armWithPaths(p, true, strings.NewReader("")); err != nil {
+	old := configTierPaths
+	configTierPaths = []string{path}
+	t.Cleanup(func() { configTierPaths = old })
+	var out bytes.Buffer
+	if err := armWithPaths(p, &out); err != nil {
 		t.Fatal(err)
 	}
 	m, err := manifest.New(p.configManifestPath)
@@ -356,7 +180,42 @@ func TestArmPublishesReviewedObjects(t *testing.T) {
 	if _, err := os.Stat(p.armedMarkerPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := armWithPaths(p, true, strings.NewReader("")); err == nil {
-		t.Fatal("replacement baseline allowed without disarming")
+	before, _ := os.ReadFile(p.configManifestPath)
+	out.Reset()
+	if err := armWithPaths(p, &out); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(p.configManifestPath)
+	if !bytes.Equal(before, after) || !strings.Contains(out.String(), "already armed") {
+		t.Fatalf("arming twice must not re-baseline: %s", out.String())
+	}
+}
+
+// TestArmCoversPatternEntries: a glob in the profile baselines every file
+// it matches, so a later new file there is drift.
+func TestArmCoversPatternEntries(t *testing.T) {
+	p, _, _ := recoveryFixture(t)
+	p.armedMarkerPath = filepath.Join(p.storeRoot, "armed")
+	dir := filepath.Join(t.TempDir(), "sudoers.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"admins", "team"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o440); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := configTierPaths
+	configTierPaths = []string{dir + "/*"}
+	t.Cleanup(func() { configTierPaths = old })
+	if err := armWithPaths(p, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.New(p.configManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Records) != 2 {
+		t.Fatalf("expected both files baselined, got %+v", m.Records)
 	}
 }

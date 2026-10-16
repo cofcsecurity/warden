@@ -25,10 +25,9 @@ func lockAccountCmd() *cobra.Command {
 		Short: "Manually lock a local account and kill its sessions",
 		Long: `Disables password auth and interactive shell access for user, and
 best-effort kills its currently running sessions. Refuses to lock root,
-the opmenu account itself (no override — either would be self-inflicted
-damage), an account that isn't genuinely local (likely Active Directory/
-directory-backed — a local lock has no effect on one of those), or an
-account on the configured SAFE_ACCOUNTS list (override with --force).`,
+Warden's own access accounts (no override), an account that isn't
+genuinely local (a local lock has no effect on a directory account), or
+an account in the configured safe_accounts (override with --force).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runLockAccount(args[0], reason, duration, force)
@@ -36,7 +35,7 @@ account on the configured SAFE_ACCOUNTS list (override with --force).`,
 	}
 	cmd.Flags().DurationVar(&duration, "duration", accountLockDuration, "lock duration (0 means indefinite; positive durations expire)")
 	cmd.Flags().StringVar(&reason, "reason", "manual lock", "short note recorded alongside the lock in audit.log")
-	cmd.Flags().BoolVar(&force, "force", false, "lock even if the account is on the configured SAFE_ACCOUNTS list")
+	cmd.Flags().BoolVar(&force, "force", false, "lock even if the account is in the configured safe_accounts")
 	return cmd
 }
 

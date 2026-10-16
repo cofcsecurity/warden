@@ -15,9 +15,6 @@ func (r *backupRecovery) archiveRecovered(tier snapshotTier, m *manifest.Manifes
 	if err := validateRecoveryManifest(m, 0); err != nil {
 		return err
 	}
-	if err := verifyManifest(m, tier); err != nil {
-		return err
-	}
 	dir := r.p.manifestsDirForTier(tier)
 	path := manifest.ArchivePath(dir, m.Generation)
 	info, err := os.Lstat(path)
@@ -37,9 +34,6 @@ func (r *backupRecovery) archiveRecovered(tier snapshotTier, m *manifest.Manifes
 	previous, invalid := manifest.Parse(data)
 	if invalid == nil {
 		invalid = validateRecoveryManifest(previous, m.Generation)
-	}
-	if invalid == nil {
-		invalid = verifyManifest(previous, tier)
 	}
 	if invalid == nil {
 		return m.Archive(dir)

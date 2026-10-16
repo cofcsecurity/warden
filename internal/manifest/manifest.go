@@ -44,14 +44,15 @@ type Record struct {
 	// choosing. Omitted from the JSON when false, so manifests written
 	// before this field existed parse unchanged.
 	Symlink bool `json:"symlink,omitempty"`
+	// Link is the symlink's target when it does not resolve to a regular
+	// file (a unit masked to /dev/null, a link to a directory). Such a
+	// record is compared by its target, never restored.
+	Link string `json:"link,omitempty"`
 }
 
 // Manifest is one generation of known-good state.
 type Manifest struct {
 	Generation int       `json:"generation"`
-	Source     string    `json:"source,omitempty"`
-	Tier       string    `json:"tier,omitempty"`
-	Signature  string    `json:"signature,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	Records    []Record  `json:"records"`
 	// ApprovedGroups contains exact group-record hashes authorized by account-edit.
@@ -225,8 +226,27 @@ func Generate(paths []string, classify Classify, generation int) (*Manifest, err
 		isSymlink := linkInfo.Mode()&os.ModeSymlink != 0
 
 		info, err := os.Stat(p)
+		if isSymlink && (err != nil || !info.Mode().IsRegular()) {
+			// A link to nothing, a device or a directory: record where
+			// it points, so retargeting it is drift.
+			target, err := os.Readlink(p)
+			if err != nil {
+				return nil, fmt.Errorf("manifest: readlink %s: %w", p, err)
+			}
+			sum := sha256.Sum256([]byte("link:" + target))
+			m.Records = append(m.Records, Record{
+				Path:    p,
+				Hash:    hex.EncodeToString(sum[:]),
+				Mode:    linkInfo.Mode(),
+				MTime:   linkInfo.ModTime().UTC(),
+				Class:   classify(p),
+				Symlink: true,
+				Link:    target,
+			})
+			continue
+		}
 		if os.IsNotExist(err) {
-			continue // dangling symlink: nothing to hash
+			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("manifest: stat %s: %w", p, err)
@@ -316,7 +336,7 @@ func Diff(old, new *Manifest) []Change {
 			// swapping a watched file for a link to /etc/shadow is
 			// exactly the tamper that would otherwise read as "no
 			// drift" right up until something wrote through it.
-			if oldRec.Hash != newRec.Hash || oldRec.Symlink != newRec.Symlink || oldRec.Mode != newRec.Mode {
+			if oldRec.Hash != newRec.Hash || oldRec.Symlink != newRec.Symlink || oldRec.Mode != newRec.Mode || oldRec.Link != newRec.Link {
 				changes = append(changes, Change{Kind: Modified, Path: path, Old: &oldRec, New: &newRec})
 			}
 		} else {
@@ -332,6 +352,15 @@ func Diff(old, new *Manifest) []Change {
 	}
 
 	return changes
+}
+
+// Content reads the bytes a record's hash covers: the file itself, or for
+// a link record, the pseudo-content its hash was computed over.
+func Content(r Record) ([]byte, error) {
+	if r.Link != "" {
+		return []byte("link:" + r.Link), nil
+	}
+	return fsutil.ReadFile(r.Path)
 }
 
 // IsSymlink reports whether path itself is a symbolic link right now,

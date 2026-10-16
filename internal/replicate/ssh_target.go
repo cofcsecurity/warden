@@ -165,67 +165,6 @@ func (t *SSHTarget) listRemoteDir(dir string) ([]string, error) {
 	return names, nil
 }
 
-func (t *SSHTarget) auditDir() string {
-	return path.Join(t.root, "audit")
-}
-
-// auditPath refuses a name containing a path separator, so a segment
-// name can only ever name a file directly inside the audit directory on
-// the peer.
-func (t *SSHTarget) auditPath(name string) (string, error) {
-	if name == "" || strings.Contains(name, "/") {
-		return "", fmt.Errorf("replicate: invalid audit segment name %q", name)
-	}
-	return path.Join(t.auditDir(), name), nil
-}
-
-func (t *SSHTarget) HasAudit(name string) (bool, error) {
-	p, err := t.auditPath(name)
-	if err != nil {
-		return false, err
-	}
-	return t.exists(p)
-}
-
-func (t *SSHTarget) PutAudit(name string, data []byte) error {
-	p, err := t.auditPath(name)
-	if err != nil {
-		return err
-	}
-	return t.writeOnceRemote(p, data)
-}
-
-func (t *SSHTarget) GetAudit(name string) ([]byte, error) {
-	p, err := t.auditPath(name)
-	if err != nil {
-		return nil, err
-	}
-	return t.readRemote(p)
-}
-
-func (t *SSHTarget) AuditSegments() ([]string, error) {
-	names, err := t.listRemoteDir(t.auditDir())
-	if err != nil {
-		return nil, err
-	}
-
-	var segments []string
-	for _, name := range names {
-		if strings.HasSuffix(name, ".log") {
-			segments = append(segments, name)
-		}
-	}
-	sort.Strings(segments)
-	return segments, nil
-}
-
-func (t *SSHTarget) PutHeartbeat(name string, data []byte) error {
-	if name == "" || strings.Contains(name, "/") {
-		return fmt.Errorf("replicate: invalid heartbeat name %q", name)
-	}
-	return t.writeOnceRemote(path.Join(t.root, "heartbeat", name), data)
-}
-
 func (t *SSHTarget) exists(remotePath string) (bool, error) {
 	err := t.run(fmt.Sprintf("test -e %s", shellQuote(remotePath)))
 	if err == nil {

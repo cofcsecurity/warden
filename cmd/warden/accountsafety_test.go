@@ -68,9 +68,8 @@ func TestCanLockAccountRefusesNonLocalAccountEvenWithForce(t *testing.T) {
 }
 
 func TestCanLockAccountRespectsSafeAccountsListAndForceOverride(t *testing.T) {
-	old := buildSafeAccounts
-	defer func() { buildSafeAccounts = old }()
-	buildSafeAccounts = "daemon,someone-else"
+	withConfig(t)
+	cfg.SafeAccounts = []string{"daemon", "someone-else"}
 
 	// daemon is a near-universal /etc/passwd entry on both Linux and
 	// macOS, and won't collide with opmenuUser() (derived from the test
@@ -82,8 +81,8 @@ func TestCanLockAccountRespectsSafeAccountsListAndForceOverride(t *testing.T) {
 	if ok {
 		t.Fatal("expected an account on SAFE_ACCOUNTS to be refused without --force")
 	}
-	if !strings.Contains(reason, "SAFE_ACCOUNTS") {
-		t.Fatalf("expected the reason to mention SAFE_ACCOUNTS, got %q", reason)
+	if !strings.Contains(reason, "safe_accounts") {
+		t.Fatalf("expected the reason to mention safe_accounts, got %q", reason)
 	}
 
 	ok, _, err = canLockAccount("daemon", true)
@@ -96,9 +95,8 @@ func TestCanLockAccountRespectsSafeAccountsListAndForceOverride(t *testing.T) {
 }
 
 func TestCanLockAccountAllowsOrdinaryLocalAccount(t *testing.T) {
-	old := buildSafeAccounts
-	defer func() { buildSafeAccounts = old }()
-	buildSafeAccounts = ""
+	withConfig(t)
+	cfg.SafeAccounts = nil
 
 	ok, reason, err := canLockAccount("nobody", false)
 	if err != nil {
@@ -110,9 +108,8 @@ func TestCanLockAccountAllowsOrdinaryLocalAccount(t *testing.T) {
 }
 
 func TestConfiguredSafeAccountsParsesCommaSeparatedList(t *testing.T) {
-	old := buildSafeAccounts
-	defer func() { buildSafeAccounts = old }()
-	buildSafeAccounts = " alovelace , scoring-agent ,,"
+	withConfig(t)
+	cfg.SafeAccounts = []string{"alovelace", "scoring-agent"}
 
 	got := configuredSafeAccounts()
 	for _, want := range []string{"alovelace", "scoring-agent"} {

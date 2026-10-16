@@ -16,20 +16,19 @@ func hardProtectedAccounts() (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]bool{"root": true, opUser: true}, nil
+	m := map[string]bool{"root": true, opUser: true}
+	if cfg.BreakGlassUser != "" {
+		m[cfg.BreakGlassUser] = true
+	}
+	return m, nil
 }
 
-// configuredSafeAccounts parses buildSafeAccounts — the team's own
-// operating account(s) on this box, and the scoring engine's account if
-// it uses one. Unlike hardProtectedAccounts, this is a team-supplied
-// policy choice, not a technical impossibility, so a human operator can
-// override it with --force (canLockAccount's force param) — there's no
-// equivalent override for hardProtectedAccounts. See buildSafeAccounts'
-// doc comment in main.go for why this can't be inferred automatically
-// the way TEAM_FROM_IP lets IP-autoban exclude the team's own address.
+// configuredSafeAccounts is the config's safe_accounts list: the team's
+// own operating accounts and any scoring accounts. A human can override it
+// with --force; hardProtectedAccounts has no override.
 func configuredSafeAccounts() map[string]bool {
 	m := map[string]bool{}
-	for _, a := range strings.Split(buildSafeAccounts, ",") {
+	for _, a := range cfg.SafeAccounts {
 		a = strings.TrimSpace(a)
 		if a != "" {
 			m[a] = true
@@ -65,11 +64,11 @@ func canLockAccount(user string, force bool) (ok bool, reason string, err error)
 		return false, "", err
 	}
 	if hard[user] {
-		return false, fmt.Sprintf("%s is root or the opmenu account itself — never locked, no override", user), nil
+		return false, fmt.Sprintf("%s is root or one of Warden's access accounts — never locked, no override", user), nil
 	}
 
 	if configuredSafeAccounts()[user] && !force {
-		return false, fmt.Sprintf("%s is on the configured SAFE_ACCOUNTS list — re-run with --force if this is genuinely wrong", user), nil
+		return false, fmt.Sprintf("%s is in the configured safe_accounts — re-run with --force if this is genuinely wrong", user), nil
 	}
 
 	return true, "", nil

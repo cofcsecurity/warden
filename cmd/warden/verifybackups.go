@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +11,8 @@ import (
 	"warden/internal/fsutil"
 	"warden/internal/manifest"
 	"warden/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 type backupCheck struct {
@@ -297,9 +298,6 @@ func metadataState(data []byte, readErr error, tier snapshotTier, generation int
 	m, err := manifest.Parse(data)
 	if err == nil {
 		err = validateRecoveryManifest(m, generation)
-	}
-	if err == nil {
-		err = verifyManifest(m, tier)
 	}
 	if err != nil {
 		return "corrupt"

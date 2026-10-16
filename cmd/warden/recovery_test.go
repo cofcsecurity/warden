@@ -32,9 +32,7 @@ func recoveryFixture(t *testing.T) (paths, string, []byte) {
 	if err := os.Remove(filepath.Join(dir, "objects", hash[:2], hash)); err != nil {
 		t.Fatal(err)
 	}
-	old := buildReplicateTargets
-	t.Cleanup(func() { buildReplicateTargets = old })
-	buildReplicateTargets = ""
+	setPeers(t, "")
 	return p, hash, content
 }
 func recoveryPeer(t *testing.T) (*replicate.FSTarget, string) {
@@ -68,7 +66,7 @@ func TestRecoverySkipsMissingAndCorruptPeersAndCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	missing := filepath.Join(t.TempDir(), "not-mounted")
-	buildReplicateTargets = "file://" + missing + ";;" + badURL + ";;" + goodURL
+	setPeers(t, "file://"+missing+";;"+badURL+";;"+goodURL)
 	log, err := audit.New(p.auditLogPath)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +106,7 @@ func TestRecoverySelectsNewestManifestAndHonorsExactGeneration(t *testing.T) {
 	peer, url := recoveryPeer(t)
 	m.Generation = 2
 	putRecoveryManifest(t, peer, tierData, m)
-	buildReplicateTargets = url
+	setPeers(t, url)
 	r := newBackupRecovery(p, nil)
 	defer r.Close()
 	got, err := r.loadManifest(tierData, "")
@@ -136,7 +134,7 @@ func TestAutomaticWatchRecoversDeletedBackupFromNeighbor(t *testing.T) {
 	if err := peer.Put(hash, content); err != nil {
 		t.Fatal(err)
 	}
-	buildReplicateTargets = url
+	setPeers(t, url)
 	r := newBackupRecovery(p, nil)
 	defer r.Close()
 	if err := r.ensureManifest(tierConfig); err != nil {
@@ -168,7 +166,7 @@ func TestRetrieveDryRunThenRecoverSplitBackup(t *testing.T) {
 	if err := second.Put(hash, content); err != nil {
 		t.Fatal(err)
 	}
-	buildReplicateTargets = firstURL + ";;" + secondURL
+	setPeers(t, firstURL+";;"+secondURL)
 	if err := retrieveWithRecovery(p, firstURL, tierData, 7, false); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +201,7 @@ func TestRecoveryFailsWithoutUsableCopies(t *testing.T) {
 	if err := bad.Put(hash, []byte("wrong")); err != nil {
 		t.Fatal(err)
 	}
-	buildReplicateTargets = url
+	setPeers(t, url)
 	r := newBackupRecovery(p, nil)
 	defer r.Close()
 	st, err := r.store()
@@ -235,7 +233,7 @@ func TestRecoveryPeerFailureFallsThroughAndClosesConnections(t *testing.T) {
 	if err := peer.Put(hash, content); err != nil {
 		t.Fatal(err)
 	}
-	buildReplicateTargets = "ssh://missing/root||pinned-a;;ssh://healthy/root||pinned-b"
+	setPeers(t, "ssh://missing/root||pinned-a;;ssh://healthy/root||pinned-b")
 	old := openRecoveryTarget
 	t.Cleanup(func() { openRecoveryTarget = old })
 	closed := false
@@ -267,7 +265,7 @@ func TestRecoveryQuarantinesCorruptArchive(t *testing.T) {
 		t.Run(fmt.Sprint(retrieve), func(t *testing.T) {
 			p, hash, content := recoveryFixture(t)
 			peer, url := recoveryPeer(t)
-			buildReplicateTargets = url
+			setPeers(t, url)
 			m := &manifest.Manifest{Generation: 1, Records: []manifest.Record{{Path: "/example", Hash: hash, Mode: 0600}}}
 			putRecoveryManifest(t, peer, tierConfig, m)
 			if err := peer.Put(hash, content); err != nil {

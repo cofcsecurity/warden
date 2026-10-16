@@ -5,13 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
-// installPath returns the path this binary was actually invoked from,
-// whatever name it was installed under (see deploy/install.sh's
-// INSTALL_PATH). Deriving everything else from this, instead of a second
-// baked-in name, keeps one source of truth for what this box's units and
-// authorized_keys entry are called.
+// installPath returns the path this binary was invoked from, whatever name
+// `warden install` gave it. Every other name on the box derives from it.
 func installPath() (string, error) {
 	p, err := os.Executable()
 	if err != nil {
@@ -28,42 +26,23 @@ func binaryName() (string, error) {
 	return filepath.Base(p), nil
 }
 
-// sentinelUnitName returns the systemd/cron name sentinel-check protects
-// for itself, e.g. "svchelper-sentinel" if the binary is installed as
-// /usr/local/sbin/svchelper.
-func sentinelUnitName() (string, error) {
-	return unitNameSuffixed("-sentinel")
-}
+// Unit name suffixes. None of them says what the tool is; each reads like
+// an ordinary maintenance job for a service called <name>.
+const (
+	sentinelSuffix       = "-refresh"
+	watchSuffix          = "-verify"
+	snapshotConfigSuffix = "-cache"
+	snapshotDataSuffix   = "-archive"
+	scanSuffix           = "-audit"
+	replicateSuffix      = "-sync"
+)
 
-// replicateUnitName is the systemd name for the replication timer, when
-// one is configured — see registrations.go's replicate-timer registration.
-func replicateUnitName() (string, error) {
-	return unitNameSuffixed("-replicate")
-}
-
-// scanUnitName is the systemd name for the anomaly-detection timer — see
-// scan.go and deploy/systemd/warden-scan.*.template.
-func scanUnitName() (string, error) {
-	return unitNameSuffixed("-scan")
-}
-
-// watchUnitName, snapshotConfigUnitName and snapshotDataUnitName are the
-// remaining timers deploy/install.sh lays down. Every one of these
-// suffixes has to match install.sh's resolve_install_path exactly — a
-// mismatch would have sentinel-check "repairing" a second, differently
-// named copy of a timer that's already running, rather than noticing the
-// real one is gone.
-func watchUnitName() (string, error) {
-	return unitNameSuffixed("-watch")
-}
-
-func snapshotConfigUnitName() (string, error) {
-	return unitNameSuffixed("-snap-cfg")
-}
-
-func snapshotDataUnitName() (string, error) {
-	return unitNameSuffixed("-snap-data")
-}
+func sentinelUnitName() (string, error)       { return unitNameSuffixed(sentinelSuffix) }
+func replicateUnitName() (string, error)      { return unitNameSuffixed(replicateSuffix) }
+func scanUnitName() (string, error)           { return unitNameSuffixed(scanSuffix) }
+func watchUnitName() (string, error)          { return unitNameSuffixed(watchSuffix) }
+func snapshotConfigUnitName() (string, error) { return unitNameSuffixed(snapshotConfigSuffix) }
+func snapshotDataUnitName() (string, error)   { return unitNameSuffixed(snapshotDataSuffix) }
 
 func unitNameSuffixed(suffix string) (string, error) {
 	name, err := binaryName()
@@ -73,22 +52,24 @@ func unitNameSuffixed(suffix string) (string, error) {
 	return name + suffix, nil
 }
 
-// oneshotServiceContent and oneshotTimerContent generate the same shape of
-// unit deploy/install.sh's templates do, for every timer sentinel-check
-// knows how to recreate from scratch — which is all of them (see
-// registrations.go). The boot delays and intervals below have to stay in
-// step with deploy/systemd/*.template and install.sh's own defaults, so a
-// recreated timer fires on the same schedule the installed one did.
+// oneshotServiceContent is every job's service unit. StartLimitIntervalSec=0
+// matters for the path-triggered sentinel: a burst of file changes must
+// never rate-limit the unit into a failed state that stops it starting.
 func oneshotServiceContent(unitName, path, subcommand string) string {
 	return fmt.Sprintf(`[Unit]
 Description=%s
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
-ExecStart=%s %s
+ExecStart=%s %s --quiet
+TimeoutStartSec=5min
 `, unitName, path, subcommand)
 }
 
+// oneshotTimerContent fires bootDelay after boot and after the timer is
+// (re)started (OnActiveSec matters when a timer is recreated long after
+// boot, when OnBootSec has already passed), then every interval.
 func oneshotTimerContent(unitName, bootDelay, interval, jitter string) string {
 	return fmt.Sprintf(`[Unit]
 Description=%s timer
@@ -104,112 +85,128 @@ WantedBy=timers.target
 `, unitName, bootDelay, interval, jitter, unitName)
 }
 
-func sentinelServiceContent(unitName, path string) string {
-	return oneshotServiceContent(unitName, path, "sentinel-check")
+// pathUnitContent starts unitName's service the moment any watched access
+// file or directory changes, so a deleted key is back within seconds
+// rather than at the next timer tick.
+func pathUnitContent(unitName string, watched []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[Unit]\nDescription=%s path\n\n[Path]\n", unitName)
+	for _, w := range watched {
+		fmt.Fprintf(&b, "PathChanged=%s\n", w)
+	}
+	fmt.Fprintf(&b, "Unit=%s.service\nTriggerLimitIntervalSec=0\n\n[Install]\nWantedBy=paths.target\n", unitName)
+	return b.String()
 }
 
-func sentinelTimerContent(unitName string) string {
-	return oneshotTimerContent(unitName, "2min", sentinelInterval, sentinelJitter)
+// sshdDropInContent hooks sshd's own start: whenever sshd (re)starts,
+// including a restart red runs to apply a lockout, systemd first asks for
+// a sentinel pass. The leading "-" makes it fail-open and --no-block
+// returns at once, so sshd's start is never delayed or blocked by it.
+func sshdDropInContent(systemctl, sentinelUnit string) string {
+	return fmt.Sprintf("[Service]\nExecStartPre=-%s start --no-block %s.service\n", systemctl, sentinelUnit)
 }
 
-func replicateServiceContent(unitName, path string) string {
-	return oneshotServiceContent(unitName, path, "replicate")
+func systemctlPath() string {
+	if p, err := exec.LookPath("systemctl"); err == nil {
+		return p
+	}
+	return "/bin/systemctl"
 }
 
-func replicateTimerContent(unitName string) string {
-	return oneshotTimerContent(unitName, "7min", replicateInterval, replicateJitter)
-}
-
-func watchServiceContent(unitName, path string) string {
-	return oneshotServiceContent(unitName, path, "watch")
-}
-
-func watchTimerContent(unitName string) string {
-	return oneshotTimerContent(unitName, "5min", watchInterval, watchJitter)
-}
-
-func snapshotConfigServiceContent(unitName, path string) string {
-	return oneshotServiceContent(unitName, path, "snapshot --tier config")
-}
-
-func snapshotConfigTimerContent(unitName string) string {
-	return oneshotTimerContent(unitName, "3min", snapshotConfigInterval, snapshotConfigJitter)
-}
-
-func snapshotDataServiceContent(unitName, path string) string {
-	return oneshotServiceContent(unitName, path, "snapshot --tier data")
-}
-
-func snapshotDataTimerContent(unitName string) string {
-	return oneshotTimerContent(unitName, "10min", snapshotDataInterval, snapshotDataJitter)
-}
-
-func scanServiceContent(unitName, path string) string {
-	return oneshotServiceContent(unitName, path, "scan")
-}
-
-func scanTimerContent(unitName string) string {
-	return oneshotTimerContent(unitName, "8min", scanInterval, scanJitter)
-}
-
-// cronMarker tags this registration's line in the crontab so it can be
-// found and de-duplicated without disturbing anything else in the file —
-// sentinel must never touch other jobs already on the box.
+// cronMarker tags our lines so they can be found without disturbing any
+// other job in the file.
 func cronMarker(unitName string) string {
 	return "# " + unitName
 }
 
-// cronLine reproduces exactly what deploy/install.sh's step_install_cron_entry
-// writes. The "test -x ... || { cp; chmod; }" prefix restores the binary
-// itself from its hidden spare copy (spareBinaryPath) using only
-// test/cp/chmod — never the Go binary — since sentinel-check can't run to
-// fix its own absence if the binary file itself is what's missing.
+// cronLine runs sentinel every two minutes from root's crontab. The prefix
+// restores the binary from a spare using only test/cp/chmod, since the Go
+// binary cannot run to fix its own absence.
 func cronLine(unitName, path string) string {
 	spare := spareBinaryPath(path)
 	return fmt.Sprintf(
-		"*/10 * * * * test -x %s || { cp %s %s; chmod 0700 %s; }; %s sentinel-check %s",
+		"*/2 * * * * test -x %s || { cp %s %s; chmod 0700 %s; }; %s sentinel-check --quiet %s",
 		path, spare, path, path, path, cronMarker(unitName),
 	)
 }
 
-// authorizedKeysLine reproduces exactly what deploy/install.sh's
-// step_authorize_key installs, so sentinel can detect and restore it
-// without a second definition of the format drifting from the first. The
-// forced command runs through sudo — see opmenuUser.
-func authorizedKeysLine(path string) (string, error) {
-	if buildTeamPubKey == "" || buildTeamFromIP == "" {
-		return "", fmt.Errorf("sentinel: buildTeamPubKey/buildTeamFromIP not baked in at build time")
-	}
+// cronDContent is the break-glass trigger, a different cron mechanism
+// (/etc/cron.d rather than root's spool) restoring from a different spare.
+func cronDContent(unitName, path, mirror string) string {
 	return fmt.Sprintf(
-		`command="sudo %s opmenu",from="%s",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-user-rc,no-pty %s`,
-		path, buildTeamFromIP, buildTeamPubKey,
-	), nil
+		"%s\n*/2 * * * * root test -x %s || { cp %s %s; chmod 0700 %s; }; %s sentinel-check --quiet >/dev/null 2>&1\n",
+		cronMarker(unitName), path, mirror, path, path, path,
+	)
 }
 
-// opmenuUser is the dedicated account holding the team's forced-command
-// SSH entry — never root, since PermitRootLogin no (independent of
-// Warden, some teams' standard practice) disables root SSH authentication
-// entirely, forced-command key included. Reuses the disguised binary
-// name: a same-named system account is ordinary (nginx/nginx,
-// postgres/postgres, ...).
+// opmenuUser is the dedicated account holding the team key, never root, so
+// PermitRootLogin no does not disable it. It reuses the binary's name, the
+// way services usually have a same-named account.
 func opmenuUser() (string, error) {
 	return binaryName()
 }
 
-// opmenuUserHome is where install.sh creates the account (useradd -m -d
-// <this>), matching warden-backup's own convention.
 func opmenuUserHome(user string) string {
 	return "/home/" + user
+}
+
+// authorizedKeysPath is the opmenu account's own authorized_keys file.
+func authorizedKeysPath() (string, error) {
+	user, err := opmenuUser()
+	if err != nil {
+		return "", err
+	}
+	return opmenuUserHome(user) + "/.ssh/authorized_keys", nil
 }
 
 func sudoersDropInPath(user string) string {
 	return "/etc/sudoers.d/" + user
 }
 
-// sudoersDropInContent permits only the second-factor gate. The SSH request
-// and source address must survive sudo's environment reset.
-func sudoersDropInContent(user, path string) string {
-	return fmt.Sprintf("Defaults:%s !requiretty\nDefaults:%s env_keep += \"SSH_ORIGINAL_COMMAND SSH_CLIENT\"\n%s ALL=(root) NOPASSWD: %s opmenu\n", user, user, user, path)
+// sudoersDropInContent lets the access account run only opmenu (and, for
+// paired sources, receive) as root. The SSH request and terminal type must
+// survive sudo's environment reset.
+func sudoersDropInContent(user, path string, receive bool) string {
+	cmds := path + " opmenu"
+	if receive {
+		cmds += ", " + path + " receive --source *"
+	}
+	return fmt.Sprintf("Defaults:%s !requiretty\nDefaults:%s env_keep += \"SSH_ORIGINAL_COMMAND SSH_CLIENT SSH_CONNECTION TERM\"\n%s ALL=(root) NOPASSWD: %s\n", user, user, user, cmds)
+}
+
+// keyOptions are the restrictions on every team key line. A pty is
+// allowed so `ssh -t` gives a usable root shell.
+const keyOptions = "no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-user-rc"
+
+// teamKeyLine is the team key's forced-command entry for an access account.
+func teamKeyLine(path string) (string, error) {
+	if cfg.TeamKey == "" {
+		return "", fmt.Errorf("access: no team key configured (run 'warden install --key ...')")
+	}
+	from := ""
+	if cfg.AllowFrom != "" && cfg.AllowFrom != allowAny {
+		from = fmt.Sprintf(`from="%s",`, strings.ReplaceAll(cfg.AllowFrom, " ", ""))
+	}
+	return fmt.Sprintf(`command="sudo %s opmenu",%s%s %s`, path, from, keyOptions, strings.TrimSpace(cfg.TeamKey)), nil
+}
+
+// receiveKeyLine authorizes one paired source's backup key for uploads into
+// its own directory, and nothing else.
+func receiveKeyLine(path string, src sourceConfig) string {
+	return fmt.Sprintf(`command="sudo %s receive --source %s",%s,no-pty %s`, path, src.Name, keyOptions, strings.TrimSpace(src.Key))
+}
+
+// authorizedKeysContent is the whole file for the main access account.
+func authorizedKeysContent(path string) (string, error) {
+	line, err := teamKeyLine(path)
+	if err != nil {
+		return "", err
+	}
+	lines := []string{line}
+	for _, src := range cfg.Sources {
+		lines = append(lines, receiveKeyLine(path, src))
+	}
+	return strings.Join(lines, "\n") + "\n", nil
 }
 
 // nologinShellPath locates the shell used to disable suspect accounts.

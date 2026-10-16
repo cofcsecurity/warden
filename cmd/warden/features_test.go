@@ -14,7 +14,7 @@ import (
 func TestVerifyBackupsReadOnlyAndRepair(t *testing.T) {
 	p, hash, content := recoveryFixture(t)
 	peer, url := recoveryPeer(t)
-	buildReplicateTargets = url
+	setPeers(t, url)
 	m := &manifest.Manifest{Generation: 1, Records: []manifest.Record{{Path: "/example", Hash: hash, Mode: 0600}}}
 	if err := m.Archive(p.configManifestsDir); err != nil {
 		t.Fatal(err)
@@ -183,7 +183,7 @@ func TestVerifyBackupsChecksAndRepairsArchiveIndependentlyOfLive(t *testing.T) {
 func TestVerifyBackupsDoesNotCountPeerWithUnreadableTier(t *testing.T) {
 	p, hash, content := recoveryFixture(t)
 	peer, url := recoveryPeer(t)
-	buildReplicateTargets = url
+	setPeers(t, url)
 	m := &manifest.Manifest{Generation: 1, Records: []manifest.Record{{Path: "/example", Hash: hash, Mode: 0600}}}
 	if err := m.Archive(p.configManifestsDir); err != nil {
 		t.Fatal(err)

@@ -1,6 +1,8 @@
 # Changing passwords and group membership
 
-Use `account-edit` from the team's authenticated root shell on the defended box. It runs the installed Linux utility and approves only the requested account-file changes. It does not generate, export, save, or display plaintext passwords.
+Simplest path: shadow and gshadow are flag-only, so `chpasswd`, `passwd` and `usermod` work as usual while armed; run `warden accept --flagged` afterwards so the change becomes the baseline. `account-edit` is the stricter alternative below: it accepts exactly the requested change and refuses anything else that moved.
+
+Use `account-edit` from a root shell on the defended box (`ssh -t -i team <name>@<box>`). It runs the installed Linux utility and approves only the requested account-file changes. It does not generate, export, save, or display plaintext passwords.
 
 ```sh
 warden account-edit passwd alice
@@ -11,9 +13,9 @@ warden account-edit gpasswd -M "" incident-response
 warden account-edit gpasswd incident-response
 ```
 
-Replace `warden` with the installed binary path if it was renamed. The last command changes a group's password. `-M` (also `--members`) replaces the target group's entire explicit member list; it does not append users. An empty quoted list clears that list. Users whose primary GID is the group remain members through `/etc/passwd`. Supply the full list you want to keep. Batch replacement affects one group per invocation and uses one second-factor prompt and one config generation. Only these forms are supported; arbitrary utility flags, alternate roots, directory accounts, and passwords supplied as arguments are rejected.
+Replace `warden` with the installed binary path if it was renamed. The last command changes a group's password. `-M` (also `--members`) replaces the target group's entire explicit member list; it does not append users. An empty quoted list clears that list. Users whose primary GID is the group remain members through `/etc/passwd`. Supply the full list you want to keep. Batch replacement affects one group per invocation and creates one config generation. Only these forms are supported; arbitrary utility flags, alternate roots, directory accounts, and passwords supplied as arguments are rejected.
 
-Warden prompts for its TOTP code or static second factor without echoing it. For password changes, `passwd` or `gpasswd` then prompts normally on the existing terminal. Use an interactive SSH shell with a terminal allocated. No client-side files or software are needed.
+For password changes, `passwd` or `gpasswd` prompts normally on the existing terminal. Use an interactive SSH shell with a terminal allocated. No client-side files or software are needed.
 
 ## What gets approved
 
@@ -26,11 +28,11 @@ Before running the utility, Warden requires an existing config snapshot covering
 
 The wrapper checks permissions, ownership, symlinks, and all other account-file content before accepting the result. Successful edits create a new config generation and preserve earlier archives. The account scan recognizes the exact approved group record, even if it has not run since the edit. Subsequent changes to that record still get checked.
 
-A Warden-locked user must be unlocked through `unlock-account` before a password change. The opmenu account's password cannot be changed through this wrapper. Other accounts' temporary Warden locks remain temporary overlays; the wrapper does not fold them into the saved baseline.
+A Warden-locked user must be unlocked through `unlock-account` before a password change. Warden's own access accounts cannot be changed through this wrapper. Other accounts' temporary Warden locks remain temporary overlays; the wrapper does not fold them into the saved baseline.
 
 ## During the command
 
-Warden holds its shared operation lock while the utility runs and the new baseline is published. Other mutating commands report busy; watch, scan, and sentinel timers retry on their next scheduled pass. This briefly delays checks across the host. Password entry has a five-minute command limit, and the authorization prompt has a separate two-minute limit. Finish the operation promptly.
+Warden holds its shared operation lock while the utility runs and the new baseline is published. Other mutating commands report busy; watch, scan, and sentinel timers retry on their next scheduled pass. This briefly delays checks across the host. Password entry has a five-minute command limit. Finish the operation promptly.
 
 External programs can still change files during this interval. The wrapper checks the final account files and refuses unrelated changes. Unrelated watched files keep their existing baselines and are checked when watch resumes. No persistent maintenance exemption is created.
 

@@ -5,5 +5,10 @@
 *.log
 .DS_Store
 
-# generated per-competition secrets (scripts/generate-keys.sh) — never commit
+/dist/
+# Nothing secret belongs in this repo; keys are made on the box or on a
+# laptop with ssh-keygen, never committed.
 /secrets/
+*.pem
+team
+team.pub

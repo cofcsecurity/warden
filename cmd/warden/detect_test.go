@@ -68,17 +68,9 @@ func TestCurrentlyProtectedClassifiesConfirmFirstCorrectly(t *testing.T) {
 // mistake; this fails on it rather than leaving it for someone to notice
 // in the output during a competition.
 func TestEveryDetectableConfigPathIsWatched(t *testing.T) {
-	watched := map[string]bool{}
-	for _, p := range configTierPaths {
-		watched[p] = true
-	}
-	for _, p := range dataTierPaths {
-		watched[p] = true
-	}
-
 	for _, svc := range detect.KnownServices {
 		for _, cfg := range svc.ConfigPaths {
-			if !watched[cfg] {
+			if !coveredBy(configTierPaths, cfg) && !coveredBy(dataTierPaths, cfg) {
 				t.Errorf("detect knows %s's config path %s, but it isn't in configTierPaths/dataTierPaths", svc.Name, cfg)
 			}
 		}

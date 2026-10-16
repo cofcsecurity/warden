@@ -485,3 +485,83 @@ func TestUnreadablePathDoesNotBlockIndependentRepair(t *testing.T) {
 		})
 	}
 }
+
+// A new file in a watched drop-in directory is quarantined while armed:
+// copied aside by the hook, removed, and reported, while a disarmed pass
+// only flags it.
+func TestCheckQuarantinesNewDropInWhenArmed(t *testing.T) {
+	dir, st, log := setup(t)
+	manifestPath := filepath.Join(dir, "manifest.json")
+	dropins := filepath.Join(dir, "sudoers.d")
+	if err := os.MkdirAll(dropins, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	team := filepath.Join(dropins, "team")
+	if err := os.WriteFile(team, []byte("team ALL=(ALL) ALL\n"), 0o440); err != nil {
+		t.Fatal(err)
+	}
+	snapshotBaseline(t, manifestPath, []string{team}, nil, st)
+
+	backdoor := filepath.Join(dropins, "zz")
+	if err := os.WriteFile(backdoor, []byte("red ALL=(ALL) NOPASSWD: ALL\n"), 0o440); err != nil {
+		t.Fatal(err)
+	}
+
+	var quarantined []string
+	hook := func(path string) error {
+		quarantined = append(quarantined, path)
+		return os.Remove(path)
+	}
+	only := func(path string) bool { return filepath.Dir(path) == dropins }
+
+	disarmed := New(manifestPath, []string{team, backdoor}, nil, false, st, log, nil)
+	disarmed.Quarantine, disarmed.Quarantinable = hook, only
+	res, err := disarmed.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quarantined) != 0 || len(res.Flagged) != 1 {
+		t.Fatalf("disarmed must flag, not remove: %+v", res)
+	}
+
+	armed := New(manifestPath, []string{team, backdoor}, nil, true, st, log, nil)
+	armed.Quarantine, armed.Quarantinable = hook, only
+	res, err = armed.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Quarantined) != 1 || res.Quarantined[0] != backdoor {
+		t.Fatalf("expected the new drop-in quarantined: %+v", res)
+	}
+	if _, err := os.Stat(backdoor); !os.IsNotExist(err) {
+		t.Fatal("quarantined file still present")
+	}
+	if _, err := os.Stat(team); err != nil {
+		t.Fatal("baselined file must stay")
+	}
+}
+
+// A new file that does not qualify (an exact path, or a flag-only class)
+// is flagged even when armed.
+func TestCheckFlagsNewFileOutsideQuarantinableDirs(t *testing.T) {
+	dir, st, log := setup(t)
+	manifestPath := filepath.Join(dir, "manifest.json")
+	snapshotBaseline(t, manifestPath, nil, nil, st)
+	added := filepath.Join(dir, "new.conf")
+	if err := os.WriteFile(added, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := New(manifestPath, []string{added}, nil, true, st, log, nil)
+	w.Quarantine = func(string) error { t.Fatal("must not quarantine"); return nil }
+	w.Quarantinable = func(string) bool { return false }
+	res, err := w.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Flagged) != 1 {
+		t.Fatalf("expected a flag: %+v", res)
+	}
+	if _, err := os.Stat(added); err != nil {
+		t.Fatal("flagged file must be left in place")
+	}
+}

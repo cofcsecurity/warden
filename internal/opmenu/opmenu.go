@@ -1,190 +1,86 @@
-// Package opmenu is what the forced SSH command runs — deliberately not a
-// shell. It reads $SSH_ORIGINAL_COMMAND, dispatches against a small
-// whitelist, and requires a second factor before anything beyond read-only
-// status.
+// Package opmenu is what the team key's forced SSH command runs. It reads
+// $SSH_ORIGINAL_COMMAND and either runs one warden subcommand or opens a
+// root shell. There is no second factor: holding the team key, from the
+// team network, is the whole check.
 package opmenu
 
 import (
-	"crypto/subtle"
 	"fmt"
 	"os"
 	"strings"
 	"syscall"
-	"time"
-
-	"warden/internal/audit"
-	"warden/internal/totp"
 )
 
-// timeNow is a var so tests can override it.
-var timeNow = time.Now
-
-// Command is one whitelisted opmenu entry point.
-type Command string
-
-const (
-	CommandStatus  Command = "status"
-	CommandRestore Command = "restore"
-	CommandShell   Command = "shell"
-)
-
-// Request is one parsed invocation, built from $SSH_ORIGINAL_COMMAND and
-// the connection's source IP (already constrained by authorized_keys'
-// from= restriction, but recorded here for the audit trail).
+// Request is one parsed invocation.
 type Request struct {
-	Command  Command
+	// Args is the requested warden command line, without the binary name.
+	// Empty means an interactive shell.
 	Args     []string
 	SourceIP string
-	TOTPCode string
 }
 
-// Handler dispatches Requests against the whitelist. StatusFn and RestoreFn
-// are injected so this package doesn't import watch/restore directly and
-// stays independently testable; ShellPath is the binary execed for the
-// shell command once the second factor passes.
+// Shell reports whether the request asks for a shell rather than a command.
+func (r Request) Shell() bool {
+	return len(r.Args) == 0 || r.Args[0] == "shell"
+}
+
+// Parse splits raw (from $SSH_ORIGINAL_COMMAND) on whitespace. Quoting is
+// not interpreted; no warden argument needs embedded spaces except a public
+// key, which commands that take one join from their remaining arguments.
+func Parse(raw, sshClient string) Request {
+	req := Request{Args: strings.Fields(raw)}
+	if fields := strings.Fields(sshClient); len(fields) > 0 {
+		req.SourceIP = fields[0] // SSH_CLIENT is "<ip> <port> <port>"
+	}
+	return req
+}
+
+// Handler runs requests. Run executes one warden command line in-process;
+// Allowed reports whether a command name may be run this way.
 type Handler struct {
-	Secret string // TOTP secret, baked in at build time; "" disables TOTP
-	// StaticSecretPath is a file holding a rotatable, non-time-based
-	// passphrase accepted as an alternative second factor — for
-	// competitions where phones/authenticator apps aren't available at
-	// all (e.g. PCDC). "" disables this path. Read fresh on every check,
-	// never cached, so rotating it (see cmd/warden's rotate-secret) takes
-	// effect immediately with no rebuild or redeploy. Weaker than TOTP —
-	// it doesn't expire on its own — so TOTP is still checked first and
-	// this is purely additive, not a replacement.
-	StaticSecretPath string
-	// SpentTOTPPath records the last TOTP time step accepted here, so a
-	// code can't be replayed. "" disables the check — which is only
-	// appropriate in tests; every real caller passes a path, since this
-	// handler is reached over the network, where a code is observable in
-	// flight and otherwise stays good for the rest of its ~90-second
-	// skew window.
-	SpentTOTPPath string
-	StatusFn      func() (string, error)
-	RestoreFn     func(target string, args []string) (string, error)
-	ShellPath     string
-	Log           *audit.Logger
+	Run       func(args []string) error
+	Allowed   func(name string) bool
+	ShellPath string
+	Log       func(action string, fields map[string]any)
 }
 
-// New builds a Handler.
-func New(secret, staticSecretPath, spentTOTPPath string, statusFn func() (string, error), restoreFn func(target string, args []string) (string, error), shellPath string, log *audit.Logger) *Handler {
-	return &Handler{
-		Secret:           secret,
-		StaticSecretPath: staticSecretPath,
-		SpentTOTPPath:    spentTOTPPath,
-		StatusFn:         statusFn,
-		RestoreFn:        restoreFn,
-		ShellPath:        shellPath,
-		Log:              log,
+// Handle dispatches req.
+func (h *Handler) Handle(req Request) error {
+	if req.Shell() {
+		h.log("shell", req, nil)
+		return h.execShell()
 	}
+	name := req.Args[0]
+	if h.Allowed != nil && !h.Allowed(name) {
+		err := fmt.Errorf("opmenu: %q is not a warden command (try 'help', or 'shell')", name)
+		h.log("rejected", req, err)
+		return err
+	}
+	err := h.Run(req.Args)
+	h.log("ran", req, err)
+	return err
 }
 
-// Handle dispatches req. Status never requires a second factor; restore and
-// shell do. A rejected or malformed request is logged the same as an
-// accepted one — the audit trail needs both.
-func (h *Handler) Handle(req Request) (string, error) {
-	switch req.Command {
-	case CommandStatus:
-		out, err := h.StatusFn()
-		h.log(req, true, err)
-		return out, err
-
-	case CommandRestore:
-		if ok, reason := h.checkSecondFactor(req); !ok {
-			h.log(req, false, fmt.Errorf("second factor check failed: %s", reason))
-			return "", fmt.Errorf("opmenu: second factor required (%s)", reason)
-		}
-		if len(req.Args) == 0 {
-			h.log(req, false, fmt.Errorf("missing restore target"))
-			return "", fmt.Errorf("opmenu: restore requires a target")
-		}
-		out, err := h.RestoreFn(req.Args[0], req.Args[1:])
-		h.log(req, err == nil, err)
-		return out, err
-
-	case CommandShell:
-		if ok, reason := h.checkSecondFactor(req); !ok {
-			h.log(req, false, fmt.Errorf("second factor check failed: %s", reason))
-			return "", fmt.Errorf("opmenu: second factor required (%s)", reason)
-		}
-		h.log(req, true, nil)
-		return "", h.execShell()
-
-	default:
-		h.log(req, false, fmt.Errorf("unrecognized command %q", req.Command))
-		return "", fmt.Errorf("opmenu: unrecognized command %q", req.Command)
-	}
-}
-
-// checkSecondFactor accepts either a valid TOTP code — used at most once,
-// see spendTOTPCounter — or, if configured, an exact match against the
-// current static secret file (see StaticSecretPath). The returned reason
-// is for the audit log and the caller's error text; it never says which
-// factor was tried, only why nothing was accepted.
-func (h *Handler) checkSecondFactor(req Request) (ok bool, reason string) {
-	if req.TOTPCode == "" {
-		return false, "no code given"
-	}
-	if h.Secret != "" {
-		valid, counter, err := totp.ValidateAt(h.Secret, req.TOTPCode, timeNow(), 1)
-		if err == nil && valid {
-			if err := h.spendTOTPCounter(counter); err != nil {
-				return false, err.Error()
-			}
-			return true, ""
-		}
-	}
-	if h.StaticSecretPath != "" {
-		stored, err := os.ReadFile(h.StaticSecretPath)
-		if err == nil {
-			expected := strings.TrimSpace(string(stored))
-			if expected != "" && subtle.ConstantTimeCompare([]byte(expected), []byte(req.TOTPCode)) == 1 {
-				// No replay protection is possible here, by
-				// construction: the static secret is a standing
-				// passphrase for competitions where authenticator apps
-				// aren't usable at all, so it's reusable until rotated.
-				// That's why it's the fallback and TOTP is checked
-				// first — see rotate-secret.
-				return true, ""
-			}
-		}
-	}
-	return false, "invalid code"
-}
-
-// spendTOTPCounter marks this time step used, so the same code can't be
-// presented again — see totp.ConsumeCounter. The cost is that a code is
-// good for exactly one command: a dry-run restore and its apply need two
-// codes, which is the intended tradeoff.
-func (h *Handler) spendTOTPCounter(counter int64) error {
-	return totp.ConsumeCounter(h.SpentTOTPPath, counter)
-}
-
-// execShell is the only path in opmenu that leaves the Go binary. It's
-// reached only after checkSecondFactor has passed.
 func (h *Handler) execShell() error {
 	if h.ShellPath == "" {
 		return fmt.Errorf("opmenu: no shell path configured")
 	}
-	return syscall.Exec(h.ShellPath, []string{h.ShellPath}, os.Environ())
+	// -l gives the operator a normal root login environment rather than
+	// the stripped one sudo leaves behind.
+	env := append(os.Environ(), "HOME=/root", "USER=root", "LOGNAME=root")
+	return syscall.Exec(h.ShellPath, []string{h.ShellPath, "-l"}, env)
 }
 
-func (h *Handler) log(req Request, ok bool, err error) {
+func (h *Handler) log(action string, req Request, err error) {
 	if h.Log == nil {
 		return
 	}
-	fields := map[string]any{
-		"command":   string(req.Command),
-		"source_ip": req.SourceIP,
-		"totp_used": req.TOTPCode != "",
-		"accepted":  ok,
+	fields := map[string]any{"source_ip": req.SourceIP}
+	if len(req.Args) > 0 {
+		fields["command"] = req.Args[0]
 	}
 	if err != nil {
 		fields["error"] = err.Error()
 	}
-	action := "accepted"
-	if !ok {
-		action = "rejected"
-	}
-	_ = h.Log.Log("opmenu", action, fields)
+	h.Log(action, fields)
 }

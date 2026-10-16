@@ -1,0 +1,4 @@
+# The team laptop: nothing but an ssh client.
+FROM alpine:3.20
+RUN apk add --no-cache openssh-client bash
+CMD ["sleep", "infinity"]

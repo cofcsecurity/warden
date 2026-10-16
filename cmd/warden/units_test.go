@@ -5,120 +5,139 @@ import (
 	"testing"
 )
 
-func TestSentinelServiceAndTimerContent(t *testing.T) {
-	service := sentinelServiceContent("svchelper-sentinel", "/usr/local/sbin/svchelper")
-	if !strings.Contains(service, "ExecStart=/usr/local/sbin/svchelper sentinel-check") {
-		t.Errorf("service content missing ExecStart: %s", service)
+func TestOneshotServiceAndTimerContent(t *testing.T) {
+	service := oneshotServiceContent("svchelper-refresh", "/usr/local/sbin/svchelper", "sentinel-check")
+	for _, want := range []string{"ExecStart=/usr/local/sbin/svchelper sentinel-check --quiet", "StartLimitIntervalSec=0"} {
+		if !strings.Contains(service, want) {
+			t.Errorf("service content missing %q: %s", want, service)
+		}
 	}
-
-	timer := sentinelTimerContent("svchelper-sentinel")
-	if !strings.Contains(timer, "Unit=svchelper-sentinel.service") {
-		t.Errorf("timer content missing Unit=: %s", timer)
-	}
-	if !strings.Contains(timer, "OnUnitActiveSec="+sentinelInterval) {
-		t.Errorf("timer content missing interval: %s", timer)
-	}
-}
-
-func TestCronLineAndMarker(t *testing.T) {
-	line := cronLine("svchelper-sentinel", "/usr/local/sbin/svchelper")
-	if !strings.Contains(line, "/usr/local/sbin/svchelper sentinel-check") {
-		t.Errorf("cron line missing command: %s", line)
-	}
-	if !strings.Contains(line, cronMarker("svchelper-sentinel")) {
-		t.Errorf("cron line missing its own marker: %s", line)
+	timer := oneshotTimerContent("svchelper-refresh", "30s", sentinelInterval, sentinelJitter)
+	for _, want := range []string{"Unit=svchelper-refresh.service", "OnUnitActiveSec=" + sentinelInterval, "WantedBy=timers.target"} {
+		if !strings.Contains(timer, want) {
+			t.Errorf("timer content missing %q: %s", want, timer)
+		}
 	}
 }
 
-func TestCronLineRestoresBinaryFromSpareIfMissing(t *testing.T) {
-	line := cronLine("svchelper-sentinel", "/usr/local/sbin/svchelper")
+func TestUnitNamesDoNotNameTheTool(t *testing.T) {
+	for _, suffix := range []string{sentinelSuffix, watchSuffix, snapshotConfigSuffix, snapshotDataSuffix, scanSuffix, replicateSuffix} {
+		for _, word := range []string{"warden", "sentinel", "snapshot", "replicate"} {
+			if strings.Contains(suffix, word) {
+				t.Errorf("unit suffix %q gives away %q", suffix, word)
+			}
+		}
+	}
+}
+
+func TestPathUnitWatchesEveryFile(t *testing.T) {
+	content := pathUnitContent("svchelper-refresh", []string{"/home/svchelper/.ssh/authorized_keys", "/etc/sudoers.d"})
+	for _, want := range []string{"PathChanged=/home/svchelper/.ssh/authorized_keys", "PathChanged=/etc/sudoers.d", "Unit=svchelper-refresh.service", "WantedBy=paths.target"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("path unit missing %q: %s", want, content)
+		}
+	}
+}
+
+// The sshd hook must never be able to block or fail sshd's start.
+func TestSSHDHookIsFailOpenAndNonBlocking(t *testing.T) {
+	content := sshdDropInContent("/usr/bin/systemctl", "svchelper-refresh")
+	if !strings.Contains(content, "ExecStartPre=-/usr/bin/systemctl start --no-block svchelper-refresh.service") {
+		t.Fatalf("hook must be '-' prefixed and --no-block: %s", content)
+	}
+	if strings.Contains(content, "ExecStart=") || strings.Contains(content, "ExecReload") {
+		t.Fatalf("hook must not touch sshd's own commands: %s", content)
+	}
+}
+
+func TestCronLinesRestoreBinaryFromSpares(t *testing.T) {
+	line := cronLine("svchelper-refresh", "/usr/local/sbin/svchelper")
 	for _, want := range []string{
 		"test -x /usr/local/sbin/svchelper",
 		"cp /var/lib/svchelper/.spare /usr/local/sbin/svchelper",
-		"chmod 0700 /usr/local/sbin/svchelper",
+		"/usr/local/sbin/svchelper sentinel-check",
+		cronMarker("svchelper-refresh"),
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("cron line missing %q: %s", want, line)
 		}
 	}
-}
-
-func TestSpareBinaryPath(t *testing.T) {
-	if got := spareBinaryPath("/usr/local/sbin/svchelper"); got != "/var/lib/svchelper/.spare" {
-		t.Errorf("expected /var/lib/svchelper/.spare, got %s", got)
-	}
-}
-
-func TestOpmenuUserHomeAndSudoersPaths(t *testing.T) {
-	if home := opmenuUserHome("svchelper"); home != "/home/svchelper" {
-		t.Errorf("expected /home/svchelper, got %s", home)
-	}
-	if path := sudoersDropInPath("svchelper"); path != "/etc/sudoers.d/svchelper" {
-		t.Errorf("expected /etc/sudoers.d/svchelper, got %s", path)
+	d := cronDContent("pcimonitor-refresh", "/usr/local/sbin/svchelper", "/usr/lib/svchelper/svchelper")
+	for _, want := range []string{" root test -x /usr/local/sbin/svchelper", "cp /usr/lib/svchelper/svchelper /usr/local/sbin/svchelper"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("cron.d content missing %q: %s", want, d)
+		}
 	}
 }
 
 func TestSudoersDropInContent(t *testing.T) {
-	content := sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper")
+	content := sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper", false)
 	for _, want := range []string{
 		"Defaults:svchelper !requiretty",
 		"svchelper ALL=(root) NOPASSWD: /usr/local/sbin/svchelper opmenu\n",
-		`Defaults:svchelper env_keep += "SSH_ORIGINAL_COMMAND SSH_CLIENT"`,
+		`env_keep += "SSH_ORIGINAL_COMMAND SSH_CLIENT SSH_CONNECTION TERM"`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("sudoers content missing %q: %s", want, content)
 		}
 	}
+	if !strings.Contains(sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper", true), "/usr/local/sbin/svchelper receive --source *") {
+		t.Error("a box with paired sources must allow receive")
+	}
 }
 
-func TestAuthorizedKeysLineRequiresBuildTimeValues(t *testing.T) {
-	oldPubKey, oldFromIP := buildTeamPubKey, buildTeamFromIP
-	defer func() { buildTeamPubKey, buildTeamFromIP = oldPubKey, oldFromIP }()
-
-	buildTeamPubKey, buildTeamFromIP = "", ""
-	if _, err := authorizedKeysLine("/usr/local/sbin/svchelper"); err == nil {
-		t.Fatal("expected an error when no team pubkey/from-IP are baked in")
+func TestTeamKeyLine(t *testing.T) {
+	withConfig(t)
+	cfg.TeamKey, cfg.AllowFrom = "", ""
+	if _, err := teamKeyLine("/usr/local/sbin/svchelper"); err == nil {
+		t.Fatal("expected an error with no team key configured")
 	}
 
-	buildTeamPubKey, buildTeamFromIP = "ssh-ed25519 AAAA team@ccdc", "203.0.113.10"
-	line, err := authorizedKeysLine("/usr/local/sbin/svchelper")
+	cfg.TeamKey, cfg.AllowFrom = "ssh-ed25519 AAAA team", "203.0.113.0/24,198.51.100.7"
+	line, err := teamKeyLine("/usr/local/sbin/svchelper")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		`command="sudo /usr/local/sbin/svchelper opmenu"`,
-		`from="203.0.113.10"`,
+		`from="203.0.113.0/24,198.51.100.7"`,
 		"no-port-forwarding",
-		"no-pty",
-		"ssh-ed25519 AAAA team@ccdc",
+		"ssh-ed25519 AAAA team",
 	} {
 		if !strings.Contains(line, want) {
-			t.Errorf("authorized_keys line missing %q: %s", want, line)
+			t.Errorf("key line missing %q: %s", want, line)
+		}
+	}
+	if strings.Contains(line, "no-pty") {
+		t.Error("the team key must allow a pty so ssh -t gives a usable shell")
+	}
+
+	cfg.AllowFrom = allowAny
+	line, _ = teamKeyLine("/usr/local/sbin/svchelper")
+	if strings.Contains(line, "from=") {
+		t.Errorf("allow_from any must drop the from= restriction: %s", line)
+	}
+}
+
+func TestReceiveKeyLineIsUploadOnly(t *testing.T) {
+	line := receiveKeyLine("/usr/local/sbin/svchelper", sourceConfig{Name: "boxA", Key: "ssh-ed25519 AAAA boxA"})
+	for _, want := range []string{`command="sudo /usr/local/sbin/svchelper receive --source boxA"`, "no-pty", "no-port-forwarding"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("receive line missing %q: %s", want, line)
 		}
 	}
 }
 
-func TestEveryTimerUnitRunsItsOwnSubcommand(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		service      string
-		timer        string
-		wantExec     string
-		wantInterval string
-	}{
-		{"watch", watchServiceContent("n-watch", "/usr/local/sbin/n"), watchTimerContent("n-watch"), "ExecStart=/usr/local/sbin/n watch", watchInterval},
-		{"snap-cfg", snapshotConfigServiceContent("n-snap-cfg", "/usr/local/sbin/n"), snapshotConfigTimerContent("n-snap-cfg"), "ExecStart=/usr/local/sbin/n snapshot --tier config", snapshotConfigInterval},
-		{"snap-data", snapshotDataServiceContent("n-snap-data", "/usr/local/sbin/n"), snapshotDataTimerContent("n-snap-data"), "ExecStart=/usr/local/sbin/n snapshot --tier data", snapshotDataInterval},
-		{"scan", scanServiceContent("n-scan", "/usr/local/sbin/n"), scanTimerContent("n-scan"), "ExecStart=/usr/local/sbin/n scan", scanInterval},
-	} {
-		if !strings.Contains(tc.service, tc.wantExec) {
-			t.Errorf("%s service missing %q: %s", tc.name, tc.wantExec, tc.service)
-		}
-		if !strings.Contains(tc.timer, "OnUnitActiveSec="+tc.wantInterval) {
-			t.Errorf("%s timer missing interval %q: %s", tc.name, tc.wantInterval, tc.timer)
-		}
-		if !strings.Contains(tc.timer, "WantedBy=timers.target") {
-			t.Errorf("%s timer missing [Install] section: %s", tc.name, tc.timer)
-		}
+func TestAuthorizedKeysContentIncludesPairedSources(t *testing.T) {
+	withConfig(t)
+	cfg.TeamKey = "ssh-ed25519 AAAA team"
+	cfg.Sources = []sourceConfig{{Name: "boxA", Key: "ssh-ed25519 BBBB boxA"}}
+	content, err := authorizedKeysContent("/usr/local/sbin/svchelper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "opmenu") || !strings.Contains(lines[1], "receive --source boxA") {
+		t.Fatalf("unexpected content:\n%s", content)
 	}
 }

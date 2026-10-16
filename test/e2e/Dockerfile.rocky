@@ -1,0 +1,6 @@
+# A RHEL-family defended box.
+FROM rockylinux:9
+RUN dnf install -y systemd openssh-server openssh-clients sudo cronie iptables-nft passwd procps-ng shadow-utils iproute tar \
+ && dnf clean all \
+ && systemctl enable sshd crond
+CMD ["/sbin/init"]

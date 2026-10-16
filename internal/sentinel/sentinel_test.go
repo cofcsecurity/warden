@@ -1,6 +1,9 @@
 package sentinel
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestRunRecreatesMissingRegistrations(t *testing.T) {
 	systemdPresent := true
@@ -38,5 +41,34 @@ func TestRunRecreatesMissingRegistrations(t *testing.T) {
 	}
 	if len(res.Recreated) != 1 || res.Recreated[0] != "cron-entry" {
 		t.Errorf("expected cron-entry to be reported recreated, got %+v", res.Recreated)
+	}
+}
+
+func TestRunContinuesPastFailures(t *testing.T) {
+	laterRepaired := false
+	regs := []Registration{
+		{Name: "broken-check", Check: func() (bool, error) { return false, errors.New("boom") }},
+		{Name: "broken-repair", Check: func() (bool, error) { return false, nil }, Recreate: func() error { return errors.New("nope") }},
+		{Name: "later", Check: func() (bool, error) { return false, nil }, Recreate: func() error { laterRepaired = true; return nil }},
+	}
+	res, err := New(regs, nil).Run()
+	if err == nil {
+		t.Fatal("expected the joined errors")
+	}
+	if !laterRepaired || len(res.Recreated) != 1 {
+		t.Fatalf("a failure must not stop later repairs: %+v", res)
+	}
+}
+
+func TestRunFlagsWithoutRepair(t *testing.T) {
+	regs := []Registration{
+		{Name: "flag-only", Check: func() (bool, error) { return false, nil }, Problems: func() []string { return []string{"x"} }},
+	}
+	res, err := New(regs, nil).Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Flagged) != 1 || res.Flagged[0] != "flag-only" {
+		t.Fatalf("flagged = %+v", res.Flagged)
 	}
 }

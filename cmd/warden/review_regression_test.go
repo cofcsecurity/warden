@@ -56,30 +56,6 @@ func TestRegressionPruneActiveGeneration(t *testing.T) {
 	}
 }
 
-func TestRegressionReplicationFailureStillSendsEvidence(t *testing.T) {
-	p, _, _ := recoveryFixture(t)
-	peer, url := recoveryPeer(t)
-	st, err := store.New(p.storeRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	probeWrite(t, p.auditLogPath, []byte("evidence\n"))
-	if _, err := pushToTarget(p, st, replicateTarget{url: url}, auditPushState{}, "probe.json", []byte("{}")); err == nil {
-		t.Fatal("expected missing manifest error")
-	}
-	names, err := peer.AuditSegments()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(names) == 0 {
-		t.Error("backup error prevented audit delivery")
-	}
-	root := url[len("file://"):]
-	if _, err := os.Stat(filepath.Join(root, "heartbeat", "probe.json")); err != nil {
-		t.Errorf("backup error prevented heartbeat delivery: %v", err)
-	}
-}
-
 func TestRegressionArchiveImmutable(t *testing.T) {
 	dir := t.TempDir()
 	m := &manifest.Manifest{Generation: 1, Records: []manifest.Record{{Path: "/original"}}}
@@ -95,25 +71,6 @@ func TestRegressionArchiveImmutable(t *testing.T) {
 		if got.Records[0].Path != "/original" {
 			t.Fatal("archive silently replaced an existing generation")
 		}
-	}
-}
-
-func TestRegressionNullAuditState(t *testing.T) {
-	p := auditTestPaths(t)
-	probeWrite(t, p.auditPushStatePath, []byte("null"))
-	probeWrite(t, p.auditLogPath, []byte("evidence\n"))
-	state, err := loadAuditPushState(p.auditPushStatePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, _, _ := fsReplicator(t)
-	defer func() {
-		if v := recover(); v != nil {
-			t.Errorf("valid JSON null crashes replication: %v", v)
-		}
-	}()
-	if _, err := pushAuditLog(p, r, "file:///peer", state); err != nil {
-		t.Fatal(err)
 	}
 }
 

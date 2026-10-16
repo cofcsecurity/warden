@@ -63,7 +63,7 @@ func TestSudoersFileCheckAndRecreate(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "svchelper")
-	content := sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper")
+	content := sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper", true)
 
 	present, err := checkSudoersFile(path, content)
 	if err != nil {
@@ -195,55 +195,12 @@ func TestSpareBinaryRestoresAfterInstalledIsDeleted(t *testing.T) {
 	}
 }
 
-func TestSystemdTimerFilesRequireAllThreeArtifacts(t *testing.T) {
-	dir := t.TempDir()
-	servicePath := filepath.Join(dir, "svchelper-sentinel.service")
-	timerPath := filepath.Join(dir, "svchelper-sentinel.timer")
-	enabledLinkPath := filepath.Join(dir, "wants", "svchelper-sentinel.timer")
-
-	present, err := checkSystemdTimerFiles(servicePath, timerPath, enabledLinkPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if present {
-		t.Fatalf("expected absent before any files exist")
-	}
-
-	if err := writeSystemdTimerFiles(servicePath, timerPath, "service content", "timer content"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Service and timer exist now, but not the enabled symlink yet.
-	present, err = checkSystemdTimerFiles(servicePath, timerPath, enabledLinkPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if present {
-		t.Fatalf("expected absent without the enabled symlink")
-	}
-
-	if err := os.MkdirAll(filepath.Dir(enabledLinkPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(timerPath, enabledLinkPath); err != nil {
-		t.Fatal(err)
-	}
-
-	present, err = checkSystemdTimerFiles(servicePath, timerPath, enabledLinkPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !present {
-		t.Fatalf("expected present once service, timer, and symlink all exist")
-	}
-}
-
 func TestCronEntryFileCheckAndRecreate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "crontab")
 	marker := "# svchelper-sentinel"
 	newLine := "*/10 * * * * /usr/local/sbin/svchelper sentinel-check " + marker
 
-	present, err := checkCronEntryFile(path, marker)
+	present, err := checkCronEntryFile(path, newLine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +212,7 @@ func TestCronEntryFileCheckAndRecreate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	present, err = checkCronEntryFile(path, marker)
+	present, err = checkCronEntryFile(path, newLine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,19 +257,14 @@ func TestCronEntryFilePreservesOtherJobsAndDedupsOwnLine(t *testing.T) {
 	}
 }
 
-// TestBuildRegistrationsCoversEveryTimer is the regression guard for the
-// gap this file used to have: only sentinel's own timer (and replicate's)
-// were registered, so watch, both snapshot tiers, and scan could each be
-// disabled and deleted once with nothing ever noticing or rebuilding them.
-func TestBuildRegistrationsCoversEveryTimer(t *testing.T) {
-	oldPubKey, oldFromIP, oldTargets := buildTeamPubKey, buildTeamFromIP, buildReplicateTargets
-	defer func() {
-		buildTeamPubKey, buildTeamFromIP, buildReplicateTargets = oldPubKey, oldFromIP, oldTargets
-	}()
-	buildTeamPubKey, buildTeamFromIP = "ssh-ed25519 AAAA team@ccdc", "203.0.113.10"
-	buildReplicateTargets = ""
+// TestBuildRegistrationsCoversEveryLinkAndTrigger guards the whole set:
+// a link or trigger nobody checks can be removed once and never comes back.
+func TestBuildRegistrationsCoversEveryLinkAndTrigger(t *testing.T) {
+	withConfig(t)
+	cfg.TeamKey, cfg.AllowFrom, cfg.BreakGlassUser = testKey(t, "team"), "203.0.113.0/24", "pcimonitor"
+	setPeers(t, "")
 
-	regs, err := buildRegistrations()
+	regs, err := buildRegistrations(pathsForName("svchelper"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,76 +272,84 @@ func TestBuildRegistrationsCoversEveryTimer(t *testing.T) {
 	for _, r := range regs {
 		names[r.Name] = true
 	}
-
 	for _, want := range []string{
-		"authorized_keys", "sudoers", "systemd-timer", "cron-entry", "binary-backup",
+		"binary-spare", "binary-mirror", "config-copies",
+		"main-account", "main-keys", "main-sudoers", "main-sshd-dropin", "main-sshd-access",
+		"break-glass-account", "break-glass-keys", "break-glass-sudoers", "break-glass-sshd-dropin", "break-glass-sshd-access",
+		"sshd-service", "firewall-allow", "sudo", "ld-preload",
+		"sentinel-timer", "sentinel-path", "cron-entry", "break-glass-timer", "break-glass-cron",
 		"watch-timer", "snapshot-config-timer", "snapshot-data-timer", "scan-timer",
 	} {
 		if !names[want] {
-			t.Errorf("no %q registration; sentinel-check would never notice it being disabled", want)
+			t.Errorf("no %q registration; sentinel-check would never notice it broken", want)
 		}
 	}
 	if names["replicate-timer"] {
-		t.Error("replicate-timer registered on a build with no replication targets configured")
+		t.Error("replicate-timer registered with no peers configured")
 	}
 
-	buildReplicateTargets = "file:///tmp/peer"
-	regs, err = buildRegistrations()
+	setPeers(t, "file:///tmp/peer")
+	cfg.TeamKey = testKey(t, "team")
+	regs, err = buildRegistrations(pathsForName("svchelper"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := false
 	for _, r := range regs {
-		if r.Name == "replicate-timer" {
-			found = true
-		}
+		found = found || r.Name == "replicate-timer"
 	}
 	if !found {
-		t.Error("expected a replicate-timer registration once targets are configured")
+		t.Error("expected a replicate-timer registration once a peer is configured")
 	}
 }
 
-// TestTimerRegistrationChecksAllThreeFiles pins the contract every timer
-// registration relies on: a .timer file with no symlink in
-// timers.target.wants never actually fires, so "present" has to mean all
-// three files, not just the unit ones.
-func TestTimerRegistrationChecksAllThreeFiles(t *testing.T) {
-	dir := t.TempDir()
-	service := filepath.Join(dir, "x.service")
+// TestUnitRegistrationCatchesMaskingAndMissingLink: a masked unit is a
+// symlink to /dev/null with every file "present", and a timer without its
+// wants link never fires. Both must count as broken.
+func TestUnitRegistrationCatchesMaskingAndMissingLink(t *testing.T) {
+	dir := withUnitDir(t)
+	calls := fakeCommands(t)
+	reg := unitRegistration("x", "x", map[string]string{"x.service": "svc\n", "x.timer": "tmr\n"}, "x.timer", systemdTimersWantsDir)
+
+	if ok, _ := reg.Check(); ok {
+		t.Fatal("absent unit reported present")
+	}
+	if err := reg.Recreate(); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := reg.Check(); !ok {
+		t.Fatal("recreated unit not reported present")
+	}
+	if len(*calls) == 0 || !strings.Contains(strings.Join(*calls, "\n"), "systemctl restart x.timer") {
+		t.Fatalf("recreate must (re)start the unit: %v", *calls)
+	}
+
 	timer := filepath.Join(dir, "x.timer")
-	link := filepath.Join(dir, "wants", "x.timer")
-
-	ok, err := checkSystemdTimerFiles(service, timer, link)
-	if err != nil {
+	os.Remove(timer)
+	if err := os.Symlink("/dev/null", timer); err != nil {
 		t.Fatal(err)
 	}
-	if ok {
-		t.Fatal("expected absent before anything is written")
+	if ok, _ := reg.Check(); ok {
+		t.Fatal("a masked timer must not count as present")
 	}
-
-	if err := writeSystemdTimerFiles(service, timer, "svc", "tmr"); err != nil {
+	if err := reg.Recreate(); err != nil {
 		t.Fatal(err)
 	}
-	ok, err = checkSystemdTimerFiles(service, timer, link)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok {
-		t.Fatal("a timer with no timers.target.wants symlink must not count as present")
+	if info, err := os.Lstat(timer); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("recreate must replace the mask with the real unit file")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+	os.Remove(filepath.Join(systemdTimersWantsDir, "x.timer"))
+	if ok, _ := reg.Check(); ok {
+		t.Fatal("a timer with no wants link must not count as present")
+	}
+
+	unitActive = func(string) bool { return false }
+	if err := reg.Recreate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(timer, link); err != nil {
-		t.Fatal(err)
-	}
-	ok, err = checkSystemdTimerFiles(service, timer, link)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok {
-		t.Fatal("expected present once all three exist")
+	if ok, _ := reg.Check(); ok {
+		t.Fatal("a stopped timer must not count as present")
 	}
 }
 

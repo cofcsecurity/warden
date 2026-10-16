@@ -48,7 +48,7 @@ func dialRecoveryTarget(rawURL, hostKey string) (replicate.Target, func() error,
 }
 
 func newBackupRecovery(p paths, log *audit.Logger) *backupRecovery {
-	sources := parseReplicateTargets(buildReplicateTargets)
+	sources := configuredPeers()
 	sort.SliceStable(sources, func(i, j int) bool {
 		return strings.HasPrefix(sources[i].url, "file://") && !strings.HasPrefix(sources[j].url, "file://")
 	})
@@ -160,16 +160,13 @@ func (r *backupRecovery) manifest(tier snapshotTier, generation int) (*manifest.
 	if generation > 0 {
 		// The live pointer may be the last local copy of this generation.
 		if data, err := fsutil.ReadFile(r.p.manifestPathForTier(tier)); err == nil {
-			if m, err := manifest.Parse(data); err == nil && validateRecoveryManifest(m, generation) == nil && verifyManifest(m, tier) == nil {
+			if m, err := manifest.Parse(data); err == nil && validateRecoveryManifest(m, generation) == nil {
 				return m, nil
 			}
 		}
 		m, err := manifest.LoadGeneration(r.p.manifestsDirForTier(tier), generation)
 		if err == nil {
 			err = validateRecoveryManifest(m, generation)
-			if err == nil {
-				err = verifyManifest(m, tier)
-			}
 		}
 		if err == nil {
 			return m, nil
@@ -213,9 +210,6 @@ func (r *backupRecovery) manifest(tier snapshotTier, generation int) (*manifest.
 		}
 		if err == nil {
 			err = validateRecoveryManifest(m, candidate.generation)
-			if err == nil {
-				err = verifyManifest(m, tier)
-			}
 		}
 		if err == nil {
 			r.record("manifest-found", source, map[string]any{"tier": tier, "generation": m.Generation})
@@ -240,7 +234,7 @@ func (r *backupRecovery) loadManifest(tier snapshotTier, id string) (*manifest.M
 	data, err := fsutil.ReadFile(r.p.manifestPathForTier(tier))
 	if err == nil {
 		m, parseErr := manifest.Parse(data)
-		if parseErr == nil && validateRecoveryManifest(m, 0) == nil && verifyManifest(m, tier) == nil {
+		if parseErr == nil && validateRecoveryManifest(m, 0) == nil {
 			return m, nil
 		}
 	}
