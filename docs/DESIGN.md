@@ -12,6 +12,53 @@ Warden keeps a defended competition box alive and recoverable. Red wants to dest
 
 Root on the box still beats Warden. The defense is redundancy and repair speed, not stealth: red can find every unit and file, but has to clear all of them inside one repair window.
 
+## Architecture (Phase 1 Rework)
+
+Warden now uses process masquerading for persistence instead of overt systemd units and cron jobs. This replaces the previous architecture with more resilient techniques that resist detection and elimination.
+
+### Process Replacement
+
+Warden replaces legitimate long-running processes via `exec()`. The PID stays the same; `/proc/<pid>/exe` points to the original path; running code is Warden. Primary replacement targets include:
+
+- `/usr/lib/systemd/systemd-logind` — Always running, handles logins, low suspicion
+- `/usr/sbin/sshd` — Runs constantly on competition boxes, expected network activity
+
+The `warden masq replace [target]` command initiates process replacement for a specified target. Warden embeds its sentinel logic within the replaced process, performing checks at randomized intervals (30 seconds to 2 minutes) while maintaining the appearance of the original service.
+
+### LD_PRELOAD Hooking
+
+Warden injects a shared library (`warden_hook.so`) into running processes via `LD_PRELOAD` to intercept system calls and hide its presence from inspection tools. The library hooks common commands such as `ps`, `ls`, `top`, and `kill` to filter out Warden processes, files, and network connections from output.
+
+Hidden PIDs are configured via the `WARDEN_HIDE_PIDS` environment variable (comma-separated list). The hooking library intercepts:
+- `/proc/<pid>` directory listings to hide replaced process entries
+- `system()` calls targeting kill commands for hidden PIDs
+- `getcwd()` calls to hide Warden directories
+
+### Mutual Revival Strategy
+
+Multiple components monitor each other using PIDs, signals, and Unix process groups. If one dies, another revives it within seconds. Component roles:
+
+```
+Component A (systemd-logind replacement) → monitors B, C via PID tracking
+Component B (sshd replacement)          → monitors A, C; handles network checks
+Component C (apt-daemon replacement)    → monitors A, B; runs integrity checks
+```
+
+Revival mechanics use randomized intervals to avoid patterns. Each component can rebuild others from stored configuration embedded elsewhere on the system.
+
+### Configuration Storage
+
+Critical configuration is stored in existing structures rather than dedicated files:
+
+| Location | What It Stores |
+|----------|---------------|
+| SSH authorized_keys comments | Payload hash, revival config |
+| Systemd environment variables | Component PIDs, check intervals |
+| Extended attributes (`setfattr`) | Config on legitimate files |
+| `/dev/shm` | Temporary storage (RAM-based) |
+
+No dedicated `/var/lib/warden` or `/usr/lib/warden` directories are used.
+
 ## Access
 
 One team SSH key. Its public half is in the runtime config; its private half stays on the laptops. The key line in each access account's `authorized_keys` carries `from="<team network>"` and a forced command, `sudo <binary> opmenu`. opmenu reads `$SSH_ORIGINAL_COMMAND`: empty or `shell` opens a root login shell, a warden subcommand runs in-process, anything else is refused. The pty is allowed so `ssh -t` gives a usable shell.

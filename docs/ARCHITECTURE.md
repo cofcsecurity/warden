@@ -2,21 +2,43 @@
 
 Companions to [DESIGN.md](DESIGN.md) and [USAGE.md](USAGE.md). GitHub renders these Mermaid blocks natively.
 
-## Components on one box
+## Components on one box (Phase 1 Rework)
 
-Short-lived commands, started by timers, a path unit, cron and an sshd hook.
+Process masquerading replaces overt systemd units and cron jobs with embedded Warden logic running inside legitimate processes.
 
 ```mermaid
 flowchart TB
-    subgraph Triggers
+    subgraph Masquerade["Process Masquerading"]
+        Logind["systemd-logind\n(replaced by Warden A)"]
+        SSHD["sshd\n(replaced by Warden B)"]
+        AptDaemon["apt-daemon\n(replaced by Warden C)"]
+        
+        Logind -->|"monitors PIDs"| SSHD
+        SSHD -->|"monitors PIDs"| AptDaemon
+        AptDaemon -->|"monitors PIDs"| Logind
+        
+        Logind -.->|"revives if dead"| SSHD
+        SSHD -.->|"revives if dead"| AptDaemon
+        AptDaemon -.->|"revives if dead"| Logind
+    end
+
+    subgraph Hooking["LD_PRELOAD Hooking"]
+        HookLib["warden_hook.so\nintercepts ps, ls, top, kill"]
+        EnvVar["WARDEN_HIDE_PIDS env var"]
+        
+        HookLib -->|"filters output for"| SSHD
+        HookLib -->|"filters output for"| Logind
+        HookLib -->|"filters output for"| AptDaemon
+        
+        EnvVar -.->|"configures hidden PIDs"| HookLib
+    end
+
+    subgraph Legacy["Legacy Triggers (still active)"]
         T_refresh["&lt;name&gt;-refresh.timer\nevery 1 min"]
         T_path["&lt;name&gt;-refresh.path\non access-file change"]
         T_cron["root crontab\nevery 2 min"]
         T_sshd["sshd ExecStartPre hook"]
         T_bg["&lt;bg&gt;-refresh.timer + /etc/cron.d/&lt;bg&gt;"]
-        T_watch["&lt;name&gt;-verify.timer\nevery 2 min"]
-        T_snap["-cache / -archive timers\n5 min / 1 h"]
-        T_sync["&lt;name&gt;-sync.timer\nevery 15 min"]
     end
 
     subgraph Binary["/usr/local/sbin/&lt;name&gt;"]
@@ -36,32 +58,32 @@ flowchart TB
     end
 
     T_refresh & T_path & T_cron & T_sshd & T_bg --> sentinel
-    T_watch --> watch
-    T_snap --> snapshot
-    T_sync --> replicate
-
-    sentinel -- "check + repair" --> access["accounts, keys, sudoers,\nsshd drop-ins, sshd, firewall"]
-    sentinel -- "check + repair" --> Triggers
-    watch -- "restore / quarantine / flag" --> files["watched files"]
+    Logind -->|"embedded checks"| sentinel
+    SSHD -->|"network checks"| sentinel
+    AptDaemon -->|"integrity checks"| sentinel
+    
+    watch --> files["watched files"]
     snapshot --> manifests
-    watch -. reads .-> manifests
     replicate -- "upload only" --> peer["peer box\n/var/lib/&lt;peer&gt;-peers/&lt;source&gt;/"]
+    
     laptop["team laptop\n(ssh + team key)"] -- "ssh &lt;name&gt;@box [command]" --> opmenu
     opmenu --> Binary
+    
+    sentinel -- "check + repair" --> access["accounts, keys, sudoers,\nsshd drop-ins, sshd, firewall"]
 ```
 
 ## Lockout and repair
 
-Any trigger runs the whole pass; every pass also checks every trigger.
+Any trigger runs the whole pass; every pass also checks every trigger. Process masquerading adds rapid revival from multiple independent components.
 
 ```mermaid
 sequenceDiagram
     participant Red
     participant Box as files on the box
-    participant Path as refresh.path
-    participant S as sentinel-check
-    participant Team as team laptop
-
+    Path as refresh.path
+    S as sentinel-check
+    Team as team laptop
+    
     Red->>Box: rm authorized_keys
     Box-->>Path: PathChanged fires
     Path->>S: start
@@ -74,6 +96,11 @@ sequenceDiagram
     S->>Box: Match User drop-in + reload sshd
     S->>Box: team ACCEPT back to top of INPUT
 
+    Red->>Box: kill Warden process A
+    Note over Masquerade: Process B detects death of A
+    Masquerade->>Box: revive A via exec() replacement
+    Note over Masquerade: Revival completes within seconds
+    
     Red->>Box: delete main account, sudoers, refresh units, cron line
     Team->>Box: ssh -t <break-glass>@box   (still works)
     Note over S: break-glass timer or cron.d (≤2 min)

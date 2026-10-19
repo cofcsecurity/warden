@@ -86,6 +86,7 @@ func newRootCmd() *cobra.Command {
 		statusCmd(),
 		lockAccountCmd(),
 		unlockAccountCmd(),
+		masqCmd(),
 	} {
 		root.AddCommand(c)
 	}
