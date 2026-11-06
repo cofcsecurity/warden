@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -23,13 +24,23 @@ var systemDaemons = map[string]bool{
 	"rsyslogd": true, "irqbalance": true, "polkitd": true, "udisksd": true,
 	"networkd-dispatch": true, "NetworkManager": true, "wpa_supplicant": true,
 	"chronyd": true, "auditd": true, "multipathd": true, "unattended-upgr": true,
-	"gdm3": true, "accounts-daemon": true, "rtkit-daemon": true, "bash": true, "sh": true,
+	"gdm3": true, "sudo": true, "su": true, "seer": true, "warden": true, "accounts-daemon": true, "rtkit-daemon": true, "bash": true, "sh": true,
 }
 
 // ignoredProcess reports whether a process name should not be reported as
 // an unknown process: the profile's ignore list, common system daemons, and
 // the systemd-* family.
 func ignoredProcess(name string) bool {
+	if exe, err := os.Executable(); err == nil {
+		// comm is the executable name cut to 15 characters.
+		own := filepath.Base(exe)
+		if len(own) > 15 {
+			own = own[:15]
+		}
+		if name == own {
+			return true
+		}
+	}
 	return ignoredProcesses[name] || systemDaemons[name] || strings.HasPrefix(name, "systemd-") || strings.HasPrefix(name, "(sd-pam")
 }
 

@@ -100,6 +100,7 @@ func checkBackups(p paths, repair bool) backupReport {
 		liveData, liveReadErr := readMetadataCopy(p.manifestPathForTier(tier))
 		liveState := metadataState(liveData, liveReadErr, tier, 0, nil)
 
+		remoteNewest := map[string]int{}
 		for _, src := range r.sources {
 			target, err := r.target(src)
 			if err != nil {
@@ -114,6 +115,11 @@ func checkBackups(p paths, repair bool) backupReport {
 				continue
 			}
 			gens = append(gens, remote...)
+			for _, g := range remote {
+				if g > remoteNewest[src.url] {
+					remoteNewest[src.url] = g
+				}
+			}
 		}
 		unique := map[int]bool{}
 		for _, g := range gens {
@@ -189,6 +195,13 @@ func checkBackups(p paths, repair bool) backupReport {
 				if err == nil {
 					data, err := target.GetManifest(string(tier), generation)
 					state = metadataState(data, err, tier, generation, canonical)
+					// Replication pushes only the newest generation, so
+					// older ones the peer never saw are not damage.
+					if state == "missing" && generation < remoteNewest[src.url] && generation != live.Generation {
+						state = "not-pushed"
+						check.Copies[src.url] = state
+						continue
+					}
 				}
 				check.Copies[src.url] = state
 				if state != "verified" || selectionErr != nil {

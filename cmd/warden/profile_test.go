@@ -73,3 +73,14 @@ func TestHostProfileReplaceAndRejectsInvalid(t *testing.T) {
 		}
 	}
 }
+
+func TestIgnoredProcessCoversSystemAndOwnProcesses(t *testing.T) {
+	for _, name := range []string{"sudo", "seer", "warden", "systemd-journal", "systemd"} {
+		if !ignoredProcess(name) {
+			t.Errorf("%s must not be reported as an unknown process", name)
+		}
+	}
+	if ignoredProcess("mystery-daemon") {
+		t.Error("an unrecognised process must still be reported")
+	}
+}

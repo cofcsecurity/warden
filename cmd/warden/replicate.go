@@ -126,7 +126,7 @@ func pushToTarget(p paths, st *store.Store, t replicateTarget) error {
 			if m.Generation == 0 && len(m.Records) == 0 {
 				recovered, recoveryErr := recovery.manifest(tier, 0)
 				if recoveryErr != nil {
-					if tier == tierData && len(dataTierPaths) == 0 {
+					if tier == tierData && errors.Is(recoveryErr, errNoManifests) {
 						return nil
 					}
 					return recoveryErr

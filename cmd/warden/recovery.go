@@ -218,10 +218,14 @@ func (r *backupRecovery) manifest(tier snapshotTier, generation int) (*manifest.
 		errs = append(errs, fmt.Errorf("%s generation %d: %w", source, candidate.generation, err))
 	}
 	if len(errs) == 0 {
-		return nil, fmt.Errorf("no %s manifests in local archives or configured backups", tier)
+		return nil, fmt.Errorf("%w: %s tier, in local archives or configured backups", errNoManifests, tier)
 	}
 	return nil, fmt.Errorf("no usable %s manifest (generation %d) in local archives or configured backups: %w", tier, generation, errors.Join(errs...))
 }
+
+// errNoManifests means no generation of a tier exists anywhere. For the data
+// tier that is normal on a box with nothing in it to back up.
+var errNoManifests = errors.New("no manifests")
 
 func (r *backupRecovery) loadManifest(tier snapshotTier, id string) (*manifest.Manifest, error) {
 	if id != "" {

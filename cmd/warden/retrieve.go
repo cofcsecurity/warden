@@ -133,7 +133,11 @@ func retrieveWithRecovery(p paths, peerURL string, tier snapshotTier, generation
 	if err := m.SaveAs(p.manifestPathForTier(tier)); err != nil {
 		return err
 	}
-	return log.Log("recovery", "baseline-adopted", map[string]any{"tier": tier, "generation": m.Generation})
+	if err := log.Log("recovery", "baseline-adopted", map[string]any{"tier": tier, "generation": m.Generation}); err != nil {
+		return err
+	}
+	fmt.Printf("adopted: %s tier generation %d, %d records are now this box's baseline\n", tier, m.Generation, len(m.Records))
+	return nil
 }
 
 // hostKeyForConfiguredTarget looks up peerURL in the configured peers and

@@ -167,7 +167,7 @@ func sudoersDropInPath(user string) string {
 // paired sources, receive) as root. The SSH request and terminal type must
 // survive sudo's environment reset.
 func sudoersDropInContent(user, path string, receive bool) string {
-	cmds := path + " opmenu"
+	cmds := path + " opmenu, " + path + " opmenu *"
 	if receive {
 		cmds += ", " + path + " receive --source *"
 	}

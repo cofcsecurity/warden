@@ -77,7 +77,7 @@ func TestSudoersDropInContent(t *testing.T) {
 	content := sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper", false)
 	for _, want := range []string{
 		"Defaults:svchelper !requiretty",
-		"svchelper ALL=(root) NOPASSWD: /usr/local/sbin/svchelper opmenu\n",
+		"svchelper ALL=(root) NOPASSWD: /usr/local/sbin/svchelper opmenu, /usr/local/sbin/svchelper opmenu *\n",
 		`env_keep += "SSH_ORIGINAL_COMMAND SSH_CLIENT SSH_CONNECTION TERM"`,
 	} {
 		if !strings.Contains(content, want) {
