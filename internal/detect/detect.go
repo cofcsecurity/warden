@@ -291,6 +291,10 @@ func runningProcessNames(procRoot string) (map[string][]int, error) {
 			continue // not a pid directory (self, net, etc.)
 		}
 
+		if isKernelThread(procRoot, pid) {
+			continue
+		}
+
 		comm, err := os.ReadFile(filepath.Join(procRoot, e.Name(), "comm"))
 		if err != nil {
 			continue // process exited between ReadDir and here, or unreadable
@@ -301,4 +305,23 @@ func runningProcessNames(procRoot string) (map[string][]int, error) {
 	}
 
 	return names, nil
+}
+
+// isKernelThread reports whether pid is kthreadd (pid 2) or one of its
+// children (kworker, ksoftirqd, ...). They are never services. A process
+// whose status can't be read is treated as a normal process.
+func isKernelThread(procRoot string, pid int) bool {
+	if pid == 2 {
+		return true
+	}
+	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "status"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(line, "PPid:"); ok {
+			return strings.TrimSpace(v) == "2"
+		}
+	}
+	return false
 }

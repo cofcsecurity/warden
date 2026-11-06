@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 	"warden/internal/detect"
 	"warden/internal/fsutil"
@@ -13,6 +14,24 @@ import (
 )
 
 var ignoredProcesses = map[string]bool{}
+
+// systemDaemons are ubiquitous OS processes that are never scored
+// services, so detect and profile validate don't report them as unknown.
+var systemDaemons = map[string]bool{
+	"systemd": true, "dbus-daemon": true, "dbus-broker": true, "dbus-broker-lau": true,
+	"agetty": true, "login": true, "cron": true, "crond": true, "atd": true,
+	"rsyslogd": true, "irqbalance": true, "polkitd": true, "udisksd": true,
+	"networkd-dispatch": true, "NetworkManager": true, "wpa_supplicant": true,
+	"chronyd": true, "auditd": true, "multipathd": true, "unattended-upgr": true,
+	"gdm3": true, "accounts-daemon": true, "rtkit-daemon": true, "bash": true, "sh": true,
+}
+
+// ignoredProcess reports whether a process name should not be reported as
+// an unknown process: the profile's ignore list, common system daemons, and
+// the systemd-* family.
+func ignoredProcess(name string) bool {
+	return ignoredProcesses[name] || systemDaemons[name] || strings.HasPrefix(name, "systemd-") || strings.HasPrefix(name, "(sd-pam")
+}
 
 type profileReport struct {
 	Issues      []string `json:"issues"`
@@ -74,7 +93,7 @@ func validateProfile(p paths) profileReport {
 			continue
 		}
 		if f.Unknown {
-			if ignoredProcesses[f.Service.Name] {
+			if ignoredProcess(f.Service.Name) {
 				continue
 			}
 			report.Issues = append(report.Issues, "unknown running process: "+f.Service.Name)

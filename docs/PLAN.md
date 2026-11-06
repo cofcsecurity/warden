@@ -221,7 +221,7 @@ Arming now shows changes since the previous baseline before accepting the curren
 
 - `restore --tier config|data` supports latest and archived individual-file restores; opmenu keeps its config default.
 - IP bans default to indefinite, with timed manual bans available. Account locks also default to indefinite; positive manual durations still expire.
-- `/etc/warden/profile.json` replaces built-in watched paths, classes, and service mappings without rebuilding, and can extend detection. The actual scored image still needs operator review.
+- `/var/lib/<name>/profile.json` replaces built-in watched paths, classes, and service mappings without rebuilding, and can extend detection. The actual scored image still needs operator review.
 - Detection includes unknown running process names. Attribution falls back to the system journal and excludes logged team-key source IPs in addition to the configured team address.
 
 ## Backup recovery and review fixes

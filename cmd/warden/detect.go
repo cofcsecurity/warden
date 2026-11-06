@@ -70,7 +70,14 @@ func currentlyProtected() []protectedPath {
 	return out
 }
 
+// profileFile is the profile path to show in messages: the one this box
+// actually loads, not a guess.
+var profileFile = "/var/lib/<name>/profile.json"
+
 func runDetect() error {
+	if p, err := loadPaths(); err == nil {
+		profileFile = p.profilePath
+	}
 	protected := currentlyProtected()
 	fmt.Println("==> Currently protected on this box")
 	if len(protected) == 0 {
@@ -105,13 +112,13 @@ func runDetect() error {
 
 	fmt.Println("\n==> Scan: services and unknown processes vs. what's watched")
 	for _, f := range findings {
-		if !f.Detected() {
+		if !f.Detected() || f.Unknown && ignoredProcess(f.Service.Name) {
 			continue
 		}
 		detectedCount++
 
 		if f.Unknown {
-			fmt.Printf("%s  unknown process (PIDs %v); inspect its config and add scored files to /etc/warden/profile.json\n", f.Service.Name, f.PIDs)
+			fmt.Printf("%s  unknown process (PIDs %v); inspect its config and add scored files to %s\n", f.Service.Name, f.PIDs, profileFile)
 			continue
 		}
 		status := "running"
@@ -139,7 +146,7 @@ func runDetect() error {
 	}
 
 	if unwatchedCount > 0 {
-		fmt.Printf("\n%d config path(s) above aren't in the config tier yet — add to /etc/warden/profile.json the ones that matter for this competition's scoring before relying on watch/snapshot to cover them.\n", unwatchedCount)
+		fmt.Printf("\n%d config path(s) above aren't in the config tier yet — add to %s the ones that matter for this competition's scoring before relying on watch/snapshot to cover them.\n", unwatchedCount, profileFile)
 	}
 
 	return nil
