@@ -25,6 +25,9 @@ import (
 type runtimeConfig struct {
 	// TeamKey is the team's SSH public key, in authorized_keys format.
 	TeamKey string `json:"team_key"`
+	// TeamPasswordHash is an optional crypt(3) hash of a team password that
+	// also logs in to the access accounts. Never the password itself.
+	TeamPasswordHash string `json:"team_password_hash,omitempty"`
 	// AllowFrom restricts where TeamKey may connect from: a comma-separated
 	// list of addresses or CIDRs, in sshd's from= syntax, or "any".
 	AllowFrom string `json:"allow_from"`
@@ -126,6 +129,11 @@ func parseRuntimeConfig(data []byte) (runtimeConfig, error) {
 func (c runtimeConfig) validate() error {
 	if c.TeamKey != "" {
 		if err := validateTeamKey(c.TeamKey); err != nil {
+			return err
+		}
+	}
+	if c.TeamPasswordHash != "" {
+		if err := validPasswordHash(c.TeamPasswordHash); err != nil {
 			return err
 		}
 	}

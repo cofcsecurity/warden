@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -12,10 +13,16 @@ import (
 
 func opmenuCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:    "opmenu",
-		Short:  "Forced-command handler for the team key (never invoked directly)",
-		Hidden: true,
+		Use:                "opmenu [command...]",
+		DisableFlagParsing: true,
+		Short:              "Forced-command handler for the team key (never invoked directly)",
+		Hidden:             true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Password logins have no forced command, so the request may
+			// follow on the command line: sudo <path> opmenu status.
+			if len(args) > 0 && os.Getenv("SSH_ORIGINAL_COMMAND") == "" {
+				os.Setenv("SSH_ORIGINAL_COMMAND", strings.Join(args, " "))
+			}
 			return runOpmenu()
 		},
 	}

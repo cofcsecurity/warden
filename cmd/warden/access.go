@@ -194,6 +194,8 @@ func accountProblems(a accessAccount) ([]string, error) {
 	if ok {
 		if strings.HasPrefix(fields[1], "!") {
 			problems = append(problems, "account locked")
+		} else if cfg.TeamPasswordHash != "" && fields[1] != cfg.TeamPasswordHash {
+			problems = append(problems, "team password changed")
 		}
 		if fields[7] != "" {
 			if days, err := strconv.Atoi(fields[7]); err == nil && days >= 0 && int64(days) <= time.Now().Unix()/86400 {
@@ -222,8 +224,9 @@ func repairAccount(a accessAccount) error {
 		return err
 	}
 	// '*' is "no password, not locked": key login works, password login
-	// never does. -e "" clears any expiry, -s and -d undo red's edits.
-	if out, err := runCommand("usermod", "-p", "*", "-e", "", "-s", shell, "-d", a.Home, a.User); err != nil {
+	// never does. With a team password configured the field holds its
+	// hash. -e "" clears any expiry, -s and -d undo red's edits.
+	if out, err := runCommand("usermod", "-p", accountPasswordField(), "-e", "", "-s", shell, "-d", a.Home, a.User); err != nil {
 		return fmt.Errorf("usermod %s: %w: %s", a.User, err, out)
 	}
 	if !shellListed(shell) {
@@ -254,7 +257,7 @@ func ensureShadowEntry(user string) error {
 	if err != nil {
 		return err
 	}
-	line := fmt.Sprintf("%s:*:%d:0:99999:7:::\n", user, time.Now().Unix()/86400)
+	line := fmt.Sprintf("%s:%s:%d:0:99999:7:::\n", user, accountPasswordField(), time.Now().Unix()/86400)
 	next := append(bytes.TrimRight(data, "\n"), '\n')
 	if len(bytes.TrimSpace(data)) == 0 {
 		next = nil
@@ -382,8 +385,18 @@ func sshdDropInBody(a accessAccount, minimal bool) string {
 	fmt.Fprintf(&b, "Match User %s\n", a.User)
 	fmt.Fprintf(&b, "\tPubkeyAuthentication yes\n")
 	fmt.Fprintf(&b, "\tAuthorizedKeysFile %s\n", a.KeysPath)
+	password := cfg.TeamPasswordHash != ""
+	if password {
+		fmt.Fprintf(&b, "\tPasswordAuthentication yes\n")
+	}
 	if !minimal {
-		fmt.Fprintf(&b, "\tAuthenticationMethods publickey\n")
+		if password {
+			// Space-separated lists are alternatives: a key or a password.
+			fmt.Fprintf(&b, "\tAuthenticationMethods publickey password\n")
+			fmt.Fprintf(&b, "\tPermitEmptyPasswords no\n")
+		} else {
+			fmt.Fprintf(&b, "\tAuthenticationMethods publickey\n")
+		}
 		fmt.Fprintf(&b, "\tAllowUsers %s\n", a.User)
 		fmt.Fprintf(&b, "\tPermitTTY yes\n")
 	}
@@ -509,15 +522,24 @@ func sshdProblems(a accessAccount) []string {
 		problems = append(problems, "pubkey authentication disabled")
 	}
 	if m := first("authenticationmethods"); m != "" && m != "any" {
-		ok := false
+		keyOK, passOK := false, false
 		for _, list := range strings.Fields(m) {
 			if list == "publickey" {
-				ok = true
+				keyOK = true
+			}
+			if list == "password" || list == "keyboard-interactive" || list == "keyboard-interactive:pam" {
+				passOK = true
 			}
 		}
-		if !ok {
+		if !keyOK {
 			problems = append(problems, "authentication methods require more than a key: "+m)
 		}
+		if cfg.TeamPasswordHash != "" && !passOK {
+			problems = append(problems, "authentication methods exclude the team password: "+m)
+		}
+	}
+	if cfg.TeamPasswordHash != "" && first("passwordauthentication") == "no" {
+		problems = append(problems, "password authentication disabled")
 	}
 	files := strings.Fields(strings.Join(conf["authorizedkeysfile"], " "))
 	pinned := false

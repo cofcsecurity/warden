@@ -52,6 +52,9 @@ binary, key or network) instead of adding a second copy.`,
 		},
 	}
 	cmd.Flags().StringVar(&o.key, "key", "", "team SSH public key, @file, or https:// URL (required on first install)")
+	cmd.Flags().BoolVar(&o.password, "password", false, "also set a team password for the access accounts (prompted, stored only as a hash)")
+	cmd.Flags().StringVar(&o.passwordHash, "password-hash", "", "also set a team password, given as a crypt hash ($6$...)")
+	cmd.Flags().BoolVar(&o.noPassword, "no-password", false, "remove the team password; the key is the only way in")
 	cmd.Flags().StringVar(&o.from, "from", "", `team network: addresses/CIDRs, comma-separated, or "any"`)
 	cmd.Flags().StringVar(&o.name, "name", "", "name to install under (default: chosen to blend in)")
 	cmd.Flags().BoolVar(&o.noBreakGlass, "no-break-glass", false, "skip the second, independent access account")
@@ -65,6 +68,8 @@ binary, key or network) instead of adding a second copy.`,
 type installOptions struct {
 	key, from, name, ban, lock string
 	noBreakGlass, yes          bool
+	password, noPassword       bool
+	passwordHash               string
 	safeAccounts               []string
 }
 
@@ -115,6 +120,21 @@ func runInstall(o installOptions, in io.Reader, w io.Writer) error {
 	}
 	if next.TeamKey == "" {
 		return fmt.Errorf("install: --key is required (the team's SSH public key)")
+	}
+
+	switch {
+	case o.noPassword:
+		next.TeamPasswordHash = ""
+	case o.passwordHash != "":
+		next.TeamPasswordHash = strings.TrimSpace(o.passwordHash)
+	case o.password:
+		plain, err := promptPassword(w)
+		if err != nil {
+			return err
+		}
+		if next.TeamPasswordHash, err = hashPassword(plain); err != nil {
+			return err
+		}
 	}
 
 	switch {
@@ -385,6 +405,13 @@ Connect from the team network with the team's private key:
 	if c.BreakGlassUser != "" {
 		fmt.Fprintf(w, "  ssh -t -i team %s@<this box>            break-glass, same key, separate path\n", c.BreakGlassUser)
 	}
+	if c.TeamPasswordHash != "" {
+		fmt.Fprintf(w, `
+Or with the team password (no key needed), on either account:
+  ssh -t %[1]s@<this box> sudo %[2]s/%[1]s opmenu            root shell
+  ssh -t %[1]s@<this box> sudo %[2]s/%[1]s opmenu status     any warden command
+`, name, installDir)
+	}
 	fmt.Fprintf(w, `
 Next:
   1. Harden, then check that services and scoring work.
@@ -450,6 +477,7 @@ func configCmd() *cobra.Command {
 				c.Sources[i].Key = abbreviateKey(c.Sources[i].Key)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "team_key:         %s\n", abbreviateKey(c.TeamKey))
+			fmt.Fprintf(cmd.OutOrStdout(), "team_password:    %s\n", map[bool]string{true: "set", false: "none"}[c.TeamPasswordHash != ""])
 			fmt.Fprintf(cmd.OutOrStdout(), "allow_from:       %s\n", c.AllowFrom)
 			fmt.Fprintf(cmd.OutOrStdout(), "break_glass_user: %s\n", c.BreakGlassUser)
 			fmt.Fprintf(cmd.OutOrStdout(), "ban:              %s\n", c.Ban)

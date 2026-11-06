@@ -25,6 +25,8 @@ git clone https://github.com/cofcsecurity/warden.git && cd warden
 sudo ./install.sh --key "$(cat team.pub)"
 ```
 
+Optionally add `--password` (prompted, stored only as a hash) so the same accounts also accept a team password: `ssh -t <name>@<box> sudo /usr/local/sbin/<name> opmenu [command]`. Sentinel restores the hash and the sshd settings like everything else. `--no-password` removes it.
+
 `install.sh` builds with Go (fetching a verified toolchain if the box has none) or, with `--release vX.Y.Z`, downloads a release binary and checks it against the release's `SHA256SUMS`. The only question it asks is the team network, defaulting to the /24 you are connected from. Auto-restore is off until you arm.
 
 ## Use it

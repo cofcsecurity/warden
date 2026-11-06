@@ -587,3 +587,55 @@ func TestEnsureShadowEntryAddsOnlyOurLine(t *testing.T) {
 		t.Fatalf("unexpected shadow:\n%s", data)
 	}
 }
+
+func TestTeamPasswordAccountAndDropIn(t *testing.T) {
+	withConfig(t)
+	const hash = "$6$saltsalt$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	if err := validPasswordHash(hash); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"hunter2", "$6$a:b$cccccccccccccccccccccc", ""} {
+		if validPasswordHash(bad) == nil {
+			t.Errorf("%q must be rejected", bad)
+		}
+	}
+	a := accessAccount{User: "netmgr", Home: "/home/netmgr", KeysPath: "/home/netmgr/.ssh/authorized_keys"}
+	passwd := "netmgr:x:999:999::/home/netmgr:/bin/sh\n"
+
+	cfg.TeamPasswordHash = ""
+	if strings.Contains(sshdDropInBody(a, false), "PasswordAuthentication") {
+		t.Error("no password configured: the drop-in must not enable password auth")
+	}
+
+	cfg.TeamPasswordHash = hash
+	body := sshdDropInBody(a, false)
+	for _, want := range []string{"PasswordAuthentication yes", "AuthenticationMethods publickey password"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("drop-in missing %q:\n%s", want, body)
+		}
+	}
+	fakeBox(t, passwd, "netmgr:*:19000:0:99999:7:::\n", "")
+	if p := strings.Join(mustProblems(t, a), ";"); !strings.Contains(p, "team password changed") {
+		t.Errorf("a wiped password must be reported, got %q", p)
+	}
+	fakeBox(t, passwd, "netmgr:"+hash+":19000:0:99999:7:::\n", "")
+	if p := mustProblems(t, a); len(p) != 0 {
+		t.Errorf("healthy password reported %v", p)
+	}
+
+	calls := fakeCommands(t)
+	fakeBox(t, passwd, "netmgr:*:19000:0:99999:7:::\n", "")
+	_ = repairAccount(a)
+	if !strings.Contains(strings.Join(*calls, "\n"), "usermod -p "+hash) {
+		t.Errorf("repair must restore the hash: %v", *calls)
+	}
+}
+
+func mustProblems(t *testing.T, a accessAccount) []string {
+	t.Helper()
+	p, err := accountProblems(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}

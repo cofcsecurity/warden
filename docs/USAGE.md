@@ -11,6 +11,8 @@ ssh -t -i team <name>@<box>                  # root shell
 ssh -i team <name>@<box> status
 ssh -i team <name>@<box> restore /etc/nginx/nginx.conf --apply
 ssh -t -i team <break-glass>@<box>           # second door, same key
+# only if installed with --password (either account, no key needed):
+ssh -t <name>@<box> sudo /usr/local/sbin/<name> opmenu status
 ```
 
 There is no code to type and no command whitelist beyond "is it a warden command": the key, from the team network, is the whole check. Unknown commands are refused rather than run through a shell.
