@@ -71,6 +71,9 @@ func TestCronLinesRestoreBinaryFromSpares(t *testing.T) {
 }
 
 func TestSudoersDropInContent(t *testing.T) {
+	old := sudoKnowsRequiretty
+	sudoKnowsRequiretty = func() bool { return true }
+	defer func() { sudoKnowsRequiretty = old }()
 	content := sudoersDropInContent("svchelper", "/usr/local/sbin/svchelper", false)
 	for _, want := range []string{
 		"Defaults:svchelper !requiretty",

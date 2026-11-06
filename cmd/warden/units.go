@@ -171,7 +171,11 @@ func sudoersDropInContent(user, path string, receive bool) string {
 	if receive {
 		cmds += ", " + path + " receive --source *"
 	}
-	return fmt.Sprintf("Defaults:%s !requiretty\nDefaults:%s env_keep += \"SSH_ORIGINAL_COMMAND SSH_CLIENT SSH_CONNECTION TERM\"\n%s ALL=(root) NOPASSWD: %s\n", user, user, user, cmds)
+	defaults := ""
+	if sudoKnowsRequiretty() {
+		defaults = fmt.Sprintf("Defaults:%s !requiretty\n", user)
+	}
+	return fmt.Sprintf("%sDefaults:%s env_keep += \"SSH_ORIGINAL_COMMAND SSH_CLIENT SSH_CONNECTION TERM\"\n%s ALL=(root) NOPASSWD: %s\n", defaults, user, user, cmds)
 }
 
 // keyOptions are the restrictions on every team key line. A pty is
@@ -220,4 +224,23 @@ func nologinShellPath() string {
 		return path
 	}
 	return "/bin/false"
+}
+
+// sudoKnowsRequiretty reports whether this sudo accepts "!requiretty".
+// RHEL-family sudo needs it so ssh without a tty works; newer sudo removed
+// the option and rejects the whole file if it is present. A var so tests
+// can pin it.
+var sudoKnowsRequiretty = func() bool {
+	if !commandExists("visudo") {
+		return true
+	}
+	tmp, err := os.CreateTemp("", "warden-sudo-probe-")
+	if err != nil {
+		return true
+	}
+	defer os.Remove(tmp.Name())
+	tmp.WriteString("Defaults !requiretty\n")
+	tmp.Close()
+	_, err = runCommand("visudo", "-cf", tmp.Name())
+	return err == nil
 }
